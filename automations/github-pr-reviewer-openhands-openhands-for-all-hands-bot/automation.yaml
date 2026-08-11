@@ -1,0 +1,16 @@
+enabled: true
+entrypoint: python3 main.py
+keep_alive: null
+model: gpt-5.6-sol
+name: 'GitHub PR Reviewer: OpenHands/OpenHands for @all-hands-bot'
+preset_metadata: null
+prompt: null
+setup_script_path: null
+tarball_source:
+  type: internal
+  url: null
+timeout: 1200
+trigger:
+  schedule: '*/2 * * * *'
+  timezone: UTC
+  type: cron

@@ -1,0 +1,16 @@
+enabled: false
+entrypoint: python3 main.py
+keep_alive: false
+model: gpt-5.6-sol
+name: High-priority GitHub issue digest
+preset_metadata: null
+prompt: null
+setup_script_path: null
+tarball_source:
+  type: internal
+  url: null
+timeout: 120
+trigger:
+  schedule: 0 12 * * 1,3
+  timezone: UTC
+  type: cron

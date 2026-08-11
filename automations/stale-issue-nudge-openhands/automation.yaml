@@ -1,0 +1,16 @@
+enabled: true
+entrypoint: python3 main.py
+keep_alive: false
+model: null
+name: Stale Issue Nudge -- OpenHands
+preset_metadata: null
+prompt: null
+setup_script_path: null
+tarball_source:
+  type: internal
+  url: null
+timeout: 300
+trigger:
+  schedule: 0 15 * * 2,5
+  timezone: UTC
+  type: cron
