@@ -37,7 +37,7 @@ tarball_executables:
 tarball_source:
   type: internal
   url: null
-timeout: 1200
+timeout: 1800
 trigger:
   schedule: 0 12 * * 5
   timezone: UTC
