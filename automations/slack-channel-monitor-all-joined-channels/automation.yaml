@@ -1,0 +1,17 @@
+enabled: true
+entrypoint: python3 main.py
+keep_alive: null
+model: null
+name: Slack Channel Monitor - All Joined Channels
+preset_metadata: null
+prompt: null
+setup_script_path: null
+tarball_source:
+  type: internal
+  url: null
+timeout: 1800
+trigger:
+  filter: team_id == 'T07E1S2M2Q6'
+  'on': app_mention
+  source: slack
+  type: event
