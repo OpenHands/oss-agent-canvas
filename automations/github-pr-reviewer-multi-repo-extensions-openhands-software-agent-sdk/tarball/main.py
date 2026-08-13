@@ -95,6 +95,9 @@ REPOS = [
 ]
 
 # Module-level defaults shared by every repo (override per-entry in REPOS).
+# REPO is a fallback only — every entry in REPOS supplies its own "repo", so
+# this is never actually used; it exists so `_cfg("repo", REPO)` resolves.
+REPO = ""
 TRIGGER_LABEL = "review-this"          # PR label that triggers an unconditional AI review
 TRIGGER_REVIEWER = "all-hands-bot"     # GitHub user assigned as reviewer that triggers an unconditional AI review
 REVIEW_TONE = "concise"
