@@ -2,7 +2,9 @@
 GitHub PR Reviewer - OpenHands Automation Script
 
 Polls a GitHub repository for open pull requests and decides what to do
-with each one. Draft PRs are skipped entirely unless `@all-hands-bot` is
+with each one. release-please release PRs (carrying an `autorelease:` label)
+are skipped entirely: they are bot-generated chores that don't need
+OpenHands review. Draft PRs are skipped entirely unless `@all-hands-bot` is
 currently requested as a reviewer on them, in which case they are treated
 like any other PR (see rule 1 below).
 
@@ -92,6 +94,7 @@ REPOS = [
     {"repo": "OpenHands/extensions", "slack_channel_id": "C0A6U0HTD7X"},
     {"repo": "OpenHands/OpenHands", "slack_channel_id": "C06QT0AGY4W"},
     {"repo": "OpenHands/software-agent-sdk", "slack_channel_id": "C06R25BT5B2"},
+    {"repo": "OpenHands/typescript-client", "slack_channel_id": "C0A6U0HTD7X"},
 ]
 
 # Module-level defaults shared by every repo (override per-entry in REPOS).
@@ -1070,6 +1073,14 @@ def _has_trigger_label(pr: dict) -> bool:
     return any(name.lower() == label for name in _labels(pr))
 
 
+def _is_release_pr(pr: dict) -> bool:
+    """release-please release PRs are bot-generated chores assembled from
+    merged commit messages, so the HUMAN-section/CI/trust gates are just
+    noise on them. Recognized the same way the release-actions `release-ready`
+    workflow does: by the `autorelease:` label prefix release-please adds."""
+    return any(name.startswith("autorelease:") for name in _labels(pr))
+
+
 def _with_ai_disclosure(body: str) -> str:
     disclosure = "_This comment was posted by an AI agent (OpenHands)._"
     body = (body or "").strip()
@@ -1590,6 +1601,8 @@ def _process_repo(
         # the whole run: nothing was recorded for this PR, so it is simply
         # retried next minute.
         try:
+            if _is_release_pr(pr):
+                continue
             if pr.get("draft") and not (_bot_requested(pr) or _has_trigger_label(pr)):
                 continue
             head_sha = _head_sha(pr)
@@ -1601,6 +1614,8 @@ def _process_repo(
                 continue
 
             fresh_pr = _get_pr(github_token, repo, pr["number"])
+            if _is_release_pr(fresh_pr):
+                continue
             if fresh_pr.get("draft") and not (_bot_requested(fresh_pr) or _has_trigger_label(fresh_pr)):
                 continue
             if _head_sha(fresh_pr) != head_sha:

@@ -2,7 +2,8 @@ enabled: true
 entrypoint: python3 main.py
 keep_alive: null
 model: null
-name: 'GitHub PR Reviewer (multi-repo): extensions, OpenHands, software-agent-sdk'
+name: 'GitHub PR Reviewer (multi-repo): extensions, OpenHands, software-agent-sdk,
+  typescript-client'
 preset_metadata: null
 prompt: null
 setup_script_path: null
