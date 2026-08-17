@@ -45,4 +45,14 @@ uv pip install --quiet \
   "openhands-tools==${SDK_VERSION}" \
   "openhands-workspace==${SDK_VERSION}"
 
+echo "[setup] Installing curator scripts"
+# These two scripts are the enforcement half of this automation, so they are
+# versioned here rather than left as hand-placed files on the box. Installing
+# them to a stable path keeps the prompt's absolute paths working. Fail loudly
+# rather than silently leaving an older copy in place.
+BIN=/var/lib/agent-canvas/.openhands/agent-memory/bin
+mkdir -p "$BIN"
+install -m 755 digest.py apply.py "$BIN/"
+echo "[setup] Installed digest.py and apply.py to $BIN"
+
 echo "[setup] Done"
