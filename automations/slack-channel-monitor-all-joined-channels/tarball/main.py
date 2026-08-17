@@ -22,7 +22,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 # ── Per-workspace configuration (substituted at build time) ───────────────────
 CONFIG = {   'authorized_email_domains': [],
@@ -109,6 +109,26 @@ def _settings() -> dict:
         return json.loads(r.read())
 
 
+def _profile_llm(name: str) -> dict | None:
+    """Full LLM config for a named model profile, or None if it is unusable.
+
+    Needs its own request rather than _oh(): the api_key only comes back with
+    X-Expose-Secrets, which _oh does not send.  Returning None on a miss keeps
+    a deleted or renamed profile from failing the run outright — the caller
+    falls back to the server's active profile instead.
+    """
+    req = urllib.request.Request(
+        f"{_agent_url()}/api/profiles/{quote(name, safe='')}",
+        headers={"X-Session-API-Key": _api_key(), "X-Expose-Secrets": "plaintext"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
+            return json.loads(r.read()).get("config") or None
+    except Exception as exc:
+        log(f"warning: model profile {name!r} not usable ({exc}); using active profile")
+        return None
+
+
 def create_conversation(initial_message: str) -> str:
     """Create a conversation. 'agent' (not 'agent_settings') avoids the
     double-registration bug in the LLM registry."""
@@ -122,11 +142,22 @@ def create_conversation(initial_message: str) -> str:
 
     settings = _settings()
     agent_settings = settings.get("agent_settings", {})
+
+    # The automation's configured model profile arrives as AUTOMATION_MODEL.
+    # Only the built-in presets read it for us; a hand-written script has to
+    # resolve it itself, or every run silently uses whichever profile happens
+    # to be active on the server and the setting looks like a no-op.
+    llm = agent_settings.get("llm", {})
+    profile = os.environ.get("AUTOMATION_MODEL") or ""
+    if profile:
+        llm = _profile_llm(profile) or llm
+    log(f"llm: {llm.get('model')} (profile: {profile or 'active'})")
+
     payload: dict = {
         "workspace": {"working_dir": workspace_dir},
         "agent": {
             "kind": "Agent",
-            "llm": agent_settings.get("llm", {}),
+            "llm": llm,
             "tools": [{"name": "terminal"}, {"name": "file_editor"}],
         },
         "initial_message": {"content": [{"text": initial_message}]},
