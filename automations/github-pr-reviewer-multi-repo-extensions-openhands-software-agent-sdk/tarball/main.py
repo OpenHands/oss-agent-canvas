@@ -281,7 +281,10 @@ def _compact_evaluated(evaluated: dict | None) -> dict:
         head_sha = record.get("head_sha")
         if not head_sha or record.get("outcome") != "ci_failed":
             continue
-        trimmed[str(key)] = {"head_sha": head_sha, "outcome": "ci_failed", "at": record.get("at")}
+        entry = {"head_sha": head_sha, "outcome": "ci_failed", "at": record.get("at")}
+        if record.get("comment_id"):
+            entry["comment_id"] = record["comment_id"]
+        trimmed[str(key)] = entry
     if len(trimmed) > MAX_EVALUATED_ENTRIES:
         trimmed = dict(list(trimmed.items())[-MAX_EVALUATED_ENTRIES:])
     return trimmed
@@ -513,12 +516,16 @@ def _mark_seen(review_key: str) -> None:
     raise RuntimeError("Could not record review as seen")
 
 
-def _record_ci_failed(pr_number: int, head_sha: str) -> None:
-    """Record a CI-failure comment as posted, so it fires once per head_sha
-    instead of on every poll."""
+def _record_ci_failed(pr_number: int, head_sha: str, comment_id=None) -> None:
+    """Record a CI-failure comment as posted (and, when known, its comment
+    id so a later re-check can edit it in place), so it fires once per
+    head_sha instead of on every poll."""
     for _ in range(CAS_RETRIES):
         state, version = _load_state()
-        state["evaluated"][str(pr_number)] = {"head_sha": head_sha, "outcome": "ci_failed", "at": time.time()}
+        record = {"head_sha": head_sha, "outcome": "ci_failed", "at": time.time()}
+        if comment_id is not None:
+            record["comment_id"] = comment_id
+        state["evaluated"][str(pr_number)] = record
         state["evaluated"] = _compact_evaluated(state["evaluated"])
         if _save_state(state, version):
             return
@@ -1208,11 +1215,13 @@ def _ci_failing_marker(head_sha: str) -> str:
     return f"<!-- ci-failing-notice:{head_sha} -->"
 
 
-def _leave_ci_failing_comment(token: str, pr: dict, head_sha: str) -> bool:
-    """Returns True only if the comment was actually posted, so the caller
-    records this as handled solely when it truly ran - a transient post
-    failure (this VM has documented intermittent GitHub egress issues)
-    should not permanently suppress the notice until the next commit."""
+def _leave_ci_failing_comment(token: str, pr: dict, head_sha: str, comment_id=None) -> int | None:
+    """Post the CI-failing notice, editing an existing bot notice in place
+    when a comment id is known, and returns the id of the comment used (or
+    None if both the edit and the fallback create failed). The caller must
+    only record the outcome as handled when an id is returned, so a
+    transient failure is retried next poll rather than permanently
+    suppressed until the next commit."""
     reviewer = _cfg("trigger_reviewer", TRIGGER_REVIEWER)
     body = (
         f"{_ci_failing_marker(head_sha)}\n"
@@ -1221,16 +1230,16 @@ def _leave_ci_failing_comment(token: str, pr: dict, head_sha: str) -> bool:
         "automatically once you push a new commit. (A maintainer can also request "
         f"`@{reviewer}` as a reviewer to have it reviewed regardless of CI status.)"
     )
-    return _post_or_update_comment(token, pr["number"], None, _with_deterministic_disclosure(body)) is not None
+    return _post_or_update_comment(token, pr["number"], comment_id, _with_deterministic_disclosure(body))
 
 
-def _ci_failing_notice_posted(token: str, pr_number: int, head_sha: str) -> bool:
-    """Safety net against re-posting the same head_sha's notice: scan the
-    PR's own comments for this exact head_sha's marker before posting a new
-    one, the same way `_slack_channel_has_notice` guards the Slack ping.
-    Needed because local KV state alone can't stop two overlapping poller
-    runs (e.g. one poll still stuck on a slow GitHub call while the next
-    cron tick starts) from both reading 'not yet posted' and both posting."""
+def _ci_failing_notice_posted(token: str, pr_number: int, head_sha: str) -> int | None:
+    """Scan the PR's own comments for an existing bot CI-failing notice and
+    return its id, or None. Matches on the head_sha-specific marker first,
+    then the stable notice text (an older notice from a previous head is the
+    same logical comment and must be edited rather than duplicated). Needed
+    because local KV state alone can't find a notice posted by an older
+    version of this script, or one posted by a concurrent poller run."""
     repo = _cfg("repo", REPO)
     reviewer = _cfg("trigger_reviewer", TRIGGER_REVIEWER).lower()
     marker = _ci_failing_marker(head_sha)
@@ -1239,25 +1248,31 @@ def _ci_failing_notice_posted(token: str, pr_number: int, head_sha: str) -> bool
         login = (comment.get("user") or {}).get("login", "")
         if login.lower() != reviewer:
             continue
-        if marker in (comment.get("body") or ""):
-            return True
-    return False
+        body = comment.get("body") or ""
+        if marker in body or "CI is currently failing on this PR's latest commit" in body:
+            return comment.get("id")
+    return None
 
 
 def _notify_ci_failing(token: str, state: dict, pr: dict, head_sha: str) -> None:
     pr_number = pr["number"]
     if _ci_already_failed(state, pr_number, head_sha):
         return
-    try:
-        if _ci_failing_notice_posted(token, pr_number, head_sha):
-            _record_ci_failed(pr_number, head_sha)
-            return
-    except Exception as exc:
-        print(f"  Warning: could not check existing CI-failing comments for PR #{pr_number}: {exc}")
-        # Fall through and still try to post - a possible duplicate is
-        # better than silently never notifying because this check is broken.
-    if _leave_ci_failing_comment(token, pr, head_sha):
-        _record_ci_failed(pr_number, head_sha)
+    record = state["evaluated"].get(str(pr_number))
+    comment_id = record.get("comment_id") if record else None
+    # No id to edit yet: look for an existing notice on the PR (from an older
+    # version of this script, a prior state loss, or a concurrent poller) so
+    # we edit it in place rather than piling on a duplicate.
+    if comment_id is None:
+        try:
+            comment_id = _ci_failing_notice_posted(token, pr_number, head_sha)
+        except Exception as exc:
+            print(f"  Warning: could not check existing CI-failing comments for PR #{pr_number}: {exc}")
+            # Fall through and still try to post - a possible duplicate is
+            # better than silently never notifying because this check is broken.
+    comment_id = _leave_ci_failing_comment(token, pr, head_sha, comment_id)
+    if comment_id is not None:
+        _record_ci_failed(pr_number, head_sha, comment_id)
 
 
 def _slack_post_message(token: str, channel: str, text: str) -> None:
