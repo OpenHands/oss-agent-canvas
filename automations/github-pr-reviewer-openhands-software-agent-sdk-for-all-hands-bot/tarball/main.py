@@ -87,6 +87,12 @@ REPO = CONFIG["repo"]
 TRIGGER_REVIEWER = CONFIG.get("trigger_reviewer", "all-hands-bot")
 REVIEW_TONE = CONFIG.get("review_tone", "thorough")
 REVIEW_STYLE_INSTRUCTIONS = CONFIG.get("review_style_instructions", "")
+# Path within the checked-out repository to a repo-specific review guide
+# (e.g. the repo's own code-review skill). When the file exists at this path
+# relative to the repo root, its contents are injected verbatim into the
+# review prompt so the guide is always applied deterministically, rather than
+# relying on the spawned agent's skill activation. Set to "" to disable.
+REPO_REVIEW_GUIDE_PATH = CONFIG.get("repo_review_guide_path", ".agents/skills/custom-codereview-guide.md")
 DEFAULT_OPENHANDS_URL = CONFIG.get("openhands_url", "https://oss-agent-canvas.ngrok.dev")
 # How many AI reviews may be in flight at once. Each holds one conversation
 # and one repository checkout, so raising this raises disk and LLM spend.
@@ -1227,7 +1233,27 @@ def _notify_slack_review_needed(token: str, state: dict, pr: dict) -> None:
         print(f"  Warning: Slack notification failed for PR #{pr_number}: {exc}")
 
 
-def _build_review_prompt(pr: dict, head_sha: str) -> str:
+def _load_repo_review_guide(workspace_dir: Path) -> str | None:
+    """Read the repo-specific review guide from the checked-out repository.
+
+    The path is taken from ``REPO_REVIEW_GUIDE_PATH``. An empty path disables
+    the feature. Returns the file contents, or None if the file is absent or
+    unreadable — a missing guide is never fatal.
+    """
+    if not REPO_REVIEW_GUIDE_PATH:
+        return None
+    candidate = workspace_dir / REPO_REVIEW_GUIDE_PATH
+    try:
+        if candidate.is_file():
+            text = candidate.read_text(encoding="utf-8", errors="replace").strip()
+            if text:
+                return text
+    except Exception as exc:
+        print(f"  Warning: could not read repo review guide {candidate}: {exc}")
+    return None
+
+
+def _build_review_prompt(pr: dict, head_sha: str, repo_review_guide: str | None = None) -> str:
     number = pr.get("number", "?")
     title = pr.get("title", "(no title)")
     body = (pr.get("body") or "").strip() or "(no description)"
@@ -1242,6 +1268,10 @@ def _build_review_prompt(pr: dict, head_sha: str) -> str:
     clone_url = f"https://github.com/{REPO}.git"
     tone = _TONE_INSTRUCTIONS.get(REVIEW_TONE, _TONE_INSTRUCTIONS["thorough"])
     extra = f"\n\nAdditional style instructions:\n{REVIEW_STYLE_INSTRUCTIONS}" if REVIEW_STYLE_INSTRUCTIONS.strip() else ""
+    guide_section = (
+        f"\n\nRepo-specific review guide (from {REPO_REVIEW_GUIDE_PATH}):\n---\n{repo_review_guide}\n---\n"
+        if repo_review_guide else ""
+    )
 
     return (
         "Review the GitHub pull request below and publish the review directly "
@@ -1273,7 +1303,7 @@ def _build_review_prompt(pr: dict, head_sha: str) -> str:
         "6. If a finding cannot be attached to a valid changed line, include it in the review body. If the review API rejects inline positions, retry by posting all findings in the review body.\n"
         "7. Introduce yourself with this disclosure in the first sentence of the review body: `_This review was created by an AI agent (OpenHands) on behalf of the repository maintainers._`\n"
         "8. If no material issues exist, still post a review body saying the change has no material findings, with the risk assessment and disclosure.\n"
-        f"\nReview instructions:\n{tone}{extra}\n\n"
+        f"\nReview instructions:\n{tone}{extra}{guide_section}\n\n"
         "After GitHub accepts the review, output exactly `GITHUB_REVIEW_POSTED`. "
         "If posting fails after the required fallback, output the complete review text so the caller can post it as a PR comment."
     )
@@ -1289,7 +1319,10 @@ def _process_review_request(
     workspace_dir = None
     try:
         workspace_dir = _prepare_repository(github_token, number, head_sha)
-        conv_id = create_conversation(agent_url, api_key, _build_review_prompt(pr, head_sha), workspace_dir)
+        repo_review_guide = _load_repo_review_guide(workspace_dir)
+        if repo_review_guide:
+            print(f"  Injected repo review guide for PR #{number}")
+        conv_id = create_conversation(agent_url, api_key, _build_review_prompt(pr, head_sha, repo_review_guide), workspace_dir)
     except Exception as exc:
         # Free the slot instead of holding it for manual reconciliation. The
         # key is not in the seen list yet, so the next run retries it; holding
