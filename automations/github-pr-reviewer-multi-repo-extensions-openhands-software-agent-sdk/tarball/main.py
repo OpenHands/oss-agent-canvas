@@ -94,7 +94,7 @@ REPOS = [
     {"repo": "OpenHands/extensions", "slack_channel_id": "C0A6U0HTD7X"},
     {"repo": "OpenHands/OpenHands", "slack_channel_id": "C06QT0AGY4W"},
     {"repo": "OpenHands/software-agent-sdk", "slack_channel_id": "C06R25BT5B2"},
-    {"repo": "OpenHands/typescript-client", "slack_channel_id": "C0A6U0HTD7X"},
+    {"repo": "OpenHands/typescript-client", "slack_channel_id": "C06R25BT5B2"},
     {"repo": "OpenHands/automation", "slack_channel_id": "C06QT0AGY4W"},
 ]
 
