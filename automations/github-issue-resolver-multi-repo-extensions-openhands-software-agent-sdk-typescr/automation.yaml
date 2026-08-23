@@ -12,6 +12,6 @@ tarball_source:
   url: null
 timeout: 1200
 trigger:
-  schedule: '*/5 * * * *'
+  schedule: 1,6,11,16,21,26,31,36,41,46,51,56 * * * *
   timezone: UTC
   type: cron
