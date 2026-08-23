@@ -95,7 +95,7 @@ REPOS = [
     {"repo": "OpenHands/OpenHands", "slack_channel_id": "C06QT0AGY4W"},
     {"repo": "OpenHands/software-agent-sdk", "slack_channel_id": "C06R25BT5B2"},
     {"repo": "OpenHands/typescript-client", "slack_channel_id": "C06R25BT5B2"},
-    {"repo": "OpenHands/automation", "slack_channel_id": "C06QT0AGY4W"},
+    {"repo": "OpenHands/automation", "slack_channel_id": "C0ALCEFB7AQ"},
 ]
 
 # Module-level defaults shared by every repo (override per-entry in REPOS).
