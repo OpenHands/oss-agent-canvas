@@ -575,6 +575,19 @@ def _mark_slack_notified(pr_number: int) -> None:
     raise RuntimeError(f"Could not record Slack notification for PR #{pr_number}")
 
 
+def _unmark_slack_notified(pr_number: int) -> None:
+    """Release a reservation taken by ``_mark_slack_notified`` when the message
+    it was reserving never actually reached Slack, so a later poll can retry."""
+    for _ in range(CAS_RETRIES):
+        state, version = _load_state()
+        if str(pr_number) not in state["slack_notified"]:
+            return
+        del state["slack_notified"][str(pr_number)]
+        if _save_state(state, version):
+            return
+    raise RuntimeError(f"Could not release Slack notification for PR #{pr_number}")
+
+
 def _update_active(review_key: str, **changes) -> dict | None:
     for _ in range(CAS_RETRIES):
         state, version = _load_state()
@@ -1373,23 +1386,49 @@ def _notify_slack_review_needed(token: str, state: dict, pr: dict) -> None:
     author = (pr.get("user") or {}).get("login", "?")
     html_url = pr.get("html_url", "")
     try:
-        if _slack_channel_has_notice(slack_token, slack_channel_id, html_url):
-            _mark_slack_notified(pr_number)
-            return
+        already_notified = _slack_channel_has_notice(slack_token, slack_channel_id, html_url)
     except Exception as exc:
         print(f"  Warning: could not check Slack history for PR #{pr_number}: {exc}")
         # Fall through and still try to post - a possible duplicate is better
         # than silently never notifying because history scanning is broken.
+        # The reservation below bounds that to one message rather than one
+        # message per poll.
+        already_notified = False
+    if already_notified:
+        # The notice is already in the channel. Record that so later polls skip
+        # it without another history scan; failing to record it is not a reason
+        # to post a second copy.
+        try:
+            _mark_slack_notified(pr_number)
+        except Exception as exc:
+            print(f"  Warning: could not record existing Slack notice for PR #{pr_number}: {exc}")
+        return
     repo = _cfg("repo", REPO)
     text = (
         f"👋 *{repo}#{pr_number}* needs a human review: <{html_url}|{title}> by @{author}\n"
         "This contributor's PR needs a human review, so OpenHands skipped the automatic AI review."
     )
+    # Reserve the notification BEFORE posting. _mark_slack_notified can fail on
+    # its own (CAS exhaustion when concurrent polls contend for the same state
+    # key), and recording *after* a successful post meant such a failure left a
+    # delivered message unrecorded - so the next poll posted the very same
+    # notice again, every five minutes, for as long as the PR stayed open.
+    # Reserving first caps that at one message even when the history scan above
+    # is failing too; the reservation is released if the post never lands.
     try:
-        _slack_post_message(slack_token, slack_channel_id, text)
         _mark_slack_notified(pr_number)
     except Exception as exc:
+        print(f"  Warning: could not reserve Slack notification for PR #{pr_number}: {exc}")
+        return
+    try:
+        _slack_post_message(slack_token, slack_channel_id, text)
+    except Exception as exc:
         print(f"  Warning: Slack notification failed for PR #{pr_number}: {exc}")
+        try:
+            _unmark_slack_notified(pr_number)
+        except Exception as release_exc:
+            print(f"  Warning: could not release the Slack reservation for PR "
+                  f"#{pr_number}; it will not be re-notified: {release_exc}")
 
 
 def _load_repo_review_guide(workspace_dir: Path) -> str | None:
