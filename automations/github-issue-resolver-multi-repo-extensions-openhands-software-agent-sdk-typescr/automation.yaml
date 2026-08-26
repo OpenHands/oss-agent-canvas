@@ -10,8 +10,13 @@ setup_script_path: null
 tarball_source:
   type: internal
   url: null
-timeout: 1200
+timeout: 1800
 trigger:
-  schedule: 1,6,11,16,21,26,31,36,41,46,51,56 * * * *
-  timezone: UTC
-  type: cron
+  destination: dispatch_run
+  filter: contains(['OpenHands/extensions','OpenHands/OpenHands','OpenHands/software-agent-sdk','OpenHands/typescript-client'],
+    repository.full_name) && ((action == 'assigned' && contains(keys(@), 'issue')
+    && assignee.login == 'all-hands-bot') || starts_with(ref || '', 'refs/heads/openhands/issue-'))
+  'on': '*'
+  source: github-events
+  subject_key_expr: null
+  type: event

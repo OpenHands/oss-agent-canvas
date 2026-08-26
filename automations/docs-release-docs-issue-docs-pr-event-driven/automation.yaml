@@ -1,0 +1,25 @@
+enabled: true
+entrypoint: .venv/bin/python main.py
+keep_alive: null
+model: null
+name: '[Docs] Release -> Docs Issue -> Docs PR (event-driven)'
+preset_metadata: null
+prompt: null
+setup_script_path: setup.sh
+tarball_executables:
+- setup.sh
+tarball_source:
+  type: internal
+  url: null
+timeout: 1800
+trigger:
+  destination: dispatch_run
+  filter: '(repository.full_name == ''OpenHands/OpenHands'' && contains(keys(@), ''release'')
+    && action == ''published'') || (repository.full_name == ''OpenHands/docs'' &&
+    contains(keys(@), ''issue'') && !contains(keys(@), ''comment'') && contains([''opened'',''unlabeled''],
+    action) && starts_with(issue.title || '''', ''automation: Docs update for OpenHands
+    ''))'
+  'on': '*'
+  source: github-events
+  subject_key_expr: null
+  type: event

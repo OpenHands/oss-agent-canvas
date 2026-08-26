@@ -1,6 +1,25 @@
 """
 GitHub PR Reviewer - OpenHands Automation Script
 
+Event-driven: one run per `pull_request` webhook delivery, no cron. The run
+re-sweeps the whole repo rather than acting only on the PR named in the
+payload, so a delivery that is lost (nothing here deduplicates or retries
+them) costs latency, not coverage.
+
+Two things still need a *later* look, and without a cron nothing else would
+provide it, so `_drive_repo` keeps re-sweeping inside the run's budget:
+
+  * CI still running on a head commit. This is the common case, not an edge
+    case -- CI is always in flight immediately after the push or open that
+    triggered us, and the gate below deliberately defers rather than spend a
+    review on a commit that may be superseded. The clean fix is a
+    `check_suite.completed` subscription on the org webhook, which the org
+    does not currently deliver; until then this waits it out in-process.
+  * A review conversation that has not reached a terminal state.
+
+Both drain through the same pass, and both simply stop at
+PR_INLINE_WAIT_BUDGET, leaving the work to the next event for the repo.
+
 Polls a GitHub repository for open pull requests and decides what to do
 with each one. release-please release PRs (carrying an `autorelease:` label)
 are skipped entirely: they are bot-generated chores that don't need
@@ -123,6 +142,16 @@ MAX_CONCURRENT_REVIEWS = 3
 # replaced could never forget, which made a failed review permanently
 # un-retryable.
 MAX_SEEN_REVIEWS = 500
+
+# The service caps a run at 1800s. Stay well inside it so a sweep that starts
+# near the end still finishes. 120s between sweeps rather than the old 5min
+# cron: faster to react, and each sweep is a handful of GitHub calls.
+PR_INLINE_WAIT_BUDGET = 1200
+PR_INLINE_POLL_INTERVAL = 120
+# Set by _process_repo when it defers a PR because CI had not finished. It is
+# the signal that another sweep is worth doing; without a cron, nothing else
+# would come back to that commit.
+_CI_PENDING = False
 # Consecutive conversation-creation failures tolerated per review before it is
 # given up on. Without this a review that always fails would be retried every
 # minute forever.
@@ -166,6 +195,33 @@ def _cfg(key: str, default):
     module-level default when the per-repo entry does not override it."""
     val = _CURRENT.get(key)
     return val if val is not None else default
+
+
+def _load_event() -> dict | None:
+    """The webhook delivery, or None when the run was dispatched by hand.
+
+    AUTOMATION_EVENT_PAYLOAD wraps it as {"event": {"payload": ...}} for a
+    custom webhook source.
+    """
+    raw = os.environ.get("AUTOMATION_EVENT_PAYLOAD")
+    if not raw:
+        return None
+    try:
+        outer = json.loads(raw)
+    except Exception as exc:
+        print(f"Could not parse AUTOMATION_EVENT_PAYLOAD: {exc}")
+        return None
+    payload = (outer.get("event") or {}).get("payload")
+    return payload if isinstance(payload, dict) else None
+
+
+def _entry_for(repo_full_name: str) -> dict | None:
+    """Map a payload's repository onto its REPOS entry. The org webhook
+    delivers every repo in the org, so most events are not ours."""
+    for entry in REPOS:
+        if entry.get("repo", "").lower() == (repo_full_name or "").lower():
+            return entry
+    return None
 
 
 def _state_key() -> str:
@@ -1641,10 +1697,10 @@ def _check_conversation_completion(
 def _process_repo(
     repo_entry: dict, github_token: str, agent_url: str, api_key: str,
 ) -> str | None:
-    """Poll one repository end-to-end: reconcile in-flight reviews, then
+    """Sweep one repository end-to-end: reconcile in-flight reviews, then
     evaluate every open PR through the deterministic gates. Each repo has
     its own KV state key, so this is isolated from every other repo."""
-    global _CURRENT
+    global _CURRENT, _CI_PENDING
     _CURRENT = dict(repo_entry)
     repo = _cfg("repo", REPO)
     print(f"\n=== {repo} ===")
@@ -1750,9 +1806,11 @@ def _process_repo(
                 # Don't record this: a commit still being built (or a CI
                 # status we failed to determine, e.g. a transient GitHub API
                 # error) is often superseded by another push within minutes,
-                # so re-check next poll rather than spend an AI review or a
-                # Slack ping on it.
-                print(f"  PR #{pr['number']}: CI {ci} at {head_sha[:12]}; will re-check next poll")
+                # so re-check on a later sweep rather than spend an AI review
+                # or a Slack ping on it. Flagging it is what makes that later
+                # sweep happen -- no cron will come back for this commit.
+                _CI_PENDING = True
+                print(f"  PR #{pr['number']}: CI {ci} at {head_sha[:12]}; will re-check this run")
                 continue
             if ci == "failed":
                 _notify_ci_failing(github_token, state, fresh_pr, head_sha)
@@ -1781,19 +1839,81 @@ def _process_repo(
     return last_conversation_id
 
 
+def _drive_repo(
+    repo_entry: dict, github_token: str, agent_url: str, api_key: str,
+) -> str | None:
+    """Sweep the repo, then keep sweeping while something is worth waiting
+    for, within this run's budget.
+
+    Waiting is what replaces the cron. Two states justify another pass: CI
+    that had not finished on some PR's head commit, and a review conversation
+    that has not reached a terminal state. Neither has an event we receive,
+    so if this run gives up on them the work waits for the repo's next
+    `pull_request` delivery.
+
+    A pass that finds nothing pending returns immediately, so the common case
+    (an event on a repo with no CI in flight and no active review) costs one
+    sweep, not the whole budget.
+    """
+    global _CI_PENDING
+    deadline = time.time() + PR_INLINE_WAIT_BUDGET
+    last_conversation_id = None
+
+    while True:
+        _CI_PENDING = False
+        conv_id = _process_repo(repo_entry, github_token, agent_url, api_key)
+        if conv_id:
+            last_conversation_id = conv_id
+
+        state, _ = _load_state()
+        waiting_on = []
+        if _CI_PENDING:
+            waiting_on.append("CI")
+        if state["active"]:
+            waiting_on.append(f"{len(state['active'])} review(s)")
+        if not waiting_on:
+            return last_conversation_id
+        if time.time() + PR_INLINE_POLL_INTERVAL >= deadline:
+            print(f"  Still waiting on {', '.join(waiting_on)} at the "
+                  f"{PR_INLINE_WAIT_BUDGET}s budget; the next event for this "
+                  "repo picks it up")
+            return last_conversation_id
+
+        print(f"  Waiting on {', '.join(waiting_on)}; re-sweeping in "
+              f"{PR_INLINE_POLL_INTERVAL}s")
+        time.sleep(PR_INLINE_POLL_INTERVAL)
+
+
 def main() -> str | None:
     _require_kv()
     agent_url = os.environ.get("AGENT_SERVER_URL", "").rstrip("/")
     api_key = _get_env_key()
     github_token = _resolve_github_token()
 
+    payload = _load_event()
+    if payload is None:
+        # Manual dispatch (or a malformed payload): sweep everything, which is
+        # also how to drain the backlog after an outage.
+        print("No event payload; sweeping every managed repo")
+        entries = list(REPOS)
+    else:
+        repo_full = (payload.get("repository") or {}).get("full_name") or ""
+        entry = _entry_for(repo_full)
+        if entry is None:
+            print(f"Ignoring event for unmanaged repo {repo_full!r}")
+            return None
+        pr_number = (payload.get("pull_request") or {}).get("number")
+        print(f"Event for {repo_full}: action={payload.get('action')!r} "
+              f"pr=#{pr_number}")
+        entries = [entry]
+
     last_conversation_id = None
-    for repo_entry in REPOS:
-        # A failure on one repo must never stop the others from being polled.
+    for repo_entry in entries:
+        # A failure on one repo must never stop the others being processed.
         # KV/token errors that are genuinely fatal for all repos (e.g. no
         # GITHUB_TOKEN) surface from _resolve_github_token before the loop.
         try:
-            conv_id = _process_repo(repo_entry, github_token, agent_url, api_key)
+            conv_id = _drive_repo(repo_entry, github_token, agent_url, api_key)
             if conv_id:
                 last_conversation_id = conv_id
         except Exception as exc:

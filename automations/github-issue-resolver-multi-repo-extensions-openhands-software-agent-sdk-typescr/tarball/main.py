@@ -1,8 +1,29 @@
 """
 GitHub Issue Resolver (multi-repo) - OpenHands Automation Script
 
-Polls multiple GitHub repositories for open issues currently assigned to
-`@all-hands-bot` and attempts to resolve each one:
+Event-driven: one run per GitHub webhook delivery, no cron. Two event shapes
+drive the two jobs the old 5-minute poll used to do on every tick:
+
+  * `issues` / action `assigned`  -> pick the issue up
+  * `push` to `openhands/issue-*` -> the agent pushed, so finalize it
+
+Every run *also* reconciles that repo's in-flight resolutions before handling
+its own event. That is what replaces the clock: a resolution that finishes
+after its own run has exited is closed out by the next event in that repo,
+whatever that event happens to be. A repo that goes completely silent is the
+one case where an orphan lingers, which is the accepted trade for dropping the
+poll (see `_process_repo`).
+
+Runs are capped at 1800s by the service, so `_wait_for_repo` blocks for at most
+INLINE_WAIT_BUDGET and then hands off to that reconcile path rather than being
+SIGTERM'd mid-finalize.
+
+The event payload arrives as AUTOMATION_EVENT_PAYLOAD. It is NOT deduplicated
+by the service (custom webhooks record `provider_event_id` as NULL), so GitHub
+redeliveries reach us as fresh events and every path below stays idempotent
+through the KV `seen` / `active` state.
+
+For each issue picked up:
 
   1. Only issues assigned by a trusted actor (an org member/collaborator on
      this repo) are worked on. If the assigner is not trusted, a plain
@@ -25,9 +46,12 @@ Polls multiple GitHub repositories for open issues currently assigned to
      posts an explanatory comment instead.
 
 Each repository is processed independently with its own per-repo KV state key
-(state-v1:<repo-slug>), exactly like running one automation per repo, but from
-a single cron. Any field below can be overridden per-entry in REPOS; omitted
+(state-v1:<repo-slug>), so issue numbers and state buckets never collide across
+repositories. Any field below can be overridden per-entry in REPOS; omitted
 fields fall back to the module-level defaults.
+
+The org webhook feeding this delivers events for *every* repo in the org, so
+an event whose repository is not in REPOS is dropped immediately.
 """
 
 import json
@@ -44,8 +68,8 @@ from pathlib import Path
 # Each repo is processed independently with its own per-repo KV state key
 # (state-v1:<repo-slug>), so issue numbers / assigners / state buckets never
 # collide across repositories - exactly like running one automation per repo,
-# but from a single cron. Any field below can be overridden per-entry; omitted
-# fields fall back to the module-level defaults.
+# but from one shared org webhook. Any field below can be overridden
+# per-entry; omitted fields fall back to the module-level defaults.
 REPOS = [
     {"repo": "OpenHands/extensions"},
     {"repo": "OpenHands/OpenHands"},
@@ -77,6 +101,14 @@ DONE_DEBOUNCE = 15
 CAS_RETRIES = 8
 TERMINAL_STATUSES = {"idle", "finished", "error", "stuck"}
 
+# The service caps a run at 1800s and SIGTERMs it there. Wait well inside that
+# so finalizing (branch check, PR creation, comments) still has room; anything
+# slower is picked up by a later event's reconcile pass instead.
+INLINE_WAIT_BUDGET = 1500
+INLINE_POLL_INTERVAL = 15
+# Branch a push must touch for it to mean "the agent pushed work for an issue".
+PUSH_REF_PREFIX = "refs/heads/"
+
 # Per-repo context, set at the start of each repo's processing in main().
 # All repo-specific behaviour reads from here so the GitHub calls and CAS
 # state act on the correct repository. It is only mutated once per repo
@@ -98,6 +130,45 @@ def _state_key() -> str:
 
 def log(*args: object) -> None:
     print(f"[{time.strftime('%H:%M:%S')}]", *args, flush=True)
+
+
+# ── Incoming event ───────────────────────────────────────────────────────────
+# AUTOMATION_EVENT_PAYLOAD wraps the delivery as {"event": {"payload": ...}}
+# for a custom webhook source. Absent means the run was dispatched by hand, in
+# which case main() falls back to reconciling every repo.
+
+
+def _load_event() -> dict | None:
+    raw = os.environ.get("AUTOMATION_EVENT_PAYLOAD")
+    if not raw:
+        return None
+    try:
+        outer = json.loads(raw)
+    except Exception as exc:
+        print(f"Could not parse AUTOMATION_EVENT_PAYLOAD: {exc}")
+        return None
+    event = outer.get("event") or {}
+    payload = event.get("payload")
+    return payload if isinstance(payload, dict) else None
+
+
+def _entry_for(repo_full_name: str) -> dict | None:
+    """Map a payload's repository onto its REPOS entry, or None if the org
+    webhook delivered an event for a repo this automation does not manage."""
+    for entry in REPOS:
+        if entry.get("repo", "").lower() == (repo_full_name or "").lower():
+            return entry
+    return None
+
+
+def _push_branch(payload: dict) -> str | None:
+    """Branch name for a push delivery, or None if this is not one."""
+    ref = payload.get("ref")
+    if not isinstance(ref, str) or "issue" in payload:
+        return None
+    if not ref.startswith(PUSH_REF_PREFIX):
+        return None
+    return ref[len(PUSH_REF_PREFIX):]
 
 
 # ── Agent server / secrets ──────────────────────────────────────────────────
@@ -122,8 +193,8 @@ def get_secret(name: str) -> str:
 def fire_callback(status: str = "COMPLETED", error: str | None = None,
                    conversation_id: str | None = None) -> None:
     """Tell the automation service this run is done. Without this, every run
-    stays shown as RUNNING forever in the run history - cron keeps firing on
-    schedule regardless, but the status is misleading for anyone watching."""
+    stays shown as RUNNING forever in the run history - later events still fire
+    regardless, but the status is misleading for anyone watching."""
     url = os.environ.get("AUTOMATION_CALLBACK_URL", "")
     if not url:
         return
@@ -804,7 +875,7 @@ def _check_resolution_completion(record: dict, read_token: str, write_token: str
 def _process_repo(
     repo_entry: dict, read_token: str, write_token: str,
 ) -> str | None:
-    """Poll one repository end-to-end: reconcile in-flight resolutions, then
+    """Process one repository end-to-end: reconcile in-flight resolutions, then
     evaluate every assigned issue through the trust gate. Each repo has its
     own KV state key, so this is isolated from every other repo."""
     global _CURRENT
@@ -814,13 +885,13 @@ def _process_repo(
     print(f"\n=== {repo} ===")
     # A 401 here is a real misconfiguration (HTTPError) and must surface as a
     # hard failure. But a transient connection failure to api.github.com should
-    # skip this repo and let the next cron retry, not fail the whole run.
+    # skip this repo and let a later event retry, not fail the whole run.
     try:
         repo_info = _verify_token_and_repo(read_token, repo)
     except urllib.error.HTTPError:
         raise
     except Exception as exc:
-        print(f"  Skipping {repo}: could not reach GitHub to verify token ({exc}); will retry next poll")
+        print(f"  Skipping {repo}: could not reach GitHub to verify token ({exc}); will retry on a later event")
         return None
     base_branch = repo_info.get("default_branch", "main")
 
@@ -845,7 +916,7 @@ def _process_repo(
         try:
             assigner = _find_assigner(read_token, repo, number, bot_username)
             if not assigner:
-                print(f"  Issue #{number}: could not determine who assigned the bot; skipping this poll")
+                print(f"  Issue #{number}: could not determine who assigned the bot; skipping this event")
                 continue
             resolution_key = _resolution_key(number, assigner)
             state, _ = _load_state()
@@ -865,7 +936,7 @@ def _process_repo(
                 # Post something the moment the assignment is recognized as
                 # legitimate, decoupled from whether the repo clone /
                 # conversation setup actually succeeds on the first try (or
-                # even gets a free capacity slot this poll) - otherwise a run
+                # even gets a free capacity slot on this event) - otherwise a run
                 # of setup failures or a busy queue leaves the issue looking
                 # completely ignored until either a success or the final
                 # give-up comment, which can be many minutes away.
@@ -886,10 +957,53 @@ def _process_repo(
                 last_conversation_id = conv_id
         except Exception as exc:
             # One issue's failure must not stop every other assigned issue
-            # from being evaluated in the same poll, and must not fail the
+            # from being evaluated in the same run, and must not fail the
             # whole run.
             print(f"  Warning: failed evaluating issue #{number}: {exc}")
     return last_conversation_id
+
+
+def _wait_for_repo(repo_entry: dict, read_token: str, write_token: str) -> None:
+    """Block while this repo has in-flight resolutions, finalizing each as it
+    reaches a terminal state, until the run's time budget runs out.
+
+    Staying in-process is what lets a resolution open its PR in the same run
+    that started it, instead of waiting for the next unrelated event. When the
+    budget expires the records are simply left active -- the reconcile pass at
+    the top of `_process_repo` closes them out on a later event.
+    """
+    global _CURRENT
+    _CURRENT = dict(repo_entry)
+    repo = _cfg("repo", "")
+
+    state, _ = _load_state()
+    if not state["active"]:
+        return
+    try:
+        base_branch = _verify_token_and_repo(read_token, repo).get("default_branch", "main")
+    except Exception as exc:
+        print(f"  Not waiting on {repo}: could not reach GitHub ({exc})")
+        return
+
+    deadline = time.time() + INLINE_WAIT_BUDGET
+    while time.time() < deadline:
+        time.sleep(INLINE_POLL_INTERVAL)
+        state, _ = _load_state()
+        records = list(state["active"].values())
+        if not records:
+            print(f"  {repo}: all resolutions finalized")
+            return
+        for record in records:
+            try:
+                _check_resolution_completion(record, read_token, write_token, repo, base_branch)
+            except Exception as exc:
+                print(f"  Warning: completion check failed for "
+                      f"{record.get('resolution_key')}: {exc}")
+
+    state, _ = _load_state()
+    if state["active"]:
+        print(f"  {repo}: {len(state['active'])} resolution(s) still running at the "
+              f"{INLINE_WAIT_BUDGET}s budget; a later event for this repo finishes them")
 
 
 def main() -> str | None:
@@ -897,13 +1011,36 @@ def main() -> str | None:
     read_token = _resolve_github_read_token()
     write_token = _resolve_github_token()
 
+    payload = _load_event()
+    if payload is None:
+        # Manual dispatch (or a malformed payload): fall back to sweeping every
+        # managed repo, which is also the way to drain work after an outage.
+        print("No event payload; sweeping every managed repo")
+        entries = list(REPOS)
+    else:
+        repo_full = (payload.get("repository") or {}).get("full_name") or ""
+        entry = _entry_for(repo_full)
+        if entry is None:
+            # The org webhook delivers every repo in the org; most are not ours.
+            print(f"Ignoring event for unmanaged repo {repo_full!r}")
+            return None
+        branch = _push_branch(payload)
+        print(f"Event for {repo_full}: action={payload.get('action')!r}"
+              + (f" branch={branch!r}" if branch else ""))
+        entries = [entry]
+
     last_conversation_id = None
-    for repo_entry in REPOS:
-        # A failure on one repo must never stop the others from being polled.
+    for repo_entry in entries:
+        # A failure on one repo must never stop the others being processed.
         try:
             conv_id = _process_repo(repo_entry, read_token, write_token)
             if conv_id:
+                # Only wait on work this run actually started. Waiting whenever
+                # the repo has anything in flight would pin a sandbox for the
+                # full budget on every event in a burst, all watching the same
+                # resolutions that one run is already waiting on.
                 last_conversation_id = conv_id
+                _wait_for_repo(repo_entry, read_token, write_token)
         except Exception as exc:
             repo = repo_entry.get("repo", "?")
             print(f"Error processing {repo}: {exc}")

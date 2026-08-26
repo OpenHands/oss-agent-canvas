@@ -1,4 +1,23 @@
-"""Reliable GitHub issue triage poller for OpenHands repositories."""
+"""Reliable GitHub issue triage for OpenHands repositories.
+
+Multi-repo and event-driven: one run per `issues` webhook delivery, no cron.
+Each run sweeps the whole 48h window for the delivering repo, so it does not
+matter which issue the event named -- any qualifying delivery re-evaluates
+everything outstanding. That is also why the trigger subscribes to `opened`,
+`reopened` and `unlabeled` but deliberately NOT `labeled`: the triage agent
+applies labels itself, and `labeled` would make every triage re-trigger this
+automation once per label applied.
+
+Deliveries are not deduplicated or retried by the service, so an event that
+is lost costs latency, not coverage -- the next issue event in that repo
+picks the work up. Applied labels are the real state: `needs_triage` reads
+them from GitHub, so a re-run after lost KV state simply finds nothing to do.
+
+REPO below is the repo currently being processed, set once per repo in
+main(); every helper reads it, which keeps the prompt and API paths pointed
+at the right repository. State and lock keys are per-repo so the two repos
+cannot clobber each other inside this automation's single KV namespace.
+"""
 
 import json
 import os
@@ -10,17 +29,34 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 
-CONFIG = json.loads((Path(__file__).with_name("config.json")).read_text())
-REPO = CONFIG["repo"]
+REPOS = [
+    "OpenHands/OpenHands",
+    "OpenHands/software-agent-sdk",
+]
+# The repo currently being processed. Set per repo in main(); read by the
+# helpers below so their GitHub paths and the triage prompt stay in step.
+REPO = ""
 RECONCILE_HOURS = 48
 MAX_STARTS_PER_RUN = 3
 MAX_ATTEMPTS = 4
 RETRY_DELAYS = (300, 900, 3600, 10800)
 MAX_RECORDS = 5000
 TERMINAL_STATUSES = {"finished", "idle", "error", "stuck", "stopped"}
-STATE_KEY = "state-v3"
-LOCK_KEY = "run-lock-v3"
+STATE_KEY_PREFIX = "state-v3"
+LOCK_KEY_PREFIX = "run-lock-v3"
 LOCK_TTL_SECONDS = 300
+
+
+def repo_slug():
+    return REPO.replace("/", "__")
+
+
+def state_key():
+    return f"{STATE_KEY_PREFIX}:{repo_slug()}"
+
+
+def lock_key():
+    return f"{LOCK_KEY_PREFIX}:{repo_slug()}"
 
 
 def env_key():
@@ -100,15 +136,15 @@ def kv_set(key, value, nx=False):
 def acquire_lock(now):
     if not kv_available():
         return True
-    lock = kv_get(LOCK_KEY)
+    lock = kv_get(lock_key())
     if lock:
         expires_at = datetime.fromisoformat(lock["expires_at"])
         if expires_at > now:
             return False
-        kv_delete(LOCK_KEY)
+        kv_delete(lock_key())
     try:
         kv_set(
-            LOCK_KEY,
+            lock_key(),
             {"run_id": os.environ.get("AUTOMATION_RUN_ID", ""), "expires_at": (now + timedelta(seconds=LOCK_TTL_SECONDS)).isoformat()},
             nx=True,
         )
@@ -134,14 +170,14 @@ def kv_delete(key):
 
 def release_lock():
     if kv_available():
-        kv_delete(LOCK_KEY)
+        kv_delete(lock_key())
 
 
 def state_path():
     payload = json.loads(os.environ.get("AUTOMATION_EVENT_PAYLOAD", "{}"))
     automation_id = payload.get("automation_id", "default")
     root = Path(os.environ.get("WORKSPACE_BASE", Path.home() / ".openhands"))
-    path = root.parent / "automation-state" / f"issue-triage-v3-{automation_id}.json"
+    path = root.parent / "automation-state" / f"issue-triage-v3-{automation_id}-{repo_slug()}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -152,7 +188,7 @@ def default_state():
 
 def load_state():
     if kv_available():
-        return kv_get(STATE_KEY) or default_state()
+        return kv_get(state_key()) or default_state()
     path = state_path()
     return json.loads(path.read_text()) if path.exists() else default_state()
 
@@ -166,7 +202,7 @@ def save_state(state):
         keep = sorted(records, key=lambda key: records[key].get("updated_at", ""))[-MAX_RECORDS:]
         state["issues"] = {key: records[key] for key in keep}
     if kv_available():
-        kv_set(STATE_KEY, state)
+        kv_set(state_key(), state)
     else:
         path = state_path()
         temp = path.with_suffix(".tmp")
@@ -407,15 +443,76 @@ def run_locked(now):
     return started[-1] if started else None
 
 
-def main():
-    now = datetime.now(timezone.utc)
+def load_event():
+    """The webhook delivery, or None when the run was dispatched by hand.
+
+    AUTOMATION_EVENT_PAYLOAD wraps it as {"event": {"payload": ...}} for a
+    custom webhook source.
+    """
+    raw = os.environ.get("AUTOMATION_EVENT_PAYLOAD")
+    if not raw:
+        return None
+    try:
+        outer = json.loads(raw)
+    except Exception as exc:
+        print(f"Could not parse AUTOMATION_EVENT_PAYLOAD: {exc}")
+        return None
+    payload = (outer.get("event") or {}).get("payload")
+    return payload if isinstance(payload, dict) else None
+
+
+def repo_for(full_name):
+    """Match a payload's repository to one this automation manages. The org
+    webhook delivers every repo in the org, so most events are not ours."""
+    for repo in REPOS:
+        if repo.lower() == (full_name or "").lower():
+            return repo
+    return None
+
+
+def process_repo(repo, now):
+    global REPO
+    REPO = repo
+    print(f"\n=== {REPO} ===")
+    # The lock is per-repo, so concurrent events for different repos do not
+    # block each other; two events for the same repo still serialize.
     if not acquire_lock(now):
-        print("Another poller run holds the lock; skipping this overlapping run")
+        print("Another run holds this repo's lock; skipping this overlapping run")
         return None
     try:
         return run_locked(now)
     finally:
         release_lock()
+
+
+def main():
+    now = datetime.now(timezone.utc)
+    payload = load_event()
+    if payload is None:
+        # Manual dispatch (or a malformed payload): sweep everything, which is
+        # also how to drain the backlog after an outage.
+        print("No event payload; sweeping every managed repo")
+        repos = list(REPOS)
+    else:
+        full_name = (payload.get("repository") or {}).get("full_name") or ""
+        repo = repo_for(full_name)
+        if repo is None:
+            print(f"Ignoring event for unmanaged repo {full_name!r}")
+            return None
+        number = (payload.get("issue") or {}).get("number")
+        print(f"Event for {full_name}: action={payload.get('action')!r} issue=#{number}")
+        repos = [repo]
+
+    last_conversation_id = None
+    for repo in repos:
+        # A failure on one repo must never stop the other being processed.
+        try:
+            conversation_id = process_repo(repo, now)
+            if conversation_id:
+                last_conversation_id = conversation_id
+        except Exception as exc:
+            print(f"Error processing {repo}: {exc}")
+    return last_conversation_id
 
 
 if __name__ == "__main__":
