@@ -1,16 +1,16 @@
-enabled: false
+enabled: true
 entrypoint: python3 main.py
-keep_alive: null
+keep_alive: false
 model: null
-name: 'GitHub Issue Resolver: OpenHands/software-agent-sdk for @all-hands-bot'
+name: 'Stale Issue Nudge (multi-repo): OpenHands, software-agent-sdk'
 preset_metadata: null
 prompt: null
 setup_script_path: null
 tarball_source:
   type: internal
   url: null
-timeout: 1200
+timeout: 300
 trigger:
-  schedule: '*/5 * * * *'
+  schedule: 0 15 * * 2,5
   timezone: UTC
   type: cron

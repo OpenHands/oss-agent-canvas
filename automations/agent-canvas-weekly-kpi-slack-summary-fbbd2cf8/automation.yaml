@@ -125,7 +125,7 @@ tarball_executables:
 tarball_source:
   type: internal
   url: null
-timeout: 600
+timeout: 1800
 trigger:
   schedule: 0 9 * * 1
   timezone: America/New_York

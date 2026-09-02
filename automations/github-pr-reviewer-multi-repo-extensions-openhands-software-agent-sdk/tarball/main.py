@@ -56,17 +56,16 @@ deliberately decoupled from head_sha entirely.
 """
 
 import hashlib
-import io
 import json
 import os
 import re
 import shutil
+import subprocess
 import sys
-import tarfile
 import time
 import urllib.error
 import urllib.request
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from urllib.parse import urlencode
 
 # Capture the original urlopen before any call sites are rewritten to the
@@ -174,6 +173,28 @@ MAX_SLACK_HISTORY_PAGES = 3
 # Same bounding rationale as MAX_SEEN_REVIEWS, applied to the per-PR
 # CI-failure / description-check / Slack-notice buckets below.
 MAX_EVALUATED_ENTRIES = 500
+
+# Entry counts alone do NOT bound the stored state. The service enforces its
+# KV limit on the automation's whole document, and this automation keeps one
+# namespaced entry per repo in REPOS inside that single document - so the
+# ceiling is shared by every repo, while each sweep can only see and write
+# its own namespace. Five repos times three 500-entry buckets overran the
+# 64 KB cap on 2026-08-24; every write after that was rejected with 413, and
+# because claiming a review slot IS a state write, no review could be started
+# in any repo. Give each namespace a fair share of the document and trim to
+# fit before writing, so one busy repo cannot wedge the others.
+KV_DOCUMENT_LIMIT = 64 * 1024
+KV_BUDGET_SAFETY = 0.85
+PER_REPO_STATE_BUDGET = int(KV_DOCUMENT_LIMIT * KV_BUDGET_SAFETY / max(len(REPOS), 1))
+# Buckets sacrificed, oldest first, when a namespace is over budget - in the
+# order they may be given up. Every one of these is re-derivable from GitHub,
+# so dropping an entry costs at most one redundant check: the CI and
+# description notices are looked up on the PR and edited in place, a dropped
+# slack_notified is backstopped by the Slack history scan, and a dropped
+# seen_reviews key is caught by _matching_review_exists before any second
+# review is spent. `active` is never trimmed - it is in-flight work, and
+# losing it strands a running review.
+TRIMMABLE_BUCKETS = ("evaluated", "description_checks", "slack_notified", "seen_reviews")
 
 DONE_DEBOUNCE = 15
 MAX_ACTIVE_AGE = 2 * 60 * 60
@@ -387,6 +408,38 @@ def _compact_slack_notified(raw: dict | None) -> dict:
     return trimmed
 
 
+def _state_size(state: dict) -> int:
+    """Serialized size of one namespace, measured the way the service
+    measures the document it belongs to."""
+    return len(json.dumps(state).encode("utf-8"))
+
+
+def _fit_to_budget(state: dict, budget: int = PER_REPO_STATE_BUDGET) -> dict:
+    """Drop the oldest entries until this namespace fits `budget`.
+
+    Buckets are given up in TRIMMABLE_BUCKETS order and only as far as
+    necessary, so a repo that fits keeps its full history. Entries are
+    removed in chunks rather than one at a time: re-serializing per element
+    over a 500-entry bucket is quadratic, and this runs on every save.
+    """
+    if _state_size(state) <= budget:
+        return state
+    for bucket in TRIMMABLE_BUCKETS:
+        while _state_size(state) > budget:
+            value = state.get(bucket)
+            if not value:
+                break  # exhausted; fall through to the next bucket
+            drop = max(1, len(value) // 10)
+            if isinstance(value, list):
+                del value[:drop]
+            elif isinstance(value, dict):
+                for key in list(value)[:drop]:
+                    value.pop(key, None)
+            else:
+                break
+    return state
+
+
 def _compact_state(value: dict | None) -> dict:
     """Normalise stored state to version 7.
 
@@ -493,7 +546,7 @@ def _compact_state(value: dict | None) -> dict:
             for k in ("review_key", "status", "completed_at", "previous_status")
             if k in last_completed
         }
-    return state
+    return _fit_to_budget(state)
 
 
 def _load_state() -> tuple[dict, int]:
@@ -517,6 +570,20 @@ def _save_state(state: dict, version: int) -> bool:
     except urllib.error.HTTPError as exc:
         if exc.code in (409, 412):
             return False
+        if exc.code == 413:
+            # This namespace is within its share but the document is still
+            # over the cap, so another repo is oversized (or the limit was
+            # lowered). Surrender our own headroom and retry once: an
+            # unwritable state means no review can ever be claimed, and the
+            # per-PR handler in _process_repo would otherwise swallow this
+            # and report the run COMPLETED with nothing done.
+            print(
+                f"  KV document over its {KV_DOCUMENT_LIMIT}-byte limit; "
+                f"halving {_cfg('repo', REPO)} state and retrying once"
+            )
+            shrunk = _fit_to_budget(_compact_state(state), PER_REPO_STATE_BUDGET // 2)
+            _kv_request("PUT", suffix, shrunk)
+            return True
         raise
 
 
@@ -894,6 +961,179 @@ def _matching_review_exists(token: str, pr_number: int, head_sha: str) -> bool:
     return False
 
 
+def _matching_review_state(
+    token: str, pr_number: int, head_sha: str
+) -> str | None:
+    """Return the GitHub review state (e.g. APPROVED, COMMENTED,
+    CHANGES_REQUESTED) for the trigger reviewer's review at head_sha, or
+    None when no matching review exists. Used to validate that the agent
+    posted the instructed review event, not a silently-accepted APPROVE."""
+    if not head_sha:
+        return None
+    repo = _cfg("repo", REPO)
+    reviewer = _cfg("trigger_reviewer", TRIGGER_REVIEWER).lower()
+    reviews = _github_paginate(token, f"/repos/{repo}/pulls/{pr_number}/reviews")
+    for review in reviews:
+        if (review.get("user") or {}).get("login", "").lower() != reviewer:
+            continue
+        if review.get("commit_id") == head_sha:
+            return review.get("state")
+    return None
+
+
+def _dismiss_review(
+    token: str, pr_number: int, head_sha: str, state: str
+) -> None:
+    """Dismiss the trigger reviewer's review at head_sha so it cannot serve as
+    a gatekeeping approval. The prompt instructs `event: COMMENT`; an APPROVED
+    review is the wrong decision and must not stand."""
+    if not head_sha:
+        return
+    repo = _cfg("repo", REPO)
+    reviewer = _cfg("trigger_reviewer", TRIGGER_REVIEWER).lower()
+    reviews = _github_paginate(token, f"/repos/{repo}/pulls/{pr_number}/reviews")
+    for review in reviews:
+        if (review.get("user") or {}).get("login", "").lower() != reviewer:
+            continue
+        if review.get("commit_id") != head_sha:
+            continue
+        review_id = review.get("id")
+        if not review_id:
+            continue
+        try:
+            _github_request(
+                token, "PUT",
+                f"/repos/{repo}/pulls/{pr_number}/reviews/{review_id}/dismissals",
+                body={"message": "Automated review used the wrong decision (APPROVED instead of COMMENT) and is dismissed. Findings are reposted as a comment."},
+            )
+            print(f"  Dismissed review {review_id} on PR #{pr_number}")
+        except Exception as exc:
+            print(f"  Warning: could not dismiss review {review_id} on PR #{pr_number}: {exc}")
+
+
+# Budgets for the diff injected into the review prompt. Keeping the diff in
+# the prompt (rather than leaving the agent to discover it via ad-hoc API
+# calls against a history-less tarball) is what binds the review to the
+# actual PR. A missing or wrong diff is the root cause of reviews that
+# describe an unrelated change.
+MAX_TOTAL_DIFF = 100_000
+MAX_PER_FILE_PATCH = 20_000
+
+
+def _get_pr_files(token: str, pr_number: int) -> list[dict]:
+    """Fetch every file in the PR via /pulls/{n}/files, paginating until a
+    short page is returned. Each entry carries filename, status, +/- counts,
+    and the `patch` text (absent for binary/too-large files)."""
+    repo = _cfg("repo", REPO)
+    files: list[dict] = []
+    page = 1
+    while True:
+        path = f"/repos/{repo}/pulls/{pr_number}/files?per_page=100&page={page}"
+        page_files, _ = _github_request(token, "GET", path)
+        if not isinstance(page_files, list) or not page_files:
+            break
+        files.extend(page_files)
+        if len(page_files) < 100:
+            break
+        page += 1
+    return files
+
+
+def _format_files_manifest(files: list[dict]) -> str:
+    """Build the 'Files Changed' manifest shown before the patch block. Every
+    file appears exactly once regardless of patch budget; the patch block may
+    abbreviate individual patches, the manifest never does."""
+    if not files:
+        return "## Files Changed\n\n_(no files reported by GitHub)_\n"
+    total_add = sum((f.get("additions") or 0) for f in files)
+    total_del = sum((f.get("deletions") or 0) for f in files)
+    lines = [
+        f"## Files Changed ({len(files)} files, +{total_add} / -{total_del})\n",
+        "All files in the PR are listed here. If a file's patch is missing or "
+        "abbreviated in the Patches section below, read the file from the "
+        "workspace (it is checked out) rather than treating it as absent.\n",
+    ]
+    for f in files:
+        path = f.get("filename", "?")
+        status = (f.get("status") or "").lower()
+        tag = f"[{status}]" if status else ""
+        adds = f.get("additions", 0) or 0
+        dels = f.get("deletions", 0) or 0
+        stats = f"+{adds}/-{dels}" if (adds or dels) else ""
+        suffix = ""
+        if not f.get("patch") and (adds or dels):
+            suffix = "(binary or unavailable, no patch)"
+        bits = [f"- `{path}`", tag, stats, suffix]
+        lines.append(" ".join(b for b in bits if b))
+    return "\n".join(lines) + "\n"
+
+
+def _format_patches(files: list[dict]) -> str:
+    """Assemble per-file patches into a single diff block within budget. Every
+    file gets at least its diff header; patches are abbreviated per-file and
+    then by total budget, with inline markers so the agent can tell a short
+    patch from a missing one."""
+    sections: list[str] = []
+    total = 0
+    for f in files:
+        path = f.get("filename", "?")
+        previous = f.get("previous_filename")
+        status = (f.get("status") or "").lower()
+        header_lines = [f"diff --git a/{previous or path} b/{path}"]
+        if status == "renamed":
+            header_lines.append(f"rename from {previous}")
+            header_lines.append(f"rename to {path}")
+        if status == "added":
+            header_lines.append("new file")
+        elif status == "removed":
+            header_lines.append("deleted file")
+        header = "\n".join(header_lines) + "\n"
+
+        remaining = MAX_TOTAL_DIFF - total
+        if remaining <= len(header):
+            sections.append(
+                header
+                + f"[patch omitted: total budget of {MAX_TOTAL_DIFF:,} chars reached; "
+                f"read `{path}` from the workspace to inspect]\n"
+            )
+            total += len(sections[-1])
+            continue
+
+        patch = f.get("patch") or ""
+        if not patch:
+            note = ""
+            if status not in {"added", "removed"} or (f.get("additions") or f.get("deletions")):
+                note = "[no patch available — likely binary or unrepresentable as text]\n"
+            sections.append(header + note)
+            total += len(sections[-1])
+            continue
+
+        cap = min(MAX_PER_FILE_PATCH, remaining - len(header))
+        cut = patch
+        truncated = False
+        if len(patch) > cap:
+            cut_at = patch.rfind("\n", 0, cap)
+            cut = patch[: cut_at if cut_at > 0 else cap]
+            truncated = True
+        section = header + cut
+        if not section.endswith("\n"):
+            section += "\n"
+        if truncated:
+            section += (
+                f"[patch abbreviated: {len(patch):,} chars total, showing first "
+                f"{len(cut):,}; read `{path}` from the workspace to inspect the rest]\n"
+            )
+        sections.append(section)
+        total += len(section)
+    return "\n".join(sections)
+
+
+def _get_pr_diff_payload(token: str, pr_number: int) -> tuple[str, str]:
+    """Fetch PR files and produce (manifest, patches) for the prompt."""
+    files = _get_pr_files(token, pr_number)
+    return _format_files_manifest(files), _format_patches(files)
+
+
 def _ci_status(token: str, repo: str, head_sha: str) -> str:
     """Returns "running", "failed", "clear", or "unknown" for the given commit.
 
@@ -1017,69 +1257,50 @@ def _checkout_path(pr_number: int, head_sha: str) -> Path:
 
 
 def _prepare_repository(github_token: str, pr_number: int, head_sha: str) -> Path:
+    """Prepare a real git checkout at the PR's head SHA.
+
+    A git checkout (not a tarball snapshot) is used so the agent can run
+    `git diff`, `git log`, and `git show` to self-verify what the PR changed
+    and ground its review in the actual diff. The tarball approach left the
+    agent with no git history and no way to locally verify the workspace
+    matched the stated SHA, which contributed to reviews for unrelated PRs.
+    """
     repo = _cfg("repo", REPO)
     checkout = _checkout_path(pr_number, head_sha)
     if checkout.exists():
         shutil.rmtree(checkout)
     checkout.mkdir(parents=True)
 
-    url = f"https://api.github.com/repos/{repo}/tarball/{head_sha}"
-    req = urllib.request.Request(
-        url,
-        headers={
-            "Authorization": f"Bearer {github_token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-    )
+    # Use the token-bearing URL for the fetch only, then remove the remote so
+    # the credential is never left in the repo config for the agent to see.
+    authed_url = f"https://x-access-token:{github_token}@github.com/{repo}.git"
     try:
-        with _retry_urlopen(req, timeout=HTTP_TIMEOUT) as response:
-            archive = tarfile.open(fileobj=io.BytesIO(response.read()), mode="r:gz")
-        with archive:
-            members = archive.getmembers()
-            roots = {
-                PurePosixPath(member.name).parts[0]
-                for member in members
-                if PurePosixPath(member.name).parts
-            }
-            if len(roots) != 1:
-                raise RuntimeError("Repository archive has an unexpected layout")
-            root = next(iter(roots))
-            skipped_links = 0
-            for member in members:
-                path = PurePosixPath(member.name)
-                if not path.parts or path.parts[0] != root:
-                    raise RuntimeError("Repository archive contains an invalid path")
-                relative = PurePosixPath(*path.parts[1:])
-                if not relative.parts:
-                    continue
-                if relative.is_absolute() or ".." in relative.parts:
-                    raise RuntimeError("Repository archive contains path traversal")
-                if member.issym() or member.islnk() or member.isdev():
-                    # Repositories legitimately contain symlinks. Reviewing does
-                    # not need them, and materialising them risks escaping the
-                    # checkout, so skip rather than reject the whole archive.
-                    skipped_links += 1
-                    continue
-                destination = checkout.joinpath(*relative.parts)
-                if member.isdir():
-                    destination.mkdir(parents=True, exist_ok=True)
-                    continue
-                if not member.isfile():
-                    continue
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                source = archive.extractfile(member)
-                if source is None:
-                    raise RuntimeError(f"Could not read archive member {member.name}")
-                with source, destination.open("wb") as target:
-                    shutil.copyfileobj(source, target)
-                destination.chmod(member.mode & 0o777)
+        subprocess.run(
+            ["git", "init", str(checkout)],
+            check=True, capture_output=True, timeout=30,
+        )
+        subprocess.run(
+            ["git", "-C", str(checkout), "remote", "add", "origin", authed_url],
+            check=True, capture_output=True, timeout=30,
+        )
+        subprocess.run(
+            ["git", "-C", str(checkout), "fetch", "--depth=1", "origin", head_sha],
+            check=True, capture_output=True, timeout=HTTP_TIMEOUT,
+        )
+        subprocess.run(
+            ["git", "-C", str(checkout), "checkout", head_sha],
+            check=True, capture_output=True, timeout=30,
+        )
+        # Detached HEAD at the exact SHA; no branch needed. Remove the remote
+        # so the token-bearing URL is never left in the repo config.
+        subprocess.run(
+            ["git", "-C", str(checkout), "remote", "remove", "origin"],
+            capture_output=True, timeout=10,
+        )
     except Exception:
         shutil.rmtree(checkout, ignore_errors=True)
         raise
 
-    if skipped_links:
-        print(f"  Skipped {skipped_links} link/device entries while extracting")
     if not (checkout / "AGENTS.md").is_file():
         print(f"  Warning: {repo} has no root AGENTS.md at {head_sha[:12]}")
     return checkout
@@ -1509,7 +1730,12 @@ def _load_repo_review_guide(workspace_dir: Path) -> str | None:
     return None
 
 
-def _build_review_prompt(pr: dict, head_sha: str, repo_review_guide: str | None = None) -> str:
+def _build_review_prompt(
+    pr: dict, head_sha: str,
+    repo_review_guide: str | None = None,
+    files_manifest: str = "",
+    patches: str = "",
+) -> str:
     repo = _cfg("repo", REPO)
     review_tone = _cfg("review_tone", REVIEW_TONE)
     style_instructions = _cfg("review_style_instructions", REVIEW_STYLE_INSTRUCTIONS)
@@ -1531,8 +1757,19 @@ def _build_review_prompt(pr: dict, head_sha: str, repo_review_guide: str | None 
         f"\n\nRepo-specific review guide (from {_cfg('repo_review_guide_path', REPO_REVIEW_GUIDE_PATH)}):\n---\n{repo_review_guide}\n---\n"
         if repo_review_guide else ""
     )
+    # The diff is injected directly so the review is bound to the actual PR
+    # changes, not left to be reconstructed by the agent against a
+    # history-less workspace. Individual patches may be abbreviated (look for
+    # `[patch abbreviated: ...]`) or omitted (look for `[patch omitted: ...]`)
+    # when they exceed the per-file or total budget. Files in the manifest
+    # whose patch is missing are still in the PR — read them from the
+    # workspace. Do not flag them as missing from the PR.
+    diff_section = ""
+    if files_manifest or patches:
+        diff_section = f"\n{files_manifest}\n## Patches\n\n```diff\n{patches}\n```\n"
 
     return (
+        "/codereview\n\n"
         "Review the GitHub pull request below and publish the review directly "
         "to GitHub. Do not modify files or push commits.\n\n"
         f"Repository : {repo}\n"
@@ -1550,9 +1787,9 @@ def _build_review_prompt(pr: dict, head_sha: str, repo_review_guide: str | None 
         "   - If all-hands-bot has NEVER reviewed, OR the head SHA is newer than all-hands-bot's most recent review's commit_id (the author pushed new commits since) → PROCEED to review.\n"
         "In other words, skip if no commits happened on the PR since the last review.\n\n"
         "Required workflow:\n"
-        "1. The workspace is already the repository root at the exact Head SHA above. Do not clone, fetch, check out, or delete the repository.\n"
+        "1. The workspace is already the repository root at the exact Head SHA above, checked out as a real git repository (detached HEAD). Do not clone, fetch, push, or check out other branches. You may use `git log`, `git show`, and `git diff` to inspect history and changes.\n"
         "2. Follow the automatically loaded AGENTS.md guidance and applicable repository/public skills.\n"
-        "3. Inspect the PR description, discussion, existing reviews, changed files, diff, and relevant surrounding code.\n"
+        "3. Inspect the PR description, discussion, existing reviews, the diff provided below, and relevant surrounding code in the workspace.\n"
         "   Use `gh` or GitHub REST API calls with `GITHUB_TOKEN`; never print secret values.\n"
         "4. Ground every finding in the workspace code. Before using an inline location, verify that the path and line are part of the PR diff.\n"
         "5. Publish one GitHub pull-request review using `POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews`.\n"
@@ -1562,7 +1799,7 @@ def _build_review_prompt(pr: dict, head_sha: str, repo_review_guide: str | None 
         "6. If a finding cannot be attached to a valid changed line, include it in the review body. If the review API rejects inline positions, retry by posting all findings in the review body.\n"
         "7. Introduce yourself with this disclosure in the first sentence of the review body: `_This review was created by an AI agent (OpenHands) on behalf of the repository maintainers._`\n"
         "8. If no material issues exist, still post a review body saying the change has no material findings, with the risk assessment and disclosure.\n"
-        f"\nReview instructions:\n{tone}{extra}{guide_section}\n\n"
+        f"\nReview instructions:\n{tone}{extra}{guide_section}{diff_section}\n\n"
         "After GitHub accepts the review, output exactly `GITHUB_REVIEW_POSTED`. "
         "If posting fails after the required fallback, output the complete review text so the caller can post it as a PR comment."
     )
@@ -1581,7 +1818,17 @@ def _process_review_request(
         repo_review_guide = _load_repo_review_guide(workspace_dir)
         if repo_review_guide:
             print(f"  Injected repo review guide for PR #{number}")
-        conv_id = create_conversation(agent_url, api_key, _build_review_prompt(pr, head_sha, repo_review_guide), workspace_dir)
+        files_manifest, patches = "", ""
+        try:
+            files_manifest, patches = _get_pr_diff_payload(github_token, number)
+            print(f"  Injected diff for PR #{number}: {len(files_manifest)+len(patches):,} chars")
+        except Exception as exc:
+            print(f"  Warning: could not fetch diff for PR #{number}: {exc}")
+        conv_id = create_conversation(
+            agent_url, api_key,
+            _build_review_prompt(pr, head_sha, repo_review_guide, files_manifest, patches),
+            workspace_dir,
+        )
     except Exception as exc:
         # Free the slot instead of holding it for manual reconciliation. The
         # key is not in the seen list yet, so the next run retries it; holding
@@ -1678,6 +1925,7 @@ def _check_conversation_completion(
     # Trust the GitHub API, not the agent's sentinel: reviews have been
     # reported as posted when no review existed on the PR.
     review_landed = _matching_review_exists(github_token, pr_number, reviewed_sha)
+    review_state = _matching_review_state(github_token, pr_number, reviewed_sha)
     if status in {"error", "stuck"}:
         _post_github_comment(github_token, _cfg("repo", REPO), pr_number, _with_ai_disclosure(
             f"⚠️ **OpenHands PR Reviewer encountered a problem** at commit `{reviewed_sha[:12]}` "
@@ -1686,8 +1934,18 @@ def _check_conversation_completion(
         _post_github_comment(github_token, _cfg("repo", REPO), pr_number, _with_ai_disclosure(
             final or f"✅ **OpenHands completed the review for commit `{reviewed_sha[:12]}`.** No review text was produced."))
         print(f"  PR #{pr_number}: no review found on GitHub; posted the result as a comment")
+    elif review_state == "APPROVED":
+        # The prompt instructs `event: COMMENT`. An APPROVED review with a
+        # non-empty body indicates the agent described findings but then
+        # submitted APPROVE — the wrong review decision. Dismiss the review so
+        # it cannot serve as a gatekeeping approval, and post the findings as a
+        # comment so the author still sees them.
+        print(f"  PR #{pr_number}: review landed as APPROVED (expected COMMENT); dismissing and reposting as comment")
+        _dismiss_review(github_token, pr_number, reviewed_sha, review_state)
+        _post_github_comment(github_token, _cfg("repo", REPO), pr_number, _with_ai_disclosure(
+            final or "⚠️ The automated review was submitted with the wrong decision (APPROVED instead of COMMENT) and has been dismissed. Findings are reposted above."))
     else:
-        print(f"  PR #{pr_number}: review confirmed on GitHub")
+        print(f"  PR #{pr_number}: review confirmed on GitHub (state={review_state})")
     # Clearing the request is what takes the PR out of GitHub's "review
     # requested" list; it no longer affects whether we act on the PR.
     _remove_review_request(github_token, pr_number)
