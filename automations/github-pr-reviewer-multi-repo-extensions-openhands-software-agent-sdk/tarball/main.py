@@ -964,24 +964,15 @@ def _matching_review_exists(token: str, pr_number: int, head_sha: str) -> bool:
     return any(r.get("commit_id") == head_sha for r in _bot_reviews(token, pr_number))
 
 
-# States that decide a review. COMMENTED is deliberately absent: on GitHub a
-# later comment does not retract an earlier approval.
+# COMMENTED is absent: a later comment does not retract an earlier approval.
 _DECISIVE_REVIEW_STATES = {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
 
 
 def _standing_approval(token: str, pr_number: int) -> dict | None:
     """The bot's approval that currently gates this PR, or None.
 
-    GitHub counts a reviewer's most recent *decisive* review, and an approval
-    goes on counting after the head moves. Neither half of what this replaced
-    answered that question. Taking the first review at the head SHA returned
-    COMMENTED and stopped when an APPROVED followed it at the same SHA, and
-    filtering on the head SHA at all hid an approval left on a commit the
-    branch had since moved past. Both left a bot approval standing.
-
-    So walk every review the bot has left, oldest first, and keep the last
-    decisive one: APPROVED leaves an approval standing, CHANGES_REQUESTED and
-    DISMISSED clear it, COMMENTED changes nothing either way.
+    Mirrors GitHub: the last decisive review wins, and an approval keeps
+    counting after the head moves, so there is no head-SHA filter here.
     """
     standing = None
     for review in _bot_reviews(token, pr_number):
@@ -991,8 +982,6 @@ def _standing_approval(token: str, pr_number: int) -> dict | None:
     return standing
 
 
-# A failed dismissal leaves the approval gating the PR, so it is worth a
-# couple of attempts before the caller has to announce the failure.
 DISMISS_ATTEMPTS = 3
 _DISMISS_MESSAGE = (
     "Automated review used the wrong decision (APPROVED instead of COMMENT) "
@@ -1001,12 +990,7 @@ _DISMISS_MESSAGE = (
 
 
 def _dismiss_review(token: str, pr_number: int, review: dict) -> bool:
-    """Dismiss one of the bot's reviews. Returns whether it is gone.
-
-    Failure used to be swallowed by a warning print, so a run could report a
-    completed review while the approval it meant to remove stayed standing.
-    The caller now says so on the PR instead.
-    """
+    """Dismiss one of the bot's reviews. Returns whether it is gone."""
     repo = _cfg("repo", REPO)
     review_id = review.get("id")
     if not review_id:
@@ -1025,10 +1009,8 @@ def _dismiss_review(token: str, pr_number: int, review: dict) -> bool:
                   f"(attempt {attempt + 1}/{DISMISS_ATTEMPTS}): {exc}")
             if attempt < DISMISS_ATTEMPTS - 1:
                 time.sleep(2 ** attempt)
-    # A dismissal that landed but whose response was lost is indistinguishable
-    # from one that never landed, and the retry then fails on an already
-    # dismissed review. Ask GitHub what the state actually is rather than
-    # announcing a failure that would send the author after nothing.
+    # A lost response looks like a failed dismissal, and the retry then fails
+    # on an already dismissed review; ask GitHub for the actual state.
     try:
         still_approving = any(
             r.get("id") == review_id and (r.get("state") or "").upper() == "APPROVED"
@@ -1044,13 +1026,7 @@ def _dismiss_review(token: str, pr_number: int, review: dict) -> bool:
 
 
 def _dismiss_superseded_approval(token: str, pr_number: int) -> None:
-    """Clear a bot approval stranded on a commit the branch has moved past.
-
-    The head moving is what strands these: the review that produced the
-    approval is dropped as stale without anything looking at what it left on
-    the PR, so the approval goes on gating a merge at a commit no review ever
-    covered.
-    """
+    """Clear a bot approval stranded on a commit the branch has moved past."""
     try:
         approval = _standing_approval(token, pr_number)
     except Exception as exc:
@@ -1955,9 +1931,7 @@ def _check_conversation_completion(
         return
     current_sha = _head_sha(current_pr)
     if current_sha and reviewed_sha and current_sha != reviewed_sha:
-        # Dropping the review is not enough: if it already approved, that
-        # approval outlives the commit it was made against and still gates
-        # the merge.
+        # Dropping the review leaves any approval it made still gating merge.
         _dismiss_superseded_approval(github_token, pr_number)
         _finish_review(rec, "stale", github_token, agent_url, api_key,
                        stale_reason=f"head changed from {reviewed_sha} to {current_sha}")
@@ -1995,13 +1969,9 @@ def _check_conversation_completion(
             final or f"✅ **OpenHands completed the review for commit `{reviewed_sha[:12]}`.** No review text was produced."))
         print(f"  PR #{pr_number}: no review found on GitHub; posted the result as a comment")
     elif standing_approval is not None:
-        # The prompt instructs `event: COMMENT`, so a standing bot approval is
-        # the wrong decision and must not gate the merge. Two different things
-        # reach here. Either the review just posted WAS the approval, and its
-        # findings still have to reach the author as a comment; or the review
-        # for this commit landed correctly and the approval is left over from
-        # an earlier one, in which case there is nothing to repost and doing so
-        # would duplicate a review that is already on the PR.
+        # The prompt instructs `event: COMMENT`, so a bot approval must not
+        # gate the merge. Repost the findings only when the approval is this
+        # commit's review; otherwise the real review already landed.
         approved_this_commit = standing_approval.get("commit_id") == reviewed_sha
         print(f"  PR #{pr_number}: bot approval {standing_approval.get('id')} stands "
               f"({'this commit' if approved_this_commit else 'an earlier commit'}); dismissing")
