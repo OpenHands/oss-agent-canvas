@@ -3,7 +3,7 @@ entrypoint: python3 main.py
 keep_alive: null
 model: null
 name: 'Fix Failing Version Bump (dependabot): extensions, OpenHands, software-agent-sdk,
-  typescript-client, automation'
+  automation, enterprise'
 preset_metadata: null
 prompt: null
 setup_script_path: null

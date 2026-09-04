@@ -2,7 +2,8 @@ enabled: true
 entrypoint: .venv/bin/python main.py
 keep_alive: false
 model: gpt-5.6-sol
-name: 'Weekly AGENTS.md relevance review (multi-repo): OpenHands, software-agent-sdk'
+name: 'Weekly AGENTS.md relevance review (multi-repo): extensions, OpenHands, software-agent-sdk,
+  automation, enterprise'
 preset_metadata: null
 prompt: null
 setup_script_path: setup.sh

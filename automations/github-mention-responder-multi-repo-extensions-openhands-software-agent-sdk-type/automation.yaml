@@ -3,7 +3,7 @@ entrypoint: python3 main.py
 keep_alive: null
 model: null
 name: 'GitHub Mention Responder (multi-repo): extensions, OpenHands, software-agent-sdk,
-  typescript-client, automation'
+  automation, enterprise'
 preset_metadata: null
 prompt: null
 setup_script_path: null
@@ -12,8 +12,9 @@ tarball_source:
   url: null
 timeout: 1800
 trigger:
-  destination: continue_conversation
-  filter: contains(['OpenHands/extensions','OpenHands/OpenHands','OpenHands/software-agent-sdk','OpenHands/typescript-client','OpenHands/automation'],
+  destination: dispatch_run
+  filter: contains(['OpenHands/extensions', 'OpenHands/OpenHands', 'OpenHands/software-agent-sdk',
+    'OpenHands/automation', 'OpenHands/enterprise', 'OpenHands/saas-deploy', 'OpenHands/evaluation'],
     repository.full_name) && contains(['VascoSch92'], sender.login) && ((action ==
     'created' && contains(keys(@), 'comment') && icontains(comment.body || '', '@all-hands-bot'))
     || (action == 'opened' && contains(keys(@), 'issue') && !contains(keys(@), 'comment')
@@ -23,5 +24,6 @@ trigger:
     && icontains(review.body || '', '@all-hands-bot')))
   'on': '*'
   source: github-events
-  subject_key_expr: join('/', [repository.full_name, to_string(issue.number || pull_request.number)])
+  subject_key_expr: null
+  turn_text_expr: null
   type: event

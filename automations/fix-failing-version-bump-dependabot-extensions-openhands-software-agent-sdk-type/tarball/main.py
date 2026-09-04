@@ -29,8 +29,8 @@ REPOS = [
     {"repo": "OpenHands/extensions"},
     {"repo": "OpenHands/OpenHands"},
     {"repo": "OpenHands/software-agent-sdk"},
-    {"repo": "OpenHands/typescript-client"},
     {"repo": "OpenHands/automation"},
+    {"repo": "OpenHands/enterprise"},
 ]
 
 DEPENDABOT_LOGIN = "dependabot[bot]"

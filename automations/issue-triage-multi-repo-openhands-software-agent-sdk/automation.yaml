@@ -2,7 +2,8 @@ enabled: true
 entrypoint: python3 main.py
 keep_alive: null
 model: null
-name: 'Issue Triage (multi-repo): OpenHands, software-agent-sdk'
+name: 'Issue Triage (multi-repo): extensions, OpenHands, software-agent-sdk, automation,
+  enterprise'
 preset_metadata: null
 prompt: null
 setup_script_path: null
@@ -12,10 +13,12 @@ tarball_source:
 timeout: 600
 trigger:
   destination: dispatch_run
-  filter: contains(['OpenHands/OpenHands','OpenHands/software-agent-sdk'], repository.full_name)
-    && contains(keys(@), 'issue') && !contains(keys(@), 'comment') && contains(['opened','reopened','unlabeled'],
-    action)
+  filter: contains(['OpenHands/extensions', 'OpenHands/OpenHands', 'OpenHands/software-agent-sdk',
+    'OpenHands/automation', 'OpenHands/enterprise', 'OpenHands/saas-deploy', 'OpenHands/evaluation'],
+    repository.full_name) && contains(keys(@), 'issue') && !contains(keys(@), 'comment')
+    && contains(['opened','reopened','unlabeled'], action)
   'on': '*'
   source: github-events
   subject_key_expr: null
+  turn_text_expr: null
   type: event

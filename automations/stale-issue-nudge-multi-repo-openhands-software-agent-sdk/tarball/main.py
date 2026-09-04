@@ -1,8 +1,6 @@
 """Stale issue nudge (+ auto-close where enabled) across multiple repositories.
 
-Merges the two previously separate single-repo automations. The two repos do
-NOT behave identically, so behaviour is driven by per-repo config in REPOS
-rather than being flattened:
+Behaviour is driven by per-repo config in REPOS rather than being flattened:
 
   OpenHands/OpenHands
     Nudge only. This repo has no MAINTAINERS/CODEOWNERS file and a large
@@ -18,15 +16,18 @@ rather than being flattened:
     Issues labeled with anything in `exempt_labels` are never closed (but are
     still nudged).
 
+  OpenHands/extensions, OpenHands/automation, OpenHands/enterprise
+    Nudge only, same conservative policy as OpenHands/OpenHands.
+
 Both actions are restricted to issues (not PRs). Because posting a comment
 bumps GitHub's `updated_at`, an issue naturally won't qualify again until it
 has been quiet for another NUDGE_INACTIVITY_DAYS - no separate dedup state.
 
 Each repository is processed independently: a failure on one (for example the
 transient `HTTP Error 403: Forbidden` these runs periodically hit) must not
-cost the other repository its run, because before the merge they were separate
-automations. Failures are collected and re-raised at the end so the run is
-still reported as FAILED.
+cost the other repositories their run, because before the merge they were
+separate automations. Failures are collected and re-raised at the end so the
+run is still reported as FAILED.
 """
 
 import base64
@@ -41,6 +42,11 @@ from datetime import datetime, timedelta, timezone
 
 REPOS = [
     {
+        "repo": "OpenHands/extensions",
+        "close_enabled": False,
+        "mention_maintainers": False,
+    },
+    {
         "repo": "OpenHands/OpenHands",
         "close_enabled": False,
         "mention_maintainers": False,
@@ -50,6 +56,16 @@ REPOS = [
         "close_enabled": True,
         "mention_maintainers": True,
         "exempt_labels": {"roadmap", "backlog", "tracker"},
+    },
+    {
+        "repo": "OpenHands/automation",
+        "close_enabled": False,
+        "mention_maintainers": False,
+    },
+    {
+        "repo": "OpenHands/enterprise",
+        "close_enabled": False,
+        "mention_maintainers": False,
     },
 ]
 

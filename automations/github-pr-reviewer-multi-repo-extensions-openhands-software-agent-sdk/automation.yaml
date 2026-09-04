@@ -3,7 +3,7 @@ entrypoint: python3 main.py
 keep_alive: null
 model: null
 name: 'GitHub PR Reviewer (multi-repo): extensions, OpenHands, software-agent-sdk,
-  typescript-client, automation'
+  automation, enterprise'
 preset_metadata: null
 prompt: null
 setup_script_path: null
@@ -13,11 +13,13 @@ tarball_source:
 timeout: 1800
 trigger:
   destination: dispatch_run
-  filter: contains(['OpenHands/extensions','OpenHands/OpenHands','OpenHands/software-agent-sdk','OpenHands/typescript-client','OpenHands/automation'],
+  filter: contains(['OpenHands/extensions', 'OpenHands/OpenHands', 'OpenHands/software-agent-sdk',
+    'OpenHands/automation', 'OpenHands/enterprise', 'OpenHands/saas-deploy', 'OpenHands/evaluation'],
     repository.full_name) && contains(keys(@), 'pull_request') && !contains(keys(@),
     'comment') && !contains(keys(@), 'review') && contains(['opened','reopened','synchronize','ready_for_review','review_requested'],
     action)
   'on': '*'
   source: github-events
   subject_key_expr: null
+  turn_text_expr: null
   type: event
