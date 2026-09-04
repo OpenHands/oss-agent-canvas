@@ -1025,6 +1025,21 @@ def _dismiss_review(token: str, pr_number: int, review: dict) -> bool:
                   f"(attempt {attempt + 1}/{DISMISS_ATTEMPTS}): {exc}")
             if attempt < DISMISS_ATTEMPTS - 1:
                 time.sleep(2 ** attempt)
+    # A dismissal that landed but whose response was lost is indistinguishable
+    # from one that never landed, and the retry then fails on an already
+    # dismissed review. Ask GitHub what the state actually is rather than
+    # announcing a failure that would send the author after nothing.
+    try:
+        still_approving = any(
+            r.get("id") == review_id and (r.get("state") or "").upper() == "APPROVED"
+            for r in _bot_reviews(token, pr_number)
+        )
+    except Exception:
+        return False
+    if not still_approving:
+        print(f"  Review {review_id} on PR #{pr_number} is no longer approving; "
+              f"treating the dismissal as done")
+        return True
     return False
 
 
@@ -1980,22 +1995,31 @@ def _check_conversation_completion(
             final or f"✅ **OpenHands completed the review for commit `{reviewed_sha[:12]}`.** No review text was produced."))
         print(f"  PR #{pr_number}: no review found on GitHub; posted the result as a comment")
     elif standing_approval is not None:
-        # The prompt instructs `event: COMMENT`. A standing APPROVED review is
-        # the wrong decision and must not gate the merge, so dismiss it and
-        # post the findings as a comment so the author still sees them.
+        # The prompt instructs `event: COMMENT`, so a standing bot approval is
+        # the wrong decision and must not gate the merge. Two different things
+        # reach here. Either the review just posted WAS the approval, and its
+        # findings still have to reach the author as a comment; or the review
+        # for this commit landed correctly and the approval is left over from
+        # an earlier one, in which case there is nothing to repost and doing so
+        # would duplicate a review that is already on the PR.
+        approved_this_commit = standing_approval.get("commit_id") == reviewed_sha
         print(f"  PR #{pr_number}: bot approval {standing_approval.get('id')} stands "
-              f"(expected COMMENT); dismissing and reposting as comment")
-        body = final or (
-            "⚠️ The automated review was submitted with the wrong decision "
-            "(APPROVED instead of COMMENT) and has been dismissed. Findings are "
-            "reposted above.")
-        if not _dismiss_review(github_token, pr_number, standing_approval):
-            body += (
-                "\n\n⚠️ **The approving review could not be dismissed.** It is still "
-                "standing and should be dismissed manually before this pull request "
-                "is merged on the strength of it.")
-        _post_github_comment(github_token, _cfg("repo", REPO), pr_number,
-                             _with_ai_disclosure(body))
+              f"({'this commit' if approved_this_commit else 'an earlier commit'}); dismissing")
+        dismissed = _dismiss_review(github_token, pr_number, standing_approval)
+        body = ""
+        if approved_this_commit:
+            body = final or (
+                "⚠️ The automated review was submitted with the wrong decision "
+                "(APPROVED instead of COMMENT) and has been dismissed. Findings are "
+                "reposted above.")
+        if not dismissed:
+            body = (body + "\n\n" if body else "") + (
+                "⚠️ **An automated approving review could not be dismissed.** It is "
+                "still standing and should be dismissed manually before this pull "
+                "request is merged on the strength of it.")
+        if body:
+            _post_github_comment(github_token, _cfg("repo", REPO), pr_number,
+                                 _with_ai_disclosure(body))
     else:
         print(f"  PR #{pr_number}: review confirmed on GitHub, no standing bot approval")
     # Clearing the request is what takes the PR out of GitHub's "review
