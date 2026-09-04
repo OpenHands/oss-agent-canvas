@@ -1002,68 +1002,100 @@ def _post_or_update_comment(token: str, pr_number: int, comment_id, body: str) -
         return None
 
 
+def _bot_reviews(token: str, pr_number: int) -> list[dict]:
+    """Every review the trigger reviewer has left on a PR, oldest first."""
+    repo = _cfg("repo", REPO)
+    reviewer = _cfg("trigger_reviewer", TRIGGER_REVIEWER).lower()
+    return [
+        review
+        for review in _github_paginate(token, f"/repos/{repo}/pulls/{pr_number}/reviews")
+        if (review.get("user") or {}).get("login", "").lower() == reviewer
+    ]
+
+
 def _matching_review_exists(token: str, pr_number: int, head_sha: str) -> bool:
     if not head_sha:
         return False
+    return any(r.get("commit_id") == head_sha for r in _bot_reviews(token, pr_number))
+
+
+# COMMENTED is absent: a later comment does not retract an earlier approval.
+_DECISIVE_REVIEW_STATES = {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
+
+
+def _standing_approval(token: str, pr_number: int) -> dict | None:
+    """The bot's approval that currently gates this PR, or None.
+
+    Mirrors GitHub: the last decisive review wins, and an approval keeps
+    counting after the head moves, so there is no head-SHA filter here.
+    """
+    standing = None
+    for review in _bot_reviews(token, pr_number):
+        state = (review.get("state") or "").upper()
+        if state in _DECISIVE_REVIEW_STATES:
+            standing = review if state == "APPROVED" else None
+    return standing
+
+
+DISMISS_ATTEMPTS = 3
+_DISMISS_MESSAGE = (
+    "Automated review used the wrong decision (APPROVED instead of COMMENT) "
+    "and is dismissed. Findings are reposted as a comment."
+)
+
+
+def _dismiss_review(token: str, pr_number: int, review: dict) -> bool:
+    """Dismiss one of the bot's reviews. Returns whether it is gone."""
     repo = _cfg("repo", REPO)
-    reviewer = _cfg("trigger_reviewer", TRIGGER_REVIEWER).lower()
-    reviews = _github_paginate(token, f"/repos/{repo}/pulls/{pr_number}/reviews")
-    for review in reviews:
-        if (review.get("user") or {}).get("login", "").lower() != reviewer:
-            continue
-        if review.get("commit_id") == head_sha:
-            return True
-    return False
-
-
-def _matching_review_state(
-    token: str, pr_number: int, head_sha: str
-) -> str | None:
-    """Return the GitHub review state (e.g. APPROVED, COMMENTED,
-    CHANGES_REQUESTED) for the trigger reviewer's review at head_sha, or
-    None when no matching review exists. Used to validate that the agent
-    posted the instructed review event, not a silently-accepted APPROVE."""
-    if not head_sha:
-        return None
-    repo = _cfg("repo", REPO)
-    reviewer = _cfg("trigger_reviewer", TRIGGER_REVIEWER).lower()
-    reviews = _github_paginate(token, f"/repos/{repo}/pulls/{pr_number}/reviews")
-    for review in reviews:
-        if (review.get("user") or {}).get("login", "").lower() != reviewer:
-            continue
-        if review.get("commit_id") == head_sha:
-            return review.get("state")
-    return None
-
-
-def _dismiss_review(
-    token: str, pr_number: int, head_sha: str, state: str
-) -> None:
-    """Dismiss the trigger reviewer's review at head_sha so it cannot serve as
-    a gatekeeping approval. The prompt instructs `event: COMMENT`; an APPROVED
-    review is the wrong decision and must not stand."""
-    if not head_sha:
-        return
-    repo = _cfg("repo", REPO)
-    reviewer = _cfg("trigger_reviewer", TRIGGER_REVIEWER).lower()
-    reviews = _github_paginate(token, f"/repos/{repo}/pulls/{pr_number}/reviews")
-    for review in reviews:
-        if (review.get("user") or {}).get("login", "").lower() != reviewer:
-            continue
-        if review.get("commit_id") != head_sha:
-            continue
-        review_id = review.get("id")
-        if not review_id:
-            continue
+    review_id = review.get("id")
+    if not review_id:
+        return False
+    for attempt in range(DISMISS_ATTEMPTS):
         try:
             _github_request(
                 token, "PUT",
                 f"/repos/{repo}/pulls/{pr_number}/reviews/{review_id}/dismissals",
-                body={"message": "Automated review used the wrong decision (APPROVED instead of COMMENT) and is dismissed. Findings are reposted as a comment."},
+                body={"message": _DISMISS_MESSAGE},
             )
             print(f"  Dismissed review {review_id} on PR #{pr_number}")
+            return True
         except Exception as exc:
-            print(f"  Warning: could not dismiss review {review_id} on PR #{pr_number}: {exc}")
+            print(f"  Warning: could not dismiss review {review_id} on PR #{pr_number} "
+                  f"(attempt {attempt + 1}/{DISMISS_ATTEMPTS}): {exc}")
+            if attempt < DISMISS_ATTEMPTS - 1:
+                time.sleep(2 ** attempt)
+    # A lost response looks like a failed dismissal, and the retry then fails
+    # on an already dismissed review; ask GitHub for the actual state.
+    try:
+        still_approving = any(
+            r.get("id") == review_id and (r.get("state") or "").upper() == "APPROVED"
+            for r in _bot_reviews(token, pr_number)
+        )
+    except Exception:
+        return False
+    if not still_approving:
+        print(f"  Review {review_id} on PR #{pr_number} is no longer approving; "
+              f"treating the dismissal as done")
+        return True
+    return False
+
+
+def _dismiss_superseded_approval(token: str, pr_number: int) -> None:
+    """Clear a bot approval stranded on a commit the branch has moved past."""
+    try:
+        approval = _standing_approval(token, pr_number)
+    except Exception as exc:
+        print(f"  Warning: could not check PR #{pr_number} for a standing approval: {exc}")
+        return
+    if approval is None:
+        return
+    print(f"  PR #{pr_number}: bot approval {approval.get('id')} still stands on a "
+          f"superseded commit; dismissing")
+    if not _dismiss_review(token, pr_number, approval):
+        _post_github_comment(token, _cfg("repo", REPO), pr_number, _with_ai_disclosure(
+            "⚠️ An earlier automated **approval** on this pull request could not "
+            "be dismissed automatically. It does not reflect a review of the "
+            "current commit and should be dismissed manually before merging."))
 
 
 # Budgets for the diff injected into the review prompt. Keeping the diff in
@@ -1954,6 +1986,8 @@ def _check_conversation_completion(
         return
     current_sha = _head_sha(current_pr)
     if current_sha and reviewed_sha and current_sha != reviewed_sha:
+        # Dropping the review leaves any approval it made still gating merge.
+        _dismiss_superseded_approval(github_token, pr_number)
         _finish_review(rec, "stale", github_token, agent_url, api_key,
                        stale_reason=f"head changed from {reviewed_sha} to {current_sha}")
         return
@@ -1980,7 +2014,7 @@ def _check_conversation_completion(
     # Trust the GitHub API, not the agent's sentinel: reviews have been
     # reported as posted when no review existed on the PR.
     review_landed = _matching_review_exists(github_token, pr_number, reviewed_sha)
-    review_state = _matching_review_state(github_token, pr_number, reviewed_sha)
+    standing_approval = _standing_approval(github_token, pr_number)
     if status in {"error", "stuck"}:
         _post_github_comment(github_token, _cfg("repo", REPO), pr_number, _with_ai_disclosure(
             f"⚠️ **OpenHands PR Reviewer encountered a problem** at commit `{reviewed_sha[:12]}` "
@@ -1989,18 +2023,30 @@ def _check_conversation_completion(
         _post_github_comment(github_token, _cfg("repo", REPO), pr_number, _with_ai_disclosure(
             final or f"✅ **OpenHands completed the review for commit `{reviewed_sha[:12]}`.** No review text was produced."))
         print(f"  PR #{pr_number}: no review found on GitHub; posted the result as a comment")
-    elif review_state == "APPROVED":
-        # The prompt instructs `event: COMMENT`. An APPROVED review with a
-        # non-empty body indicates the agent described findings but then
-        # submitted APPROVE — the wrong review decision. Dismiss the review so
-        # it cannot serve as a gatekeeping approval, and post the findings as a
-        # comment so the author still sees them.
-        print(f"  PR #{pr_number}: review landed as APPROVED (expected COMMENT); dismissing and reposting as comment")
-        _dismiss_review(github_token, pr_number, reviewed_sha, review_state)
-        _post_github_comment(github_token, _cfg("repo", REPO), pr_number, _with_ai_disclosure(
-            final or "⚠️ The automated review was submitted with the wrong decision (APPROVED instead of COMMENT) and has been dismissed. Findings are reposted above."))
+    elif standing_approval is not None:
+        # The prompt instructs `event: COMMENT`, so a bot approval must not
+        # gate the merge. Repost the findings only when the approval is this
+        # commit's review; otherwise the real review already landed.
+        approved_this_commit = standing_approval.get("commit_id") == reviewed_sha
+        print(f"  PR #{pr_number}: bot approval {standing_approval.get('id')} stands "
+              f"({'this commit' if approved_this_commit else 'an earlier commit'}); dismissing")
+        dismissed = _dismiss_review(github_token, pr_number, standing_approval)
+        body = ""
+        if approved_this_commit:
+            body = final or (
+                "⚠️ The automated review was submitted with the wrong decision "
+                "(APPROVED instead of COMMENT) and has been dismissed. Findings are "
+                "reposted above.")
+        if not dismissed:
+            body = (body + "\n\n" if body else "") + (
+                "⚠️ **An automated approving review could not be dismissed.** It is "
+                "still standing and should be dismissed manually before this pull "
+                "request is merged on the strength of it.")
+        if body:
+            _post_github_comment(github_token, _cfg("repo", REPO), pr_number,
+                                 _with_ai_disclosure(body))
     else:
-        print(f"  PR #{pr_number}: review confirmed on GitHub (state={review_state})")
+        print(f"  PR #{pr_number}: review confirmed on GitHub, no standing bot approval")
     # Clearing the request is what takes the PR out of GitHub's "review
     # requested" list; it no longer affects whether we act on the PR.
     _remove_review_request(github_token, pr_number)
