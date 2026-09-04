@@ -108,11 +108,30 @@ def _retry_urlopen(req, timeout=None, attempts=4):
 # repositories - exactly like running one automation per repo, but from a
 # single cron. Any field below can be overridden per-entry; omitted fields
 # fall back to the module-level defaults.
+# This list and the automation's trigger filter must name the same repos.
+# They are two halves of one decision and drifted apart: the trigger was
+# widened to seven repos while this stayed at five, so events for the three it
+# gained reached `_entry_for`, matched nothing, and exited having done nothing.
+# Adding a repo means adding it in BOTH places, with a Slack channel for the
+# "needs a human" path below.
+#
+# Deliberately NOT covered, so the next reader does not re-add them as a
+# tidy-up:
+#   OpenHands/saas-deploy, OpenHands/evaluation -- both private. Reviewing them
+#     from this VM points an OSS-scoped token at private code, which is a
+#     decision to take explicitly rather than by widening a filter.
+#   OpenHands/enterprise -- public, so the token is not the obstacle, but it
+#     has no Slack channel for the untrusted-contributor path, which would
+#     silently drop those PRs instead of escalating them.
+# See OpenHands/automation#418 section A4.
+#
+# OpenHands/typescript-client was archived into software-agent-sdk on
+# 2026-08-30 and is gone from both halves; its leftover state is cleaned up by
+# RETIRED_STATE_SLUGS below.
 REPOS = [
     {"repo": "OpenHands/extensions", "slack_channel_id": "C0A6U0HTD7X"},
     {"repo": "OpenHands/OpenHands", "slack_channel_id": "C06QT0AGY4W"},
     {"repo": "OpenHands/software-agent-sdk", "slack_channel_id": "C06R25BT5B2"},
-    {"repo": "OpenHands/typescript-client", "slack_channel_id": "C06R25BT5B2"},
     {"repo": "OpenHands/automation", "slack_channel_id": "C0ALCEFB7AQ"},
 ]
 
@@ -317,6 +336,42 @@ def _kv_request(method: str, suffix: str, body: dict | None = None) -> dict:
     with _retry_urlopen(req, timeout=30) as response:
         raw = response.read()
         return json.loads(raw) if raw else {}
+
+
+# A repo dropped from REPOS leaves its `state-v6:` key behind in this
+# automation's KV document, where nothing will ever trim it again: the
+# per-repo budget only applies to a repo still being swept. That dead weight
+# then sits on top of the live budget, and an oversized document is how every
+# review in every repo got wedged behind 413s on 2026-08-24. Delete retired
+# keys instead of leaving them to accumulate.
+RETIRED_STATE_SLUGS = (
+    "OpenHands__typescript-client",  # archived into software-agent-sdk, 2026-08-30
+)
+
+
+def _delete_retired_state() -> None:
+    """Best-effort removal of the state keys of repos no longer in REPOS.
+
+    A 404 is the normal steady state once a key has been removed, so it is
+    not worth reporting. Nothing here is fatal: failing to reclaim the space
+    is worse than the run not starting only if it is left unnoticed, and the
+    next run tries again.
+    """
+    for slug in RETIRED_STATE_SLUGS:
+        key = f"state-v6:{slug}"
+        request = urllib.request.Request(
+            f"{_KV_BASE}/v1/kv/{key}",
+            headers={"Authorization": f"Bearer {_KV_TOKEN}"},
+            method="DELETE",
+        )
+        try:
+            with _retry_urlopen(request, timeout=HTTP_TIMEOUT):
+                print(f"Reclaimed retired state key {key}")
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                print(f"Warning: could not remove retired state key {key}: {exc}")
+        except Exception as exc:
+            print(f"Warning: could not remove retired state key {key}: {exc}")
 
 
 def _review_key(pr_number: int, head_sha: str) -> str:
@@ -2144,6 +2199,7 @@ def _drive_repo(
 
 def main() -> str | None:
     _require_kv()
+    _delete_retired_state()
     agent_url = os.environ.get("AGENT_SERVER_URL", "").rstrip("/")
     api_key = _get_env_key()
     github_token = _resolve_github_token()
@@ -2158,7 +2214,13 @@ def main() -> str | None:
         repo_full = (payload.get("repository") or {}).get("full_name") or ""
         entry = _entry_for(repo_full)
         if entry is None:
-            print(f"Ignoring event for unmanaged repo {repo_full!r}")
+            # The org webhook delivers every repo, so the trigger filter is
+            # what is supposed to narrow this down. Reaching here means the
+            # filter admitted a repo REPOS does not handle, i.e. the two have
+            # drifted apart again - say so rather than exiting quietly.
+            print(f"Ignoring event for unmanaged repo {repo_full!r}: it passed this "
+                  f"automation's trigger filter but is not in REPOS, so the trigger "
+                  f"and this script disagree and the run can do nothing")
             return None
         pr_number = (payload.get("pull_request") or {}).get("number")
         print(f"Event for {repo_full}: action={payload.get('action')!r} "
