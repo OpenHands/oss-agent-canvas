@@ -45,6 +45,7 @@ CONFIG = {
     # run; this list only refuses one that slipped through.
     "authorized_logins": [
         "VascoSch92",
+        "neubig",
     ],
     "trigger_phrase": "@all-hands-bot",
     "repos": [

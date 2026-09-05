@@ -15,7 +15,7 @@ trigger:
   destination: dispatch_run
   filter: contains(['OpenHands/extensions', 'OpenHands/OpenHands', 'OpenHands/software-agent-sdk',
     'OpenHands/automation', 'OpenHands/enterprise', 'OpenHands/saas-deploy', 'OpenHands/evaluation'],
-    repository.full_name) && contains(['VascoSch92'], sender.login) && ((action ==
+    repository.full_name) && contains(['VascoSch92', 'neubig'], sender.login) && ((action ==
     'created' && contains(keys(@), 'comment') && icontains(comment.body || '', '@all-hands-bot'))
     || (action == 'opened' && contains(keys(@), 'issue') && !contains(keys(@), 'comment')
     && icontains(issue.body || '', '@all-hands-bot')) || (action == 'opened' && contains(keys(@),
