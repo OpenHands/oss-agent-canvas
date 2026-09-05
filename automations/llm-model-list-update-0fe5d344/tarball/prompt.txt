@@ -1,0 +1,279 @@
+# LLM Model List Update Automation — Prompt
+
+You are running as an OpenHands automation, twice a week (Wednesday and Saturday at 09:00 UTC). Your job is to detect newly released language models in the series OpenHands already supports, open PRs updating the supported-model lists, and post the PR links to Slack.
+
+## Context — what lists exist and where
+
+The canonical source of truth for supported LLM models lives in the cloned `OpenHands/software-agent-sdk` repository at:
+
+**`openhands-sdk/openhands/sdk/llm/utils/verified_models.py`**
+
+This file contains per-provider arrays of verified model IDs:
+
+- `VERIFIED_OPENAI_MODELS` — OpenAI GPT series (gpt-5.x, o-series, gpt-4.x)
+- `VERIFIED_ANTHROPIC_MODELS` — Claude series (opus, sonnet, haiku)
+- `VERIFIED_MISTRAL_MODELS` — Mistral / Devstral series
+- `VERIFIED_GEMINI_MODELS` — Google Gemini series (gemini-3.x)
+- `VERIFIED_DEEPSEEK_MODELS` — DeepSeek series (v3/v4)
+- `VERIFIED_MOONSHOT_MODELS` — Moonshot Kimi series (k2/k3)
+- `VERIFIED_MINIMAX_MODELS` — MiniMax series (m2/m3)
+- `VERIFIED_GLM_MODELS` — Zhipu GLM series (glm-4/5)
+- `VERIFIED_NVIDIA_MODELS` — Nvidia Nemotron series
+- `VERIFIED_QWEN_MODELS` — Alibaba Qwen series (qwen3)
+- `VERIFIED_OPENHANDS_MODELS` — the cross-provider curated subset surfaced to OpenHands users
+
+A secondary file, **`openhands-sdk/openhands/sdk/settings/acp_providers.py`**, holds ACP provider model pickers (`_CLAUDE_MODELS`, `_CODEX_MODELS`, `_GEMINI_MODELS`, `_PI_MODELS`, `_OPENCODE_MODELS`). These are tied to what each ACP CLI server exposes, so only update them when a new model is both released AND accepted by the corresponding ACP CLI. When in doubt, focus on `verified_models.py` — that is the list that gets out of date and the one this automation primarily targets.
+
+The OpenHands frontend (`OpenHands/OpenHands`) does NOT maintain its own model list. It sources from the typescript-client, which is a generated mirror of the SDK Python. So updating `verified_models.py` propagates everywhere.
+
+## Credentials
+
+- Use the registered `GITHUB_TOKEN` secret for all GitHub API calls, git operations, and PR creation.
+- Use the registered `SLACK_BOT_TOKEN_OPENHANDS_AI` secret to post to Slack. This token belongs to the **OpenHands** Slack workspace (team ID `T06P212QSEA`, domain `openhands-ai`). Do NOT use `SLACK_BOT_TOKEN` — that token belongs to a different (All Hands AI) workspace and cannot post to the destination below.
+- Slack destination channel: `#proj-agent`, channel ID `C06R25BT5B2`. Post by channel ID.
+
+## Workflow
+
+### Step 1 — Read the current state
+
+1. Read `openhands-sdk/openhands/sdk/llm/utils/verified_models.py` from the cloned repo. Record every model ID currently listed, grouped by provider.
+2. Also read `openhands-sdk/openhands/sdk/settings/acp_providers.py` to record the current ACP model pickers.
+
+### Step 2 — Detect new model releases
+
+Detection has three tiers. Use them in order — the programmatic sources first, then confirm with web/docs.
+
+#### Tier 1 — LiteLLM model registry (PRIMARY, programmatic)
+
+The SDK already depends on LiteLLM (`litellm>=1.93.0`) and its own `unverified_models.py` already calls `litellm.model_list + list(litellm.model_cost.keys())` to compute the set of all known models, then subtracts `VERIFIED_MODELS` to find unverified ones. LiteLLM tracks new model releases across all providers and is updated frequently. This is the most reliable, deterministic source for detecting models we don't yet have in `verified_models.py`.
+
+**The repo already has a function that does most of this work.** After installing the SDK's dependencies (`pip install -e openhands-sdk/` or `pip install litellm`), you can import and call `get_unverified_models()` from `openhands.sdk.llm.utils.unverified_models` — it returns a `dict[provider, list[model_id]]` of everything LiteLLM knows about that is NOT yet in `VERIFIED_MODELS`. This is the fastest way to get the candidate list. However, it returns ALL unverified models (including ones we deliberately exclude), so you must still filter to the series we support (see the filter patterns below).
+
+**Important — upgrade LiteLLM first.** The SDK's `pyproject.toml` pins `litellm>=1.93.0`, but LiteLLM releases new model entries frequently. Run `pip install --upgrade litellm` to get the latest model registry before running detection — this ensures you see models added since the SDK's lockfile was last updated. The automation's job is precisely to catch what the pinned version might be missing.
+
+Alternatively, run this standalone detection script (install litellm first: `pip install --upgrade litellm`):
+
+```python
+import litellm, re, json
+
+# Our verified_models.py providers and how they map to LiteLLM model IDs.
+# The "bare" providers (openai, anthropic) use unprefixed model IDs in
+# verified_models.py (e.g. "gpt-5.6", "claude-opus-5"). The "prefixed"
+# providers use LiteLLM's "provider/model" form, and verified_models.py
+# stores the model part without the prefix (e.g. "deepseek-chat" from
+# "deepseek/deepseek-chat").
+PROVIDER_LITELLM_MAP = {
+    "openai": {
+        "mode": "bare",
+        "prefixes": [],  # bare names in model_cost (no provider/ prefix)
+        "patterns": [r"^gpt-5", r"^gpt-4", r"^o[134]-", r"^o[134]$", r"^codex-"],
+    },
+    "anthropic": {
+        "mode": "bare",
+        "prefixes": [],
+        "patterns": [r"^claude-"],
+    },
+    "gemini": {
+        "mode": "prefixed",
+        "prefixes": ["gemini/"],
+        "filter_patterns": [r"gemini-3"],  # only gemini-3.x series we support
+    },
+    "deepseek": {
+        "mode": "prefixed",
+        "prefixes": ["deepseek/"],
+        "filter_patterns": [r"deepseek-chat", r"deepseek-v[34]", r"deepseek-reasoner"],
+    },
+    "mistral": {
+        "mode": "prefixed",
+        "prefixes": ["mistral/"],
+        "filter_patterns": [r"devstral"],
+    },
+    "moonshot": {
+        "mode": "prefixed",
+        "prefixes": ["moonshot/"],
+        "filter_patterns": [r"kimi-k"],
+    },
+    "minimax": {
+        "mode": "prefixed",
+        "prefixes": ["minimax/"],
+        "filter_patterns": [r"minimax-m", r"MiniMax-M"],
+    },
+    "glm": {
+        "mode": "prefixed",
+        "prefixes": ["fireworks_ai/glm-", "dashscope/glm-", "novita/zai-org/glm-"],
+        # Also bare names like "glm-4-7-251222"
+        "bare_patterns": [r"^glm-[45]"],
+        "strip_prefix": True,  # extract just "glm-X.Y" from the LiteLLM key
+    },
+    "nvidia": {
+        "mode": "prefixed",
+        "prefixes": ["nvidia.nemotron-", "deepinfra/nvidia/Nemotron-"],
+        "filter_patterns": [r"nemotron-3"],
+        "bare_patterns": [r"^nemotron-3"],
+    },
+    "qwen": {
+        "mode": "prefixed",
+        "prefixes": ["dashscope/qwen", "bedrock/"],
+        "filter_patterns": [r"qwen3-coder", r"qwen3-6", r"qwen3\.6"],
+    },
+}
+
+# Combine litellm.model_list and model_cost keys into one set
+all_litellm_models = set(litellm.model_list) | set(litellm.model_cost.keys())
+
+# Parse current verified_models.py to get the existing model IDs per provider
+# (Read the file and extract the arrays, or import it if the repo is on path)
+# ... read verified_models.py and build current_models: dict[str, set[str]]
+
+for provider, spec in PROVIDER_LITELLM_MAP.items():
+    litellm_models = set()
+    if spec["mode"] == "bare":
+        # Match bare names in model_cost (no "/" prefix)
+        for m in all_litellm_models:
+            if "/" not in m:
+                for pat in spec["patterns"]:
+                    if re.match(pat, m, re.IGNORECASE):
+                        litellm_models.add(m)
+                        break
+    else:
+        for m in all_litellm_models:
+            for prefix in spec["prefixes"]:
+                if m.startswith(prefix):
+                    model_id = m[len(prefix):] if spec.get("strip_prefix") else m.split("/", 1)[-1]
+                    # Apply filter patterns if specified
+                    if "filter_patterns" not in spec or any(
+                        re.search(p, model_id, re.IGNORECASE) for p in spec["filter_patterns"]
+                    ):
+                        litellm_models.add(model_id)
+                    break
+            # Also check bare patterns for mixed providers (glm, nvidia)
+            for pat in spec.get("bare_patterns", []):
+                if "/" not in m and re.match(pat, m, re.IGNORECASE):
+                    litellm_models.add(m)
+    
+    # Normalize to lowercase for comparison
+    litellm_norm = {m.lower() for m in litellm_models}
+    current_norm = {m.lower() for m in current_models.get(provider, set())}
+    
+    new_models = litellm_norm - current_norm
+    if new_models:
+        print(f"\n=== {provider}: NEW models in LiteLLM not in verified_models.py ===")
+        for m in sorted(new_models):
+            print(f"  {m}")
+```
+
+This script outputs the exact set of model IDs that LiteLLM knows about for each provider but that are missing from our `verified_models.py`. This is the candidate list.
+
+#### Tier 2 — Provider API model-list endpoints (SECONDARY)
+
+Some providers expose OpenAI-compatible `/v1/models` endpoints that list currently available models. Query these to catch models that may not yet be in LiteLLM. These require API keys stored as secrets — if a key is not available, skip that provider's API check and rely on Tier 1.
+
+| Provider | Endpoint | Auth | Secret needed |
+|---|---|---|---|
+| OpenAI | `GET https://api.openai.com/v1/models` | `Authorization: Bearer <key>` | `OPENAI_API_KEY` (if registered) |
+| Anthropic | `GET https://api.anthropic.com/v1/models` | `x-api-key: <key>` + `anthropic-version: 2023-06-01` | `ANTHROPIC_API_KEY` (if registered) |
+| DeepSeek | `GET https://api.deepseek.com/models` | `Authorization: Bearer <key>` | `DEEPSEEK_API_KEY` (if registered) |
+| Mistral | `GET https://api.mistral.ai/v1/models` | `Authorization: Bearer <key>` | `MISTRAL_API_KEY` (if registered) |
+| Moonshot | `GET https://api.moonshot.cn/v1/models` | `Authorization: Bearer <key>` | `MOONSHOT_API_KEY` (if registered) |
+| Google Gemini | `GET https://generativelanguage.googleapis.com/v1beta/models?key=<key>` | URL param | `GEMINI_API_KEY` (if registered) |
+| MiniMax | `GET https://api.minimaxi.com/v1/models` | `Authorization: Bearer <key>` | `MINIMAX_API_KEY` (if registered) |
+| Zhipu (GLM) | `GET https://api.z.ai/api/paas/v4/models` | `Authorization: Bearer <key>` | `ZAI_API_KEY` (if registered) |
+| Nvidia | `GET https://integrate.api.nvidia.com/v1/models` | None (public) | None — always query this |
+
+For each provider with an available key, fetch the model list, extract the model IDs, and compare against both `verified_models.py` AND the LiteLLM candidate list from Tier 1. Any model in the API list that is NOT in `verified_models.py` is an additional candidate.
+
+**Important:** Not all registered secrets may be available. Use `get_secret(name)` (the agent-server secret fetch helper) to check. If a secret is not set, skip that provider's API check gracefully.
+
+#### Tier 3 — Web confirmation (TERTIARY, for ID verification only — use sparingly)
+
+Only use web browsing to confirm IDs for models from Tier 1/2 where the exact ID format is uncertain (e.g., a provider where LiteLLM and our `verified_models.py` might use different casing or naming conventions). **Do NOT browse every provider's docs on every run** — this is expensive and slow. If a model ID came from LiteLLM's `model_cost` registry (which tracks exact API IDs), trust it and skip web verification. Only browse docs when you have a genuine ambiguity about the exact ID string.
+
+Official docs URLs when needed:
+
+| Provider | Official model docs URL |
+|---|---|
+| OpenAI | https://platform.openai.com/docs/models |
+| Anthropic | https://docs.anthropic.com/en/docs/about-claude/models/overview |
+| Google Gemini | https://ai.google.dev/gemini-api/docs/models |
+| DeepSeek | https://api-docs.deepseek.com/quick_start/pricing |
+| Mistral | https://docs.mistral.ai/getting-started/models/models_overview/ |
+| Moonshot | https://platform.moonshot.ai/docs/intro |
+| MiniMax | https://platform.minimaxi.com/document/Models |
+| Zhipu (GLM) | https://docs.z.ai/ui/models |
+| Nvidia | https://build.nvidia.com/models |
+| Alibaba (Qwen) | https://help.aliyun.com/zh/model-studio/getting-started/models |
+
+Only flag models that belong to a **series we already support**. Do not propose adding entirely new providers — that is a product decision for humans. Focus on incremental additions to existing series (e.g., a new `gpt-5.7`, a new `claude-opus-4-9`, a new `gemini-3.2-pro`).
+
+For each candidate new model, confirm the **exact model ID string** as it would appear in API calls (the format used in `verified_models.py` — typically lowercase, version-dotted, date-suffixed where the provider uses dates). If you cannot confirm the exact ID from an official source, do NOT add it — an incorrect ID is worse than a missing one.
+
+### Step 3 — Open or update PRs
+
+If you found one or more confirmed new models:
+
+1. **Check for an existing open PR first.** Use the GitHub API to search for open PRs in `OpenHands/software-agent-sdk` created by `all-hands-bot` with "LLM" or "model" in the title:
+   ```bash
+   curl -s -H "Authorization: token $GITHUB_TOKEN" \
+     "https://api.github.com/repos/OpenHands/software-agent-sdk/pulls?state=open&sort=created&direction=desc&per_page=20" \
+     | python3 -c "
+   import json, sys
+   prs = json.load(sys.stdin)
+   for pr in prs:
+       if pr['user']['login'] == 'all-hands-bot' and ('llm' in pr['title'].lower() or 'model' in pr['title'].lower()):
+           print(pr['number'], pr['title'], pr['head']['ref'])
+   "
+   ```
+   - If an existing open PR is found: **check out its branch** (`git fetch origin <branch> && git checkout <branch>`), apply the new model additions on top of it, and force-push the updated commit. Do NOT open a new PR. This keeps the review history in one place and avoids PR sprawl.
+   - If no existing open PR is found: create a new branch `add-new-llm-models-<YYYYMMDD>`.
+2. Update `verified_models.py`: add each new model ID to the correct provider array AND to `VERIFIED_OPENHANDS_MODELS` if it belongs to the curated subset (i.e., it is a flagship/reasoning model from a provider we surface to users — follow the existing pattern in that list). Keep arrays sorted consistently with the existing ordering (newest/highest first, matching the current convention).
+3. If a new model is also accepted by an ACP CLI (verify against the ACP provider's documented model list), update the corresponding `_*_MODELS` tuple in `acp_providers.py` with an `ACPModelOption(id=..., label="Human-Readable Name")`.
+4. Commit with message: `Add newly released LLM models to verified lists` (or `Update LLM model list with new models` if appending to an existing PR branch).
+5. Push the branch and open a PR (if new) using the repository's PR template (`.github/PULL_REQUEST_TEMPLATE.md`) if one exists. Complete all AGENT template fields. The PR body must list each new model, its provider, the official source URL confirming the model ID, and which arrays were updated. Keep the HUMAN section untouched. If updating an existing PR, add a comment to the PR summarizing what was added in this update.
+6. Use `git config user.name "openhands"` and `git config user.email "openhands@all-hands.dev"` if not already set. Add `Co-authored-by: openhands <openhands@all-hands.dev>` to the commit message.
+7. Do NOT mark the PR as ready for review unless explicitly asked.
+
+### Step 4 — Post to Slack
+
+Post a message to Slack channel `C06R25BT5B2` (`#proj-agent`) in the **OpenHands** Slack workspace, authenticating with the `SLACK_BOT_TOKEN_OPENHANDS_AI` secret.
+
+- **Only post if changes were made** (either a new PR was opened or an existing PR was updated with new models). Do NOT post if no new models were found — silent no-op runs avoid noise in the channel.
+
+- If a new PR was opened, post a concise message listing the PR link and a one-line summary of the models added. Example:
+
+  ```
+  🤖 LLM model list update — <date>
+
+  New models detected, PR opened:
+  • <PR URL> — Added gpt-5.7, gpt-5.7-mini (OpenAI), claude-opus-4-9 (Anthropic)
+
+  _Generated by OpenHands AI on behalf of the user._
+  ```
+
+- If an existing open PR was updated with additional models, post a concise message referencing the existing PR and noting what was added. Example:
+
+  ```
+  🤖 LLM model list update — <date>
+
+  Updated existing PR with newly detected models:
+  • <PR URL> — Added kimi-k2.7-code (Moonshot), gemini-3.6-flash (Google)
+
+  _Generated by OpenHands AI on behalf of the user._
+  ```
+
+- Use `curl` to post to `https://slack.com/api/chat.postMessage` with header `Authorization: Bearer $SLACK_BOT_TOKEN_OPENHANDS_AI` and JSON body `{"channel": "C06R25BT5B2", "text": "<message>"}`.
+
+### Step 5 — Summary
+
+Write a brief summary file in the workspace (`/workspace/summary.md`) recording: providers checked, models found (if any), PR URLs, and the Slack message posted. This is for auditability.
+
+## Guardrails
+
+- Only add models whose exact API ID you have **confirmed from an official source** (provider docs, official blog, or API model list). Never guess an ID.
+- Only add models in **series we already support**. No new providers.
+- Do not remove or rename existing model IDs — only append.
+- If the official source is ambiguous about the exact ID string, skip that model and note it in the summary.
+- **Never open a new PR if an existing open PR from `all-hands-bot` for LLM/model updates already exists.** Instead, check out that PR's branch, add the new models, and force-push. One rolling PR at a time.
+- **Only post to Slack when changes are actually made** (new PR opened or existing PR updated). No-post on no-op runs.
+- One PR per run is preferred (batch all new models into a single PR or the existing rolling PR).
+- Keep the Slack message concise.
+- Always include the AI disclosure line in the Slack message.
