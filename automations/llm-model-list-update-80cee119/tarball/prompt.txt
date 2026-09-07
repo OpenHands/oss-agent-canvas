@@ -41,42 +41,45 @@ The OpenHands frontend (`OpenHands/OpenHands`) does NOT maintain its own model l
 
 ### Step 2 — Detect new model releases
 
-Detection has three tiers. Use them in order — the programmatic sources first, then confirm with web/docs.
+Detection uses **LiteLLM's `model_cost` registry as the sole discovery source**, cross-referenced against provider API endpoints when keys are available. **Do NOT use web browsing for model discovery** — browsing provider docs led to adding models that don't actually exist (e.g. `qwen3.8-flash`) or aren't publicly available yet (e.g. `claude-mythos-5`). LiteLLM's `model_cost` tracks models that have pricing entries, which is a much more reliable signal that a model is a real, callable product.
 
-#### Tier 1 — LiteLLM model registry (PRIMARY, programmatic)
+**Critical distinction: `model_cost` vs `model_list`.** Use `litellm.model_cost` ONLY, not `litellm.model_list`. `model_cost` contains models with pricing data (indicating they're real products). `model_list` is broader and includes speculative/preview entries. The SDK's own `unverified_models.py` uses both, but for this automation's purpose — adding models that users can actually call — `model_cost` is the right filter.
 
-The SDK already depends on LiteLLM (`litellm>=1.93.0`) and its own `unverified_models.py` already calls `litellm.model_list + list(litellm.model_cost.keys())` to compute the set of all known models, then subtracts `VERIFIED_MODELS` to find unverified ones. LiteLLM tracks new model releases across all providers and is updated frequently. This is the most reliable, deterministic source for detecting models we don't yet have in `verified_models.py`.
+**Even `model_cost` can include not-yet-public models** (LiteLLM sometimes adds pricing based on announcements before models are callable). To handle this, cross-reference against the provider's `/v1/models` API endpoint when an API key is available. A model that appears in BOTH `model_cost` AND the provider's API model list is confirmed publicly available.
 
-**The repo already has a function that does most of this work.** After installing the SDK's dependencies (`pip install -e openhands-sdk/` or `pip install litellm`), you can import and call `get_unverified_models()` from `openhands.sdk.llm.utils.unverified_models` — it returns a `dict[provider, list[model_id]]` of everything LiteLLM knows about that is NOT yet in `VERIFIED_MODELS`. This is the fastest way to get the candidate list. However, it returns ALL unverified models (including ones we deliberately exclude), so you must still filter to the series we support (see the filter patterns below).
+#### Tier 1 — LiteLLM `model_cost` registry (PRIMARY discovery source)
 
-**Important — upgrade LiteLLM first.** The SDK's `pyproject.toml` pins `litellm>=1.93.0`, but LiteLLM releases new model entries frequently. Run `pip install --upgrade litellm` to get the latest model registry before running detection — this ensures you see models added since the SDK's lockfile was last updated. The automation's job is precisely to catch what the pinned version might be missing.
+The SDK already depends on LiteLLM (`litellm>=1.93.0`). LiteLLM's `model_cost` dictionary tracks models that have pricing entries — meaning they're real, trackable products. This is the most reliable programmatic source for detecting models we don't yet have in `verified_models.py`.
 
-Alternatively, run this standalone detection script (install litellm first: `pip install --upgrade litellm`):
+**Important — upgrade LiteLLM first.** Run `pip install --upgrade litellm` to get the latest model registry before running detection. The SDK's `pyproject.toml` pins `litellm>=1.93.0` which may lag behind.
+
+Run this detection script:
 
 ```python
 import litellm, re, json
 
+# Use model_cost ONLY (models with pricing = real products), NOT model_list
+all_litellm_models = set(litellm.model_cost.keys())
+
 # Our verified_models.py providers and how they map to LiteLLM model IDs.
 # The "bare" providers (openai, anthropic) use unprefixed model IDs in
-# verified_models.py (e.g. "gpt-5.6", "claude-opus-5"). The "prefixed"
-# providers use LiteLLM's "provider/model" form, and verified_models.py
-# stores the model part without the prefix (e.g. "deepseek-chat" from
-# "deepseek/deepseek-chat").
+# verified_models.py. The "prefixed" providers use LiteLLM's "provider/model"
+# form, and verified_models.py stores the model part without the prefix.
+# Matching is CASE-INSENSITIVE because LiteLLM uses varied casing
+# (e.g. "GLM-5.3" vs "glm-5.3", "Nemotron-3-Ultra" vs "nemotron-3-ultra").
 PROVIDER_LITELLM_MAP = {
     "openai": {
         "mode": "bare",
-        "prefixes": [],  # bare names in model_cost (no provider/ prefix)
         "patterns": [r"^gpt-5", r"^gpt-4", r"^o[134]-", r"^o[134]$", r"^codex-"],
     },
     "anthropic": {
         "mode": "bare",
-        "prefixes": [],
         "patterns": [r"^claude-"],
     },
     "gemini": {
         "mode": "prefixed",
         "prefixes": ["gemini/"],
-        "filter_patterns": [r"gemini-3"],  # only gemini-3.x series we support
+        "filter_patterns": [r"gemini-3"],
     },
     "deepseek": {
         "mode": "prefixed",
@@ -100,73 +103,112 @@ PROVIDER_LITELLM_MAP = {
     },
     "glm": {
         "mode": "prefixed",
-        "prefixes": ["fireworks_ai/glm-", "dashscope/glm-", "novita/zai-org/glm-"],
-        # Also bare names like "glm-4-7-251222"
-        "bare_patterns": [r"^glm-[45]"],
-        "strip_prefix": True,  # extract just "glm-X.Y" from the LiteLLM key
+        # GLM appears under many provider prefixes — search ALL model_cost keys
+        # that contain "glm-" and extract the model ID
+        "search_keyword": "glm-",
+        "filter_patterns": [r"^glm-[45]"],
+        "extract_regex": r"(glm-[0-9.]+(?:-flash)?)",
     },
     "nvidia": {
         "mode": "prefixed",
-        "prefixes": ["nvidia.nemotron-", "deepinfra/nvidia/Nemotron-"],
+        "search_keyword": "nemotron",
         "filter_patterns": [r"nemotron-3"],
-        "bare_patterns": [r"^nemotron-3"],
+        "extract_regex": r"(nemotron-3[a-z0-9.-]+)",
     },
     "qwen": {
         "mode": "prefixed",
-        "prefixes": ["dashscope/qwen", "bedrock/"],
-        "filter_patterns": [r"qwen3-coder", r"qwen3-6", r"qwen3\.6"],
+        "search_keyword": "qwen3",
+        "filter_patterns": [r"qwen3"],
+        "extract_regex": r"(qwen3[a-z0-9.-]+)",
     },
 }
 
-# Combine litellm.model_list and model_cost keys into one set
-all_litellm_models = set(litellm.model_list) | set(litellm.model_cost.keys())
-
 # Parse current verified_models.py to get the existing model IDs per provider
-# (Read the file and extract the arrays, or import it if the repo is on path)
-# ... read verified_models.py and build current_models: dict[str, set[str]]
+# (Read the file and extract the arrays via ast.parse)
+# ... build current_models: dict[str, set[str]] from verified_models.py
 
 for provider, spec in PROVIDER_LITELLM_MAP.items():
     litellm_models = set()
+
     if spec["mode"] == "bare":
-        # Match bare names in model_cost (no "/" prefix)
+        # Match bare names (no "/" prefix) in model_cost
         for m in all_litellm_models:
             if "/" not in m:
                 for pat in spec["patterns"]:
                     if re.match(pat, m, re.IGNORECASE):
-                        litellm_models.add(m)
+                        litellm_models.add(m.lower())
                         break
+    elif "search_keyword" in spec:
+        # For providers that appear under many prefixes (glm, nvidia, qwen),
+        # search all model_cost keys containing the keyword and extract the model ID
+        kw = spec["search_keyword"]
+        extract_re = re.compile(spec["extract_regex"], re.IGNORECASE)
+        for m in all_litellm_models:
+            if kw in m.lower():
+                match = extract_re.search(m)
+                if match:
+                    model_id = match.group(1).lower()
+                    # Apply filter patterns
+                    if any(re.search(p, model_id, re.IGNORECASE) for p in spec["filter_patterns"]):
+                        litellm_models.add(model_id)
     else:
         for m in all_litellm_models:
             for prefix in spec["prefixes"]:
-                if m.startswith(prefix):
-                    model_id = m[len(prefix):] if spec.get("strip_prefix") else m.split("/", 1)[-1]
-                    # Apply filter patterns if specified
+                if m.lower().startswith(prefix.lower()):
+                    model_id = m.split("/", 1)[-1]
                     if "filter_patterns" not in spec or any(
                         re.search(p, model_id, re.IGNORECASE) for p in spec["filter_patterns"]
                     ):
-                        litellm_models.add(model_id)
+                        litellm_models.add(model_id.lower())
                     break
-            # Also check bare patterns for mixed providers (glm, nvidia)
-            for pat in spec.get("bare_patterns", []):
-                if "/" not in m and re.match(pat, m, re.IGNORECASE):
-                    litellm_models.add(m)
-    
-    # Normalize to lowercase for comparison
-    litellm_norm = {m.lower() for m in litellm_models}
+
     current_norm = {m.lower() for m in current_models.get(provider, set())}
-    
-    new_models = litellm_norm - current_norm
+    new_models = litellm_models - current_norm
+
     if new_models:
-        print(f"\n=== {provider}: NEW models in LiteLLM not in verified_models.py ===")
+        print(f"\n=== {provider}: NEW models in LiteLLM model_cost not in verified_models.py ===")
         for m in sorted(new_models):
             print(f"  {m}")
 ```
 
-This script outputs the exact set of model IDs that LiteLLM knows about for each provider but that are missing from our `verified_models.py`. This is the candidate list.
+This outputs candidate models that have pricing entries in LiteLLM but are missing from `verified_models.py`.
 
-#### Tier 2 — Provider API model-list endpoints (SECONDARY)
+#### Tier 2 — OpenRouter availability confirmation (PRIMARY availability check)
 
-Some providers expose OpenAI-compatible `/v1/models` endpoints that list currently available models. Query these to catch models that may not yet be in LiteLLM. These require API keys stored as secrets — if a key is not available, skip that provider's API check and rely on Tier 1.
+**This step is critical for filtering out models that are in LiteLLM but not yet publicly callable.** OpenRouter is a model aggregator/proxy that lists models that are actually available right now. It has a **public API** (no auth needed) and covers all providers in a single call. OpenHands already supports OpenRouter as a provider, so if a model is on OpenRouter, OpenHands users can call it.
+
+**Query the OpenRouter API:**
+```bash
+curl -s "https://openrouter.ai/api/v1/models" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+models = d.get('data', [])
+# Build a set of all OpenRouter model IDs (lowercase)
+or_ids = {m['id'].lower() for m in models}
+print(f'OpenRouter has {len(or_ids)} models')
+"
+```
+
+**Matching is critical — OpenRouter uses different naming conventions than `verified_models.py`:**
+- Prefixes differ: `moonshotai/` (not `moonshot/`), `z-ai/` (not `zai-org/`), `qwen/` (not `dashscope/`)
+- Version format differs: `claude-fable-5.1` (dots) vs `claude-fable-5-1` (dashes in verified_models.py)
+- Some models have date suffixes: `qwen/qwen3.8-max-0902` vs `qwen3.8-max`
+- Some have simplified names: `nvidia/nemotron-3.5-lightning` vs `nemotron-3.5-lightning-30b-a3b`
+
+To match reliably, for each Tier 1 candidate model ID, search the OpenRouter model list using **fuzzy matching**:
+1. Try exact match on the model part (after stripping any provider prefix from the OpenRouter ID)
+2. Try replacing `-` with `.` and vice versa in the version number (e.g., `claude-fable-5-1` → `claude-fable-5.1`)
+3. Try prefix matching (e.g., `nemotron-3.5-lightning` matches `nemotron-3.5-lightning-30b-a3b`)
+4. If still no match, the model is NOT available on OpenRouter
+
+**Filtering rules:**
+- A model confirmed on OpenRouter is **definitely callable** — add it.
+- A model NOT on OpenRouter but with a provider API key available: check the provider's direct `/v1/models` endpoint (see Tier 2b below). If confirmed there, add it.
+- A model NOT on OpenRouter and NO provider API key available: **skip it** and note in the summary as "not confirmed available — skipped." Do NOT add models that can't be confirmed as callable. This prevents adding not-yet-public models like `claude-mythos-5`.
+
+#### Tier 2b — Provider API model-list endpoints (SECONDARY availability check)
+
+For models NOT found on OpenRouter but where the provider's API key is available, query the provider's direct API as a fallback. This catches models that may be available directly from the provider but not yet on OpenRouter.
 
 | Provider | Endpoint | Auth | Secret needed |
 |---|---|---|---|
@@ -180,32 +222,13 @@ Some providers expose OpenAI-compatible `/v1/models` endpoints that list current
 | Zhipu (GLM) | `GET https://api.z.ai/api/paas/v4/models` | `Authorization: Bearer <key>` | `ZAI_API_KEY` (if registered) |
 | Nvidia | `GET https://integrate.api.nvidia.com/v1/models` | None (public) | None — always query this |
 
-For each provider with an available key, fetch the model list, extract the model IDs, and compare against both `verified_models.py` AND the LiteLLM candidate list from Tier 1. Any model in the API list that is NOT in `verified_models.py` is an additional candidate.
+Use `get_secret(name)` to check if a key is available. If not set, skip that provider's API check gracefully.
 
-**Important:** Not all registered secrets may be available. Use `get_secret(name)` (the agent-server secret fetch helper) to check. If a secret is not set, skip that provider's API check gracefully.
+#### Tier 3 — Web confirmation (ELIMINATED for discovery)
 
-#### Tier 3 — Web confirmation (TERTIARY, for ID verification only — use sparingly)
+**Do NOT use web browsing to discover new models.** Web browsing is unreliable — it led to adding `qwen3.8-flash` which doesn't exist in LiteLLM, and `claude-mythos-5` which the maintainer confirmed is not publicly available. LiteLLM's `model_cost` registry combined with provider API endpoints (Tier 2) is the reliable source.
 
-Only use web browsing to confirm IDs for models from Tier 1/2 where the exact ID format is uncertain (e.g., a provider where LiteLLM and our `verified_models.py` might use different casing or naming conventions). **Do NOT browse every provider's docs on every run** — this is expensive and slow. If a model ID came from LiteLLM's `model_cost` registry (which tracks exact API IDs), trust it and skip web verification. Only browse docs when you have a genuine ambiguity about the exact ID string.
-
-Official docs URLs when needed:
-
-| Provider | Official model docs URL |
-|---|---|
-| OpenAI | https://platform.openai.com/docs/models |
-| Anthropic | https://docs.anthropic.com/en/docs/about-claude/models/overview |
-| Google Gemini | https://ai.google.dev/gemini-api/docs/models |
-| DeepSeek | https://api-docs.deepseek.com/quick_start/pricing |
-| Mistral | https://docs.mistral.ai/getting-started/models/models_overview/ |
-| Moonshot | https://platform.moonshot.ai/docs/intro |
-| MiniMax | https://platform.minimaxi.com/document/Models |
-| Zhipu (GLM) | https://docs.z.ai/ui/models |
-| Nvidia | https://build.nvidia.com/models |
-| Alibaba (Qwen) | https://help.aliyun.com/zh/model-studio/getting-started/models |
-
-Only flag models that belong to a **series we already support**. Do not propose adding entirely new providers — that is a product decision for humans. Focus on incremental additions to existing series (e.g., a new `gpt-5.7`, a new `claude-opus-4-9`, a new `gemini-3.2-pro`).
-
-For each candidate new model, confirm the **exact model ID string** as it would appear in API calls (the format used in `verified_models.py` — typically lowercase, version-dotted, date-suffixed where the provider uses dates). If you cannot confirm the exact ID from an official source, do NOT add it — an incorrect ID is worse than a missing one.
+The only acceptable use of web browsing is to confirm the exact model ID format when there's a genuine ambiguity in casing or naming convention between LiteLLM and what `verified_models.py` uses — and even then, only browse the single relevant provider's docs page, not all of them.
 
 ### Step 3 — Open or update PRs
 
@@ -268,7 +291,8 @@ Write a brief summary file in the workspace (`/workspace/summary.md`) recording:
 
 ## Guardrails
 
-- Only add models whose exact API ID you have **confirmed from an official source** (provider docs, official blog, or API model list). Never guess an ID.
+- Only add models that appear in LiteLLM's `model_cost` registry (have pricing entries). Never add models found only via web browsing.
+- **Confirm availability via OpenRouter** (public, no key needed) before adding any model. Only add models that are confirmed callable on OpenRouter OR the provider's direct API. Skip models that can't be confirmed as callable — this prevents adding not-yet-public models.
 - Only add models in **series we already support**. No new providers.
 - Do not remove or rename existing model IDs — only append.
 - If the official source is ambiguous about the exact ID string, skip that model and note it in the summary.

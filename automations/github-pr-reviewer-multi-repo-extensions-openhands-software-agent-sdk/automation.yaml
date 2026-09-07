@@ -14,9 +14,8 @@ timeout: 1800
 trigger:
   destination: dispatch_run
   filter: contains(['OpenHands/extensions', 'OpenHands/OpenHands', 'OpenHands/software-agent-sdk',
-    'OpenHands/automation'],
-    repository.full_name) && contains(keys(@), 'pull_request') && !contains(keys(@),
-    'comment') && !contains(keys(@), 'review') && contains(['opened','reopened','synchronize','ready_for_review','review_requested'],
+    'OpenHands/automation'], repository.full_name) && contains(keys(@), 'pull_request')
+    && !contains(keys(@), 'comment') && !contains(keys(@), 'review') && contains(['opened','reopened','synchronize','ready_for_review','review_requested'],
     action)
   'on': '*'
   source: github-events

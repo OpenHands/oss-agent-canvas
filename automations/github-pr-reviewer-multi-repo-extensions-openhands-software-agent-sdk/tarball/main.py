@@ -753,9 +753,21 @@ def _mark_slack_notified(pr_number: int) -> None:
     raise RuntimeError(f"Could not record Slack notification for PR #{pr_number}")
 
 
+def _claim_slack_notification(pr_number: int) -> bool:
+    """Atomically reserve the right to post this PR's Slack notification."""
+    for _ in range(CAS_RETRIES):
+        state, version = _load_state()
+        if _is_slack_notified(state, pr_number):
+            return False
+        state["slack_notified"][str(pr_number)] = True
+        state["slack_notified"] = _compact_slack_notified(state["slack_notified"])
+        if _save_state(state, version):
+            return True
+    raise RuntimeError(f"Could not reserve Slack notification for PR #{pr_number}")
+
+
 def _unmark_slack_notified(pr_number: int) -> None:
-    """Release a reservation taken by ``_mark_slack_notified`` when the message
-    it was reserving never actually reached Slack, so a later poll can retry."""
+    """Release a claim when its message never reached Slack, allowing retry."""
     for _ in range(CAS_RETRIES):
         state, version = _load_state()
         if str(pr_number) not in state["slack_notified"]:
@@ -1772,17 +1784,15 @@ def _notify_slack_review_needed(token: str, state: dict, pr: dict) -> None:
         f"👋 *{repo}#{pr_number}* needs a human review: <{html_url}|{title}> by @{author}\n"
         "This contributor's PR needs a human review, so OpenHands skipped the automatic AI review."
     )
-    # Reserve the notification BEFORE posting. _mark_slack_notified can fail on
-    # its own (CAS exhaustion when concurrent polls contend for the same state
-    # key), and recording *after* a successful post meant such a failure left a
-    # delivered message unrecorded - so the next poll posted the very same
-    # notice again, every five minutes, for as long as the PR stayed open.
-    # Reserving first caps that at one message even when the history scan above
-    # is failing too; the reservation is released if the post never lands.
+    # The history check above is not enough when webhook deliveries overlap:
+    # both runs can finish scanning before either message exists. Claim through
+    # the KV store's compare-and-swap so only one contender may post.
     try:
-        _mark_slack_notified(pr_number)
+        claimed = _claim_slack_notification(pr_number)
     except Exception as exc:
         print(f"  Warning: could not reserve Slack notification for PR #{pr_number}: {exc}")
+        return
+    if not claimed:
         return
     try:
         _slack_post_message(slack_token, slack_channel_id, text)
