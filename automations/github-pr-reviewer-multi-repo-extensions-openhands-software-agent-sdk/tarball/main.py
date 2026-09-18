@@ -143,6 +143,10 @@ TRIGGER_LABEL = "review-this"          # PR label that triggers an unconditional
 TRIGGER_REVIEWER = "all-hands-bot"     # GitHub user assigned as reviewer that triggers an unconditional AI review
 REVIEW_TONE = "concise"
 REVIEW_STYLE_INSTRUCTIONS = ""
+# Pin the public review policy that this live automation is validating. The
+# SDK marketplace loader fetches it directly from OpenHands/extensions for
+# each review conversation; no review-policy copy lives in this automation.
+REVIEW_EXTENSIONS_REF = "17705d8cd974b2e904f5c0fe1605ec1ecb5d7f16"
 # Path within each checked-out repository to a repo-specific review guide
 # (e.g. the repo's own code-review skill). When the file exists at this path
 # relative to the repo root, its contents are injected verbatim into the
@@ -1064,8 +1068,7 @@ def _standing_approval(token: str, pr_number: int) -> dict | None:
 
 DISMISS_ATTEMPTS = 3
 _DISMISS_MESSAGE = (
-    "Automated review used the wrong decision (APPROVED instead of COMMENT) "
-    "and is dismissed. Findings are reposted as a comment."
+    "Automated approval no longer reflects the pull request's current head commit."
 )
 
 
@@ -1317,9 +1320,17 @@ def _get_agent_dict(agent_url: str, api_key: str) -> dict:
         "llm": data.get("agent_settings", {}).get("llm", {}),
         "tools": [{"name": "terminal"}, {"name": "file_editor"}],
         "agent_context": {
-            "load_public_skills": True,
+            "load_public_skills": False,
             "load_user_skills": True,
             "load_project_skills": True,
+            "registered_marketplaces": [
+                {
+                    "name": "review-policy",
+                    "source": "github:OpenHands/extensions",
+                    "ref": REVIEW_EXTENSIONS_REF,
+                    "auto_load": ["code-review"],
+                }
+            ],
         },
     }
 
@@ -1910,7 +1921,7 @@ def _build_review_prompt(
         "   Use `gh` or GitHub REST API calls with `GITHUB_TOKEN_REVIEW` (a GitHub token); never print secret values.\n"
         "4. Ground every finding in the workspace code. Before using an inline location, verify that the path and line are part of the PR diff.\n"
         "5. Publish one GitHub pull-request review using `POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews`.\n"
-        "   Use `commit_id` equal to the Head SHA above and `event: COMMENT`. Put the overall verdict and risk assessment in `body`.\n"
+        "   Use `commit_id` equal to the Head SHA above. Follow the loaded code-review skill's decision standard: use `event: APPROVE` only when no material finding remains and the risk assessment permits automatic approval; use `event: COMMENT` when human validation is required; use `event: REQUEST_CHANGES` when material findings remain. Put the overall verdict and risk assessment in `body`.\n"
         "   Put each line-specific finding in the review's `comments` array with `path`, `line`, `side: RIGHT`, and `body`.\n"
         "   Only create inline comments for actionable findings on valid changed lines; do not create praise or nitpick threads.\n"
         "6. If a finding cannot be attached to a valid changed line, include it in the review body. If the review API rejects inline positions, retry by posting all findings in the review body.\n"
@@ -2044,7 +2055,6 @@ def _check_conversation_completion(
     # Trust the GitHub API, not the agent's sentinel: reviews have been
     # reported as posted when no review existed on the PR.
     review_landed = _matching_review_exists(github_token, pr_number, reviewed_sha)
-    standing_approval = _standing_approval(github_token, pr_number)
     if status in {"error", "stuck"}:
         _post_github_comment(github_token, _cfg("repo", REPO), pr_number, _with_ai_disclosure(
             f"⚠️ **OpenHands PR Reviewer encountered a problem** at commit `{reviewed_sha[:12]}` "
@@ -2053,30 +2063,8 @@ def _check_conversation_completion(
         _post_github_comment(github_token, _cfg("repo", REPO), pr_number, _with_ai_disclosure(
             final or f"✅ **OpenHands completed the review for commit `{reviewed_sha[:12]}`.** No review text was produced."))
         print(f"  PR #{pr_number}: no review found on GitHub; posted the result as a comment")
-    elif standing_approval is not None:
-        # The prompt instructs `event: COMMENT`, so a bot approval must not
-        # gate the merge. Repost the findings only when the approval is this
-        # commit's review; otherwise the real review already landed.
-        approved_this_commit = standing_approval.get("commit_id") == reviewed_sha
-        print(f"  PR #{pr_number}: bot approval {standing_approval.get('id')} stands "
-              f"({'this commit' if approved_this_commit else 'an earlier commit'}); dismissing")
-        dismissed = _dismiss_review(github_token, pr_number, standing_approval)
-        body = ""
-        if approved_this_commit:
-            body = final or (
-                "⚠️ The automated review was submitted with the wrong decision "
-                "(APPROVED instead of COMMENT) and has been dismissed. Findings are "
-                "reposted above.")
-        if not dismissed:
-            body = (body + "\n\n" if body else "") + (
-                "⚠️ **An automated approving review could not be dismissed.** It is "
-                "still standing and should be dismissed manually before this pull "
-                "request is merged on the strength of it.")
-        if body:
-            _post_github_comment(github_token, _cfg("repo", REPO), pr_number,
-                                 _with_ai_disclosure(body))
     else:
-        print(f"  PR #{pr_number}: review confirmed on GitHub, no standing bot approval")
+        print(f"  PR #{pr_number}: review confirmed on GitHub")
     # Clearing the request is what takes the PR out of GitHub's "review
     # requested" list; it no longer affects whether we act on the PR.
     _remove_review_request(github_token, pr_number)
