@@ -8,5 +8,5 @@
     "OpenHands/saas-deploy",
     "OpenHands/evaluation"
   ],
-  "github_token_secret": "GITHUB_TOKEN_ISSUE_TRIAGE"
+  "github_token_secret": "FACTORY_GITHUB_TRIAGE_TOKEN"
 }
