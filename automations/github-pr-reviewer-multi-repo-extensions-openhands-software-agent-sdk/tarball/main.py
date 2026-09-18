@@ -146,7 +146,7 @@ REVIEW_STYLE_INSTRUCTIONS = ""
 # Pin the public review policy that this live automation is validating. The
 # SDK marketplace loader fetches it directly from OpenHands/extensions for
 # each review conversation; no review-policy copy lives in this automation.
-REVIEW_EXTENSIONS_REF = "17705d8cd974b2e904f5c0fe1605ec1ecb5d7f16"
+REVIEW_EXTENSIONS_REF = "d11a77a574ac7c7e349e54799fb6fd8472e618bd"
 # Path within each checked-out repository to a repo-specific review guide
 # (e.g. the repo's own code-review skill). When the file exists at this path
 # relative to the repo root, its contents are injected verbatim into the
