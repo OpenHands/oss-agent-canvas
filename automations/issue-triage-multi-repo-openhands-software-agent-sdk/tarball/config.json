@@ -1,0 +1,12 @@
+{
+  "repos": [
+    "OpenHands/extensions",
+    "OpenHands/OpenHands",
+    "OpenHands/software-agent-sdk",
+    "OpenHands/automation",
+    "OpenHands/enterprise",
+    "OpenHands/saas-deploy",
+    "OpenHands/evaluation"
+  ],
+  "github_token_secret": "FACTORY_GITHUB_TRIAGE_TOKEN"
+}

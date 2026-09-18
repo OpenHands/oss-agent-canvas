@@ -1,5 +1,5 @@
 enabled: true
-entrypoint: python3 main.py
+entrypoint: python3 worker.py
 keep_alive: null
 model: deepseek-v4
 name: 'Issue Triage (multi-repo): extensions, OpenHands, software-agent-sdk, automation,
