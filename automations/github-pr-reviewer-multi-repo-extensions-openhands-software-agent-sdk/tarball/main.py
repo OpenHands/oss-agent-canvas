@@ -932,15 +932,28 @@ def _github_paginate(token: str, path: str, params: dict | None = None) -> list:
     return results
 
 
+# Secrets the spawned review conversation is allowed to look up. The dedicated
+# GITHUB_TOKEN_REVIEW secret is the token the review agent uses to post its PR
+# review; GITHUB_TOKEN is included as a fallback so the spawned conversation
+# can still proceed if the dedicated secret is not registered. Restricting to
+# this allowlist (instead of forwarding every configured secret) keeps the
+# untrusted-PR conversation on least privilege: it only gets a GitHub token,
+# never Slack/Datadog/other secrets. See references/security.md.
+_REVIEW_SECRETS_ALLOWLIST = ("GITHUB_TOKEN_REVIEW", "GITHUB_TOKEN")
+
+
 def _resolve_github_token() -> str:
-    try:
-        token = get_secret("GITHUB_TOKEN")
-        if token:
-            return token
-    except Exception:
-        pass
+    """Uses the dedicated GITHUB_TOKEN_REVIEW secret, falling back to the
+    generic GITHUB_TOKEN only if the dedicated secret is not registered."""
+    for name in _REVIEW_SECRETS_ALLOWLIST:
+        try:
+            token = get_secret(name)
+            if token:
+                return token
+        except Exception:
+            pass
     raise RuntimeError(
-        "GITHUB_TOKEN secret is not set. "
+        "GITHUB_TOKEN_REVIEW (or GITHUB_TOKEN) secret is not set. "
         "Add a GitHub token with Contents: Read, Pull requests: Read, and Issues: Read/Write permissions."
     )
 
@@ -950,7 +963,7 @@ def _verify_token_and_repo(token: str, repo: str) -> None:
         user_data, _ = _github_request(token, "GET", "/user")
     except urllib.error.HTTPError as exc:
         if exc.code == 401:
-            raise RuntimeError("GITHUB_TOKEN is invalid or expired.") from exc
+            raise RuntimeError("The resolved GitHub token (GITHUB_TOKEN_REVIEW or GITHUB_TOKEN) is invalid or expired.") from exc
         raise RuntimeError(f"GitHub /user check failed: {exc.code}") from exc
 
     print(f"Authenticated as GitHub user: {user_data.get('login', '?')}")
@@ -1332,10 +1345,20 @@ def _list_secret_names(agent_url: str, api_key: str) -> list[dict]:
 
 
 def _build_secrets_payload(agent_url: str, api_key: str) -> dict:
+    """Build the secrets forwarded to the spawned review conversation.
+
+    Only the GitHub token secrets in _REVIEW_SECRETS_ALLOWLIST are forwarded,
+    on least-privilege grounds: the review conversation only needs a GitHub
+    token to post its review, so it must not receive Slack/Datadog/other
+    secrets. A dedicated LookupSecret is emitted for each allowlisted name that
+    is actually registered, so a missing dedicated secret does not inject a
+    broken lookup. GITHUB_TOKEN_REVIEW is exposed to the agent under that name;
+    GITHUB_TOKEN, when registered, is exposed under its own name as a fallback.
+    """
+    registered = {s.get("name", "") for s in _list_secret_names(agent_url, api_key)}
     secrets = {}
-    for secret in _list_secret_names(agent_url, api_key):
-        name = secret.get("name", "")
-        if not name:
+    for name in _REVIEW_SECRETS_ALLOWLIST:
+        if not name or name not in registered:
             continue
         lookup: dict = {
             "kind": "LookupSecret",
@@ -1343,9 +1366,6 @@ def _build_secrets_payload(agent_url: str, api_key: str) -> dict:
         }
         if api_key:
             lookup["headers"] = {"X-Session-API-Key": api_key}
-        desc = secret.get("description")
-        if desc:
-            lookup["description"] = desc
         secrets[name] = lookup
     return secrets
 
@@ -1887,7 +1907,7 @@ def _build_review_prompt(
         "1. The workspace is already the repository root at the exact Head SHA above, checked out as a real git repository (detached HEAD). Do not clone, fetch, push, or check out other branches. You may use `git log`, `git show`, and `git diff` to inspect history and changes.\n"
         "2. Follow the automatically loaded AGENTS.md guidance and applicable repository/public skills.\n"
         "3. Inspect the PR description, discussion, existing reviews, the diff provided below, and relevant surrounding code in the workspace.\n"
-        "   Use `gh` or GitHub REST API calls with `GITHUB_TOKEN`; never print secret values.\n"
+        "   Use `gh` or GitHub REST API calls with `GITHUB_TOKEN_REVIEW` (a GitHub token); never print secret values.\n"
         "4. Ground every finding in the workspace code. Before using an inline location, verify that the path and line are part of the PR diff.\n"
         "5. Publish one GitHub pull-request review using `POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews`.\n"
         "   Use `commit_id` equal to the Head SHA above and `event: COMMENT`. Put the overall verdict and risk assessment in `body`.\n"

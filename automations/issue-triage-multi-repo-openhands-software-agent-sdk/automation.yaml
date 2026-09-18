@@ -1,7 +1,7 @@
 enabled: true
 entrypoint: python3 main.py
 keep_alive: null
-model: null
+model: deepseek-v4
 name: 'Issue Triage (multi-repo): extensions, OpenHands, software-agent-sdk, automation,
   enterprise'
 preset_metadata: null

@@ -233,9 +233,13 @@ def github_request(token, method, path, params=None, body=None):
 def github_token():
     """Used for this poller's own read-only calls (/user, listing open
     issues). Label writes are unaffected: they happen inside the
-    spawned conversation, which independently looks up GITHUB_TOKEN via its
-    own injected secret (see ALLOWED_SECRETS/build_secrets)."""
-    for name in ("GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_TOKEN"):
+    spawned conversation, which independently looks up its injected secret
+    (see ALLOWED_SECRETS/build_secrets).
+
+    Uses the dedicated GITHUB_TOKEN_ISSUE_TRIAGE secret, falling back to the
+    generic GITHUB_TOKEN only if the dedicated secret is not registered, so a
+    missing dedicated secret never silently breaks triage."""
+    for name in ("GITHUB_TOKEN_ISSUE_TRIAGE", "GITHUB_TOKEN"):
         try:
             token = get_secret(name)
             if token:
@@ -297,7 +301,11 @@ def oh_request(method, path, body=None):
         return json.loads(raw) if raw.strip() else {}
 
 
-ALLOWED_SECRETS = ("GITHUB_TOKEN",)
+# Secrets injected into the spawned triage conversation. The dedicated
+# GITHUB_TOKEN_ISSUE_TRIAGE secret is the token the triage agent should use
+# for its label writes; GITHUB_TOKEN is included as a fallback so the spawned
+# conversation can still proceed if the dedicated secret is not registered.
+ALLOWED_SECRETS = ("GITHUB_TOKEN_ISSUE_TRIAGE", "GITHUB_TOKEN")
 
 
 def build_secrets():
@@ -321,7 +329,7 @@ Title: {issue.get('title', '(no title)')}
 Body:
 {issue.get('body') or '(no body)'}
 
-Use GITHUB_TOKEN only with https://api.github.com. Fetch the repository's complete existing label set before choosing labels. Apply 1–4 fitting labels using POST /repos/{REPO}/issues/{issue['number']}/labels with additive semantics. Never replace existing labels.
+Use GITHUB_TOKEN_ISSUE_TRIAGE (a GitHub token) only with https://api.github.com. Fetch the repository's complete existing label set before choosing labels. Apply 1–4 fitting labels using POST /repos/{REPO}/issues/{issue['number']}/labels with additive semantics. Never replace existing labels.
 
 Use `bug` for defects and `enhancement` for feature requests. Prefer useful area labels. Add `release-note-required` only for clear user-facing changes. Add `security` for credential, authentication, sandboxing, or vulnerability concerns. If and only if you apply `bug`, apply exactly one of `priority:low`, `priority:medium`, or `priority:high`: low for minor impact, medium for material but limited impact or a reasonable workaround, high for critical or widespread impact, data/security risk, or no practical workaround.
 
