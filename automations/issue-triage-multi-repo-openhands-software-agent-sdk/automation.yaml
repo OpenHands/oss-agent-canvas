@@ -1,7 +1,8 @@
 enabled: true
 entrypoint: python3 worker.py
+agent_profile_id: 514715b0-9015-4585-86ba-e98b997bbd3d
 keep_alive: null
-model: deepseek-v4
+model: null
 name: 'Issue Triage (multi-repo): extensions, OpenHands, software-agent-sdk, automation,
   enterprise'
 preset_metadata: null
