@@ -1,8 +1,9 @@
 enabled: true
 entrypoint: python3 worker.py
+agent_profile_id: 697a379b-babc-40bc-909d-89e318c14d41
 keep_alive: null
 model: null
-name: GitHub PR Reviewer (extension canary)
+name: 'GitHub PR Reviewer (multi-repo): OpenHands OSS'
 preset_metadata: null
 prompt: null
 setup_script_path: null
@@ -11,6 +12,16 @@ tarball_source:
   url: null
 timeout: 300
 trigger:
-  schedule: '*/5 * * * *'
-  timezone: UTC
-  type: cron
+  destination: dispatch_run
+  filter: >-
+    contains(['OpenHands/extensions', 'OpenHands/OpenHands', 'OpenHands/software-agent-sdk',
+    'OpenHands/automation'], repository.full_name) && contains(keys(@), 'pull_request')
+    && ((action == 'review_requested' && requested_reviewer.login == 'all-hands-bot')
+    || (action == 'submitted' && contains(keys(@), 'review') && review.user.login
+    == 'all-hands-bot'))
+  'on': '*'
+  source: github-events
+  subject_key_expr: null
+  turn_text_expr: null
+  type: event
+  wake_agent: true
