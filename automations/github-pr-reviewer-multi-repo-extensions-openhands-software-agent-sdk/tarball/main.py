@@ -168,11 +168,10 @@ MAX_CONCURRENT_REVIEWS = 3
 # un-retryable.
 MAX_SEEN_REVIEWS = 500
 
-# The service caps a run at 1800s. Stay well inside it so a sweep that starts
-# near the end still finishes. 120s between sweeps rather than the old 5min
-# cron: faster to react, and each sweep is a handful of GitHub calls.
-PR_INLINE_WAIT_BUDGET = 1200
-PR_INLINE_POLL_INTERVAL = 120
+# A later GitHub event will retry deferred work. Keep this fallback short so a
+# burst of webhook deliveries cannot pin several scanner runs for 20 minutes.
+PR_INLINE_WAIT_BUDGET = 180
+PR_INLINE_POLL_INTERVAL = 60
 # Set by _process_repo when it defers a PR because CI had not finished. It is
 # the signal that another sweep is worth doing; without a cron, nothing else
 # would come back to that commit.
