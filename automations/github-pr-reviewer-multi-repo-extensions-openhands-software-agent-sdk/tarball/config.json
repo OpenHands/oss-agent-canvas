@@ -1,0 +1,18 @@
+{
+  "repos": [
+    "OpenHands/OpenHands",
+    "OpenHands/software-agent-sdk",
+    "OpenHands/automation",
+    "OpenHands/extensions"
+  ],
+  "trigger_label": "openhands-review-canary",
+  "review_tone": "concise",
+  "maintainers": [
+    "neubig",
+    "VascoSch92",
+    "simonrosenberg",
+    "juanmichelini",
+    "palrohitg"
+  ],
+  "github_token_secret": "GITHUB_TOKEN_REVIEW"
+}
