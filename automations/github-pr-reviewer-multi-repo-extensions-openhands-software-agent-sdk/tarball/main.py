@@ -2141,6 +2141,7 @@ def _check_conversation_completion(
 
 def _process_repo(
     repo_entry: dict, github_token: str, agent_url: str, api_key: str,
+    target_pr_number: int | None = None,
 ) -> str | None:
     """Sweep one repository end-to-end: reconcile in-flight reviews, then
     evaluate every open PR through the deterministic gates. Each repo has
@@ -2171,9 +2172,13 @@ def _process_repo(
     except Exception as exc:
         print(f"  Skipping {repo}: could not list open PRs ({exc}); will retry next poll")
         return None
+    if target_pr_number is not None:
+        open_prs = [pr for pr in open_prs if pr.get("number") == target_pr_number]
     latest_open_prs = {pr["number"]: pr for pr in open_prs}
     state, _ = _load_state()
     for record in list(state["active"].values()):
+        if target_pr_number is not None and record.get("pr_number") != target_pr_number:
+            continue
         try:
             _check_conversation_completion(record, latest_open_prs, github_token, agent_url, api_key)
         except Exception as exc:
@@ -2297,6 +2302,7 @@ def _process_repo(
 
 def _drive_repo(
     repo_entry: dict, github_token: str, agent_url: str, api_key: str,
+    target_pr_number: int | None = None,
 ) -> str | None:
     """Sweep the repo, then keep sweeping while something is worth waiting
     for, within this run's budget.
@@ -2317,7 +2323,9 @@ def _drive_repo(
 
     while True:
         _CI_PENDING = False
-        conv_id = _process_repo(repo_entry, github_token, agent_url, api_key)
+        conv_id = _process_repo(
+            repo_entry, github_token, agent_url, api_key, target_pr_number
+        )
         if conv_id:
             last_conversation_id = conv_id
 
@@ -2325,8 +2333,13 @@ def _drive_repo(
         waiting_on = []
         if _CI_PENDING:
             waiting_on.append("CI")
-        if state["active"]:
-            waiting_on.append(f"{len(state['active'])} review(s)")
+        active_count = sum(
+            target_pr_number is None
+            or record.get("pr_number") == target_pr_number
+            for record in state["active"].values()
+        )
+        if active_count:
+            waiting_on.append(f"{active_count} review(s)")
         if not waiting_on:
             return last_conversation_id
         if time.time() + PR_INLINE_POLL_INTERVAL >= deadline:
@@ -2348,6 +2361,7 @@ def main() -> str | None:
     github_token = _resolve_github_token()
 
     payload = _load_event()
+    target_pr_number = None
     if payload is None:
         # Manual dispatch (or a malformed payload): sweep everything, which is
         # also how to drain the backlog after an outage.
@@ -2365,9 +2379,9 @@ def main() -> str | None:
                   f"automation's trigger filter but is not in REPOS, so the trigger "
                   f"and this script disagree and the run can do nothing")
             return None
-        pr_number = (payload.get("pull_request") or {}).get("number")
+        target_pr_number = (payload.get("pull_request") or {}).get("number")
         print(f"Event for {repo_full}: action={payload.get('action')!r} "
-              f"pr=#{pr_number}")
+              f"pr=#{target_pr_number}")
         entries = [entry]
 
     last_conversation_id = None
@@ -2376,7 +2390,13 @@ def main() -> str | None:
         # KV/token errors that are genuinely fatal for all repos (e.g. no
         # GITHUB_TOKEN) surface from _resolve_github_token before the loop.
         try:
-            conv_id = _drive_repo(repo_entry, github_token, agent_url, api_key)
+            conv_id = _drive_repo(
+                repo_entry,
+                github_token,
+                agent_url,
+                api_key,
+                target_pr_number=target_pr_number,
+            )
             if conv_id:
                 last_conversation_id = conv_id
         except Exception as exc:
