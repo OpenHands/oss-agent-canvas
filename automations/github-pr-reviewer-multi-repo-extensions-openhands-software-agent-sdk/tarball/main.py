@@ -170,7 +170,7 @@ MAX_SEEN_REVIEWS = 500
 
 # A later GitHub event will retry deferred work. Keep this fallback short so a
 # burst of webhook deliveries cannot pin several scanner runs for 20 minutes.
-PR_INLINE_WAIT_BUDGET = 180
+PR_INLINE_WAIT_BUDGET = 60
 PR_INLINE_POLL_INTERVAL = 60
 # Set by _process_repo when it defers a PR because CI had not finished. It is
 # the signal that another sweep is worth doing; without a cron, nothing else
