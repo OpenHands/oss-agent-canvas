@@ -68,6 +68,8 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlencode
 
+from maintainer_handoff import request_maintainer_review
+
 # Capture the original urlopen before any call sites are rewritten to the
 # retrying wrapper, so the wrapper itself can reach the real implementation
 # without recursing.
@@ -134,6 +136,7 @@ REPOS = [
     {"repo": "OpenHands/software-agent-sdk", "slack_channel_id": "C06R25BT5B2"},
     {"repo": "OpenHands/automation", "slack_channel_id": "C0ALCEFB7AQ"},
 ]
+MAINTAINERS = ["neubig", "VascoSch92", "simonrosenberg", "juanmichelini", "palrohitg"]
 
 # Module-level defaults shared by every repo (override per-entry in REPOS).
 # REPO is a fallback only — every entry in REPOS supplies its own "repo", so
@@ -936,6 +939,27 @@ def _github_paginate(token: str, path: str, params: dict | None = None) -> list:
     return results
 
 
+class _MaintainerRepository:
+    """Adapt the live reviewer's retrying GitHub transport to the shared selector."""
+
+    def __init__(self, token: str, repository: str):
+        self.token = token
+        self.repository = repository
+
+    def gh(self, method, path, body=None):
+        return _github_request(
+            self.token, method, f"/repos/{self.repository}{path}", body=body
+        )[0]
+
+    def gh_pages(self, path):
+        return _github_paginate(self.token, f"/repos/{self.repository}{path}")
+
+    def api(self, method, path, params=None, body=None):
+        return _github_request(
+            self.token, method, path, params=params, body=body
+        )[0]
+
+
 # Secrets the spawned review conversation is allowed to look up. The dedicated
 # GITHUB_TOKEN_REVIEW secret is the token the review agent uses to post its PR
 # review; GITHUB_TOKEN is included as a fallback so the spawned conversation
@@ -1046,6 +1070,32 @@ def _matching_review_exists(token: str, pr_number: int, head_sha: str) -> bool:
     if not head_sha:
         return False
     return any(r.get("commit_id") == head_sha for r in _bot_reviews(token, pr_number))
+
+
+def _head_is_approved(token: str, pr_number: int, head_sha: str) -> bool:
+    """Whether the bot's last decisive review on this exact head approves it."""
+    approved = False
+    for review in _bot_reviews(token, pr_number):
+        if review.get("commit_id") != head_sha:
+            continue
+        state = (review.get("state") or "").upper()
+        if state in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}:
+            approved = state == "APPROVED"
+    return approved
+
+
+def _handoff_approved_review(token: str, pr_number: int, head_sha: str) -> None:
+    """Request one configured human after a positive current-head bot review."""
+    if not _head_is_approved(token, pr_number, head_sha):
+        return
+    repo = _cfg("repo", REPO)
+    pr = _get_pr(token, repo, pr_number)
+    if _head_sha(pr) != head_sha:
+        return
+    selected = request_maintainer_review(
+        _MaintainerRepository(token, repo), pr, MAINTAINERS
+    )
+    print(f"  PR #{pr_number}: positive bot review handed to @{selected}")
 
 
 # COMMENTED is absent: a later comment does not retract an earlier approval.
@@ -2011,6 +2061,16 @@ def _check_conversation_completion(
         return
     if status == "finalizing":
         if _matching_review_exists(github_token, rec["pr_number"], rec.get("head_sha", "")):
+            try:
+                _handoff_approved_review(
+                    github_token, rec["pr_number"], rec.get("head_sha", "")
+                )
+            except Exception as exc:
+                print(
+                    f"  Warning: human review handoff failed for PR "
+                    f"#{rec['pr_number']}; will retry: {exc}"
+                )
+                return
             _remove_review_request(github_token, rec["pr_number"])
             _finish_review(rec, "closed", github_token, agent_url, api_key,
                            conversation_status=rec.get("terminal_status"))
@@ -2065,6 +2125,15 @@ def _check_conversation_completion(
         print(f"  PR #{pr_number}: no review found on GitHub; posted the result as a comment")
     else:
         print(f"  PR #{pr_number}: review confirmed on GitHub")
+    if review_landed:
+        try:
+            _handoff_approved_review(github_token, pr_number, reviewed_sha)
+        except Exception as exc:
+            print(
+                f"  Warning: human review handoff failed for PR #{pr_number}; "
+                f"will retry: {exc}"
+            )
+            return
     # Clearing the request is what takes the PR out of GitHub's "review
     # requested" list; it no longer affects whether we act on the PR.
     _remove_review_request(github_token, pr_number)
@@ -2150,6 +2219,14 @@ def _process_repo(
             if _matching_review_exists(github_token, pr["number"], head_sha):
                 # Already reviewed at this head (e.g. from before this
                 # rollout). Record it and clear any stale reviewer request.
+                try:
+                    _handoff_approved_review(github_token, pr["number"], head_sha)
+                except Exception as exc:
+                    print(
+                        f"  Warning: human review handoff failed for PR "
+                        f"#{pr['number']}; will retry: {exc}"
+                    )
+                    continue
                 _mark_seen(review_key)
                 _remove_review_request(github_token, pr["number"])
                 print(f"  PR #{pr['number']} already reviewed at {head_sha[:12]}; recorded")
