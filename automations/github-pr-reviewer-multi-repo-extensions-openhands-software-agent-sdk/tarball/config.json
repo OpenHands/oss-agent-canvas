@@ -12,7 +12,8 @@
     "VascoSch92",
     "simonrosenberg",
     "juanmichelini",
-    "malhotra5"
+    "malhotra5",
+    "enyst"
   ],
   "github_token_secret": "GITHUB_TOKEN_REVIEW",
   "trigger_reviewer": "all-hands-bot"
