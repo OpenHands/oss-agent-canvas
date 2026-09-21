@@ -2202,7 +2202,7 @@ def _process_repo(
                 continue
             review_key = _review_key(pr["number"], head_sha)
             state, _ = _load_state()
-            if review_key in state["active"] or review_key in state["seen_reviews"]:
+            if review_key in state["active"]:
                 continue
 
             fresh_pr = _get_pr(github_token, repo, pr["number"])
@@ -2229,6 +2229,9 @@ def _process_repo(
                 _mark_seen(review_key)
                 _remove_review_request(github_token, pr["number"])
                 print(f"  PR #{pr['number']} already reviewed at {head_sha[:12]}; recorded")
+                continue
+
+            if review_key in state["seen_reviews"]:
                 continue
 
             if _bot_requested(fresh_pr) or _has_trigger_label(fresh_pr):
