@@ -1,0 +1,17 @@
+agent_profile_id: 697a379b-babc-40bc-909d-89e318c14d41
+enabled: true
+entrypoint: python3 worker.py
+keep_alive: null
+model: null
+name: 'Review retry canary #654 (temporary)'
+preset_metadata: null
+prompt: null
+setup_script_path: null
+tarball_source:
+  type: internal
+  url: null
+timeout: 300
+trigger:
+  schedule: '*/5 * * * *'
+  timezone: UTC
+  type: cron
