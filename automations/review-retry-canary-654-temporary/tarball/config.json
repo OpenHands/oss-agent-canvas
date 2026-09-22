@@ -1,6 +1,6 @@
 {
   "repos": [
-    "OpenHands/automation"
+    "OpenHands/software-agent-sdk"
   ],
   "trigger_label": "openhands-review-canary",
   "review_tone": "concise",
