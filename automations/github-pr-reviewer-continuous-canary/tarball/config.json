@@ -17,5 +17,5 @@
   "max_new_per_run": 1,
   "source_repository": "OpenHands/extensions",
   "source_branch": "factory/reviewer-continuous-canary",
-  "source_commit": "db28591183ccd9c2227632b36bbf39687181381b"
+  "source_commit": "ca83635bcd06166e7052ebe24c5883d0407bab38"
 }
