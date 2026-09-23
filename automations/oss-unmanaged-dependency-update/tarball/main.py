@@ -412,7 +412,11 @@ def update_repository(token: str, now: datetime) -> str | None:
         run("git", "commit", "-m", "chore(deps): update unmanaged runtime dependencies\n\nCo-authored-by: openhands <openhands@all-hands.dev>", cwd=repo_dir)
         push_args = ["git", "push", "origin", f"HEAD:{BRANCH}"]
         if existing_pr:
-            push_args.insert(2, "--force-with-lease")
+            expected_sha = existing_pr["head"]["sha"]
+            push_args.insert(
+                2,
+                f"--force-with-lease=refs/heads/{BRANCH}:{expected_sha}",
+            )
         run(*push_args, cwd=repo_dir, env=env)
 
         body = pr_body(changes)
