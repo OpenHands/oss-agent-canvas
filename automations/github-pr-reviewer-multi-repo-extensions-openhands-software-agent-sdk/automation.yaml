@@ -10,17 +10,8 @@ setup_script_path: null
 tarball_source:
   type: internal
   url: null
-timeout: 300
+timeout: 1200
 trigger:
-  destination: dispatch_run
-  filter: contains(['OpenHands/extensions', 'OpenHands/OpenHands', 'OpenHands/software-agent-sdk',
-    'OpenHands/automation'], repository.full_name) && contains(keys(@), 'pull_request')
-    && ((action == 'review_requested' && requested_reviewer.login == 'all-hands-bot')
-    || (action == 'submitted' && contains(keys(@), 'review') && review.user.login
-    == 'all-hands-bot'))
-  'on': '*'
-  source: github-events
-  subject_key_expr: null
-  turn_text_expr: null
-  type: event
-  wake_agent: true
+  type: cron
+  schedule: '*/30 * * * *'
+  timezone: UTC

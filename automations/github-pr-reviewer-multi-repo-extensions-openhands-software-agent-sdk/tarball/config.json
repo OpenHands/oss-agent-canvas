@@ -16,5 +16,9 @@
     "enyst"
   ],
   "github_token_secret": "GITHUB_TOKEN_REVIEW",
-  "trigger_reviewer": "all-hands-bot"
+  "trigger_reviewer": "all-hands-bot",
+  "max_new_per_run": 1,
+  "source_repository": "OpenHands/extensions",
+  "source_branch": "factory/reviewer-continuous-canary",
+  "source_commit": "c8d69aeb6f9ef6e6a822cb6ed966ebbae5d04b04"
 }
