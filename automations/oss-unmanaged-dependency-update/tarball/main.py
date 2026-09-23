@@ -385,9 +385,15 @@ def update_repository(token: str, now: datetime) -> str | None:
         repo_dir = Path(temp_dir) / "repo"
         run("git", "clone", "--depth", "1", f"https://github.com/{SDK_REPO}.git", str(repo_dir), env=env)
         if existing_pr:
-            run("git", "fetch", "origin", f"{BRANCH}:{BRANCH}", cwd=repo_dir, env=env)
-            run("git", "checkout", BRANCH, cwd=repo_dir)
-            run("git", "rebase", "origin/main", cwd=repo_dir, env=env)
+            run(
+                "git",
+                "fetch",
+                "origin",
+                f"+refs/heads/{BRANCH}:refs/remotes/origin/{BRANCH}",
+                cwd=repo_dir,
+                env=env,
+            )
+            run("git", "checkout", "-B", BRANCH, "origin/main", cwd=repo_dir)
         else:
             run("git", "checkout", "-b", BRANCH, cwd=repo_dir)
 
