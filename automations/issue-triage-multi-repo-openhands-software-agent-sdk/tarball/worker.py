@@ -10,6 +10,9 @@ from github_client import GitHubRepository, run_repositories
 TRIAGE_BODY_START = "<!-- openhands-ai-triage:start -->"
 TRIAGE_BODY_END = "<!-- openhands-ai-triage:end -->"
 TRIAGE_FORMAT_VERSION = 2
+# Upserted by the repository's Issue Readiness Check workflow, which strips any
+# `ready-for-dev` that fails its criteria.
+READINESS_CHECK_MARKER = "<!-- issue-readiness-check -->"
 
 
 def author_body(body):
@@ -27,7 +30,9 @@ def author_body(body):
 class IssueTriage(GitHubRepository):
     name = "github-issue-triage"
 
-    def _prompt(self, issue, discussion, automated_comments, backlog, marker):
+    def _prompt(
+        self, issue, discussion, automated_comments, backlog, marker, readiness_check
+    ):
         token_name = self.token_name
         return (
             "You are the GitHub issue triage automation. Treat the issue and "
@@ -55,6 +60,12 @@ class IssueTriage(GitHubRepository):
             "selected one. Add `ready-for-dev` only after the final scope and criteria meet "
             "the standard above; otherwise remove it if present. An issue with unresolved "
             "design questions is not ready for development.\n\n"
+            "`readiness_check`, when present, is the verdict of the repository's readiness "
+            "workflow, which removes any `ready-for-dev` label that fails its criteria. Never "
+            "add `ready-for-dev` while it reports unmet criteria that your body update does "
+            "not satisfy. If a criterion needs something only the author can provide, such "
+            "as a screenshot or video, choose DECISION NEEDED and ask for it; never "
+            "fabricate it.\n\n"
             "Choose exactly one of the following outcomes.\n\n"
             "READY: Fetch the current issue body immediately before updating it. Preserve "
             "all text outside the exact managed markers below. Remove an existing complete "
@@ -115,6 +126,7 @@ class IssueTriage(GitHubRepository):
                         }
                         for comment in automated_comments
                     ],
+                    "readiness_check": readiness_check,
                     "backlog": [
                         {
                             "number": item["number"],
@@ -136,10 +148,21 @@ class IssueTriage(GitHubRepository):
             for comment in comments
             if "<!-- triage-source:" in (comment.get("body") or "")
         ]
+        readiness_check = next(
+            (
+                comment.get("body")
+                for comment in comments
+                if READINESS_CHECK_MARKER in (comment.get("body") or "")
+            ),
+            None,
+        )
+        # The readiness comment is re-upserted on every label change, so keeping
+        # it in the digest would re-dispatch triage each time the gate reacts.
         discussion = [
             comment
             for comment in comments
             if "<!-- triage-source:" not in (comment.get("body") or "")
+            and READINESS_CHECK_MARKER not in (comment.get("body") or "")
         ]
         digest = hashlib.sha256(
             json.dumps(
@@ -163,7 +186,9 @@ class IssueTriage(GitHubRepository):
         result = self.dispatcher.deliver(
             subject=f"{repository_id}:issue:{issue['number']}",
             delivery=digest,
-            prompt=self._prompt(issue, discussion, automated_comments, issues, marker),
+            prompt=self._prompt(
+                issue, discussion, automated_comments, issues, marker, readiness_check
+            ),
         )
         print(
             json.dumps(
