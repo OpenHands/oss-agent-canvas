@@ -1,5 +1,5 @@
 agent_profile_id: 514715b0-9015-4585-86ba-e98b997bbd3d
-enabled: true
+enabled: false
 entrypoint: python3 worker.py
 keep_alive: null
 model: null
