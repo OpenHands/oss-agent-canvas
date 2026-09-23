@@ -251,7 +251,7 @@ def update_sdk_dockerfile(text: str, token: str, now: datetime) -> tuple[str, li
                 if not match:
                     raise RuntimeError(f"Missing checksum for {filename}")
                 checksums[arch] = match.group(1)
-            text = replace_all_exact(text, f"node-v{old}-linux-${{NARCH}}", f"node-v{new}-linux-${{NARCH}}", 2)
+            text = replace_all_exact(text, f"v{old}", f"v{new}", 3)
             for arch, checksum in checksums.items():
                 pattern = rf"(NARCH={arch}; NODE_SHA256=)[0-9a-f]{{64}}"
                 text, count = re.subn(pattern, rf"\g<1>{checksum}", text)
