@@ -1,0 +1,16 @@
+enabled: true
+entrypoint: python3 main.py
+keep_alive: false
+model: null
+name: OSS Unmanaged Dependency Update
+preset_metadata: null
+prompt: null
+setup_script_path: null
+tarball_source:
+  type: internal
+  url: null
+timeout: 600
+trigger:
+  schedule: 23 7 * * 2
+  timezone: UTC
+  type: cron
