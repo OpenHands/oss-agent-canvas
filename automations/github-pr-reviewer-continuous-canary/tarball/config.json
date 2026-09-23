@@ -1,0 +1,21 @@
+{
+  "repos": [
+    "OpenHands/automation"
+  ],
+  "trigger_label": "openhands-review-canary",
+  "review_tone": "concise",
+  "maintainers": [
+    "neubig",
+    "VascoSch92",
+    "simonrosenberg",
+    "juanmichelini",
+    "malhotra5",
+    "enyst"
+  ],
+  "github_token_secret": "GITHUB_TOKEN_REVIEW",
+  "trigger_reviewer": "all-hands-bot",
+  "max_new_per_run": 1,
+  "source_repository": "OpenHands/extensions",
+  "source_branch": "factory/reviewer-continuous-canary",
+  "source_commit": "db28591183ccd9c2227632b36bbf39687181381b"
+}
