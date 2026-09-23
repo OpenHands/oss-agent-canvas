@@ -1,0 +1,18 @@
+[
+  {
+    "url": "https://github.com/OpenHands/OpenHands",
+    "ref": "main"
+  },
+  {
+    "url": "https://github.com/OpenHands/software-agent-sdk",
+    "ref": "main"
+  },
+  {
+    "url": "https://github.com/OpenHands/automation",
+    "ref": "main"
+  },
+  {
+    "url": "https://github.com/OpenHands/extensions",
+    "ref": "main"
+  }
+]
