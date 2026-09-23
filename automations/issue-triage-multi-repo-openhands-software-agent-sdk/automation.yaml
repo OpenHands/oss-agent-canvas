@@ -1,5 +1,5 @@
 agent_profile_id: 514715b0-9015-4585-86ba-e98b997bbd3d
-enabled: false
+enabled: true
 entrypoint: python3 worker.py
 keep_alive: null
 model: null
@@ -8,6 +8,7 @@ name: 'Issue Triage (multi-repo): extensions, OpenHands, software-agent-sdk, aut
 preset_metadata: null
 prompt: null
 setup_script_path: null
+state: ACTIVE
 tarball_source:
   type: internal
   url: null
