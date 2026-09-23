@@ -17,7 +17,8 @@ trigger:
   filter: contains(['OpenHands/extensions', 'OpenHands/OpenHands', 'OpenHands/software-agent-sdk',
     'OpenHands/automation', 'OpenHands/enterprise', 'OpenHands/saas-deploy', 'OpenHands/evaluation'],
     repository.full_name) && contains(keys(@), 'issue') && !contains(keys(@), 'comment')
-    && contains(['opened','reopened','unlabeled'], action)
+    && contains(['opened','reopened','unlabeled'], action) && !(action == 'unlabeled'
+    && sender.login == 'github-actions[bot]' && label.name == 'ready-for-dev')
   'on': '*'
   source: github-events
   subject_key_expr: null
