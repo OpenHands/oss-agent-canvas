@@ -2,7 +2,6 @@
 
 import json
 import os
-import re
 import sys
 from functools import cached_property
 from urllib.parse import quote
@@ -16,13 +15,16 @@ from maintainer_handoff import (
     request_maintainer_review,
 )
 
-# The head-eligibility gate. It reads the check runs and workflow runs GitHub
-# already reports for the exact head, so it needs no branch-protection or ruleset
-# access and no maintained list of check names. A completed run blocks unless its
-# conclusion is explicitly non-blocking, so an unrecognized conclusion fails
-# closed rather than approving silently. A run that has not completed means
-# waiting, never approval. Workflow runs are read too because a workflow can fail
-# before creating any check run, leaving the check-run rollup green.
+# The head-eligibility gate. Scheduled discovery classifies only the checks
+# GitHub reports as required for the pull request, read through the GraphQL
+# `isRequired` signal, so an optional workflow that fails before creating any
+# check run cannot block a head whose required checks pass. An explicit
+# `all-hands-bot` review request is the intake-policy exception and bypasses the
+# gate entirely. A completed required run blocks unless its conclusion is
+# explicitly non-blocking, so an unrecognized conclusion fails closed rather than
+# approving silently, and a required run that has not completed means waiting,
+# never approval. When the required set cannot be read, the gate falls back to
+# every current-head check and workflow run, so a red head still blocks.
 CHECK_GATE_MARKER = "<!-- openhands-review-gate:"
 NON_BLOCKING_CHECK_CONCLUSIONS = frozenset({"success", "neutral", "skipped"})
 # How many unrequested heads one scheduled scan examines, per repository. Each
@@ -326,25 +328,6 @@ class PullRequestReviewer(GitHubRepository):
             f"second result.{self_review_note}"
         )
 
-    def _linked_issue_is_low_priority(self, pr):
-        """Return whether any same-repository closing issue is priority:low."""
-        numbers = {
-            int(number)
-            for number in re.findall(
-                r"(?im)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)",
-                pr.get("body") or "",
-            )
-        }
-        for number in numbers:
-            issue = self.gh("GET", f"/issues/{number}")
-            labels = {
-                (item.get("name") or "").casefold()
-                for item in issue.get("labels", [])
-            }
-            if "priority:low" in labels:
-                return True
-        return False
-
     def _finish_completed_review(self, pr, trigger, label=None):
         """Complete an exact-head review, including an optional human handoff.
 
@@ -390,9 +373,7 @@ class PullRequestReviewer(GitHubRepository):
             return False
         # A scope stop is not an approval: it requests the maintainer decision
         # the change is missing, through the same handoff as an approval.
-        if (approved or maintainer_decision) and not self._linked_issue_is_low_priority(
-            pr
-        ):
+        if approved or maintainer_decision:
             maintainers = parse_maintainers(self.config.get("maintainers"))
             if maintainers:
                 try:
@@ -540,20 +521,15 @@ class PullRequestReviewer(GitHubRepository):
             ),
         )
 
-    def _classify_check_runs(self, sha):
-        """Split current-head check and workflow runs into blocking/pending/green.
+    @staticmethod
+    def _classify_runs(reporters):
+        """Split runs into blocking, pending, and green by status/conclusion.
 
-        Check runs are the primary signal, but a workflow can fail before
-        creating any check run, so workflow runs whose suites reported no check
-        runs are considered too. A completed run whose conclusion is neither
-        blocking nor explicitly non-blocking fails closed, so an unknown
-        conclusion cannot silently approve a PR. A run that has not completed
-        means waiting, never approval.
+        A completed run whose conclusion is neither blocking nor explicitly
+        non-blocking fails closed, so an unknown conclusion cannot silently
+        approve a PR. A run that has not completed means waiting, never
+        approval.
         """
-        check_runs = self.check_runs(sha)
-        reporters = self._latest_check_runs(sha, check_runs) + self._latest_workflow_runs(
-            sha, check_runs
-        )
         blocking, pending = [], []
         for run in reporters:
             name = run.get("name") or "unnamed check"
@@ -569,6 +545,86 @@ class PullRequestReviewer(GitHubRepository):
         if pending:
             return "waiting", sorted(set(pending))
         return "green", []
+
+    def _classify_all_runs(self, sha):
+        """Every current-head check and workflow run, regardless of requirement.
+
+        The conservative fallback used when the required-check set cannot be
+        read. Check runs are the primary signal, but a workflow can fail before
+        creating any check run, so workflow runs whose suites reported no check
+        runs are considered too.
+        """
+        check_runs = self.check_runs(sha)
+        reporters = (
+            self._latest_check_runs(sha, check_runs)
+            + self._latest_workflow_runs(sha, check_runs)
+        )
+        return self._classify_runs(reporters)
+
+    def _classify_required_runs(self, sha, required):
+        """Classify only the required current-head checks.
+
+        `required` is the required contexts GitHub reports for the pull request.
+        Only a required check decides the scheduled gate, so an optional workflow
+        that fails before creating any check run - and whose context GitHub does
+        not mark required - cannot block a head whose required checks pass. A
+        required context that reported no current-head check run, such as a
+        required workflow that failed before any job, is expected but unfulfilled
+        and classifies as waiting.
+        """
+        check_runs = self.check_runs(sha)
+        latest = {
+            (run.get("name") or "unnamed check"): run
+            for run in self._latest_check_runs(sha, check_runs)
+        }
+        reporters = []
+        for context in required:
+            name = context["name"]
+            if context.get("kind") == "StatusContext":
+                state = self.statuses(sha).get(name)
+                reporters.append(
+                    {
+                        "name": name,
+                        "status": "completed" if state else "expected",
+                        "conclusion": state,
+                    }
+                )
+                continue
+            reporters.append(latest.get(name, {"name": name, "status": "expected"}))
+        return self._classify_runs(reporters)
+
+    def _classify_check_runs(self, pr):
+        """Split a pull request head into blocked, waiting, or green.
+
+        Scheduled discovery classifies only GitHub-required checks, because an
+        optional workflow must not block the merge gate. The required set is read
+        per pull request; when it is unavailable or empty the classifier falls
+        back to every current-head check and workflow run, so a red head still
+        blocks. The exact-head, latest-run, and fail-closed behavior is identical
+        either way.
+        """
+        sha = pr["head"]["sha"]
+        try:
+            required = self.required_check_contexts(pr["number"])
+        except Exception as exc:  # noqa: BLE001 - fail closed to the full rollup
+            print(
+                json.dumps(
+                    {
+                        "repository": self.repository,
+                        "pr": pr["number"],
+                        "head_sha": sha,
+                        "required_check_signal": "unavailable",
+                        "error": type(exc).__name__,
+                    }
+                ),
+                flush=True,
+            )
+            return self._classify_all_runs(sha)
+        if not required:
+            # No required checks configured is not a red head, but it is also not
+            # evidence the head is reviewable, so fall back to the full rollup.
+            return self._classify_all_runs(sha)
+        return self._classify_required_runs(sha, required)
 
     def _owns_comment(self, comment):
         login = ((comment.get("user") or {}).get("login") or "").lower()
@@ -676,18 +732,28 @@ class PullRequestReviewer(GitHubRepository):
             f"_This is an automated check - {WORKFLOW_DISCLOSURE}._"
         )
 
-    def _gate_head(self, pr, scheduled, explain=True):
+    def _gate_head(self, pr, requested=False, scheduled=False, explain=True):
         """Return the head's eligibility, explaining any stop on the PR.
+
+        An explicit `all-hands-bot` review request is the intake-policy
+        exception: the caller asked for this head by name, so the CI gate does
+        not apply and no gate comment is left. Scheduled discovery still gates on
+        the required checks. When it stops a scheduled run, the explanation names
+        the retry that deployment actually has, which is why `scheduled` is
+        threaded into the body.
 
         `explain` is False for an unrequested candidate: a PR nobody asked about
         that is merely red or pending gets no managed comment. Announcing a
         blocked or waiting head for every open PR is what produced the comment
-        storm this scan is bounded against, and the managed comment is the
-        answer to an explicit request. The gate still classifies the head, so a
-        red or pending unrequested head is skipped without starting an agent.
+        storm the rotating window is bounded against, and the managed comment is
+        the answer to an explicit request or trigger label. The gate still
+        classifies the head, so a red or pending unrequested head is skipped
+        without starting an agent.
         """
         sha = pr["head"]["sha"]
-        state, names = self._classify_check_runs(sha)
+        if requested:
+            return "green", sha
+        state, names = self._classify_check_runs(pr)
         if explain and state in ("blocked", "waiting"):
             marker = f"{CHECK_GATE_MARKER}{state}:{sha} -->"
             self._gate_comment(
@@ -860,6 +926,7 @@ class PullRequestReviewer(GitHubRepository):
                 sha = pr["head"]["sha"]
                 gate_state, sha = self._gate_head(
                     pr,
+                    requested=event_mode,
                     scheduled=not event_mode,
                     explain=not unrequested_candidate,
                 )
