@@ -1,0 +1,18 @@
+agent_profile_id: null
+enabled: true
+entrypoint: python3 validate.py
+keep_alive: null
+model: null
+name: 'Temporary validation: stale CI lifecycle'
+preset_metadata: null
+prompt: null
+setup_script_path: null
+state: ACTIVE
+tarball_source:
+  type: internal
+  url: null
+timeout: 120
+trigger:
+  schedule: 0 0 1 1 *
+  timezone: UTC
+  type: cron
