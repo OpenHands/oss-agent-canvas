@@ -1,9 +1,1 @@
-{
-  "repos": [
-    "OpenHands/extensions",
-    "OpenHands/OpenHands",
-    "OpenHands/software-agent-sdk",
-    "OpenHands/automation"
-  ],
-  "github_token_secret": "GITHUB_TOKEN_REVIEW"
-}
+{"repos":["OpenHands/extensions","OpenHands/OpenHands","OpenHands/software-agent-sdk","OpenHands/automation"],"github_token_secret":"GITHUB_TOKEN_REVIEW"}
