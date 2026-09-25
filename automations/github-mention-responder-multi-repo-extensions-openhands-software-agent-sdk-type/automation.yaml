@@ -1,5 +1,5 @@
 agent_profile_id: null
-enabled: false
+enabled: true
 entrypoint: python3 main.py
 keep_alive: null
 model: null
@@ -8,6 +8,7 @@ name: 'GitHub Mention Responder (multi-repo): extensions, OpenHands, software-ag
 preset_metadata: null
 prompt: null
 setup_script_path: null
+state: ACTIVE
 tarball_source:
   type: internal
   url: null
