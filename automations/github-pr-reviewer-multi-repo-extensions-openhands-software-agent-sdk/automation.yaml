@@ -1,5 +1,5 @@
 agent_profile_id: 697a379b-babc-40bc-909d-89e318c14d41
-enabled: false
+enabled: true
 entrypoint: python3 worker.py
 keep_alive: null
 model: null
@@ -7,6 +7,7 @@ name: 'GitHub PR Reviewer (multi-repo): OpenHands OSS'
 preset_metadata: null
 prompt: null
 setup_script_path: null
+state: ACTIVE
 tarball_source:
   type: internal
   url: null
