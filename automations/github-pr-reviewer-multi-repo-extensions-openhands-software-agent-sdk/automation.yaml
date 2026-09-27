@@ -7,7 +7,7 @@ name: 'GitHub PR Reviewer (multi-repo): OpenHands OSS'
 preset_metadata: null
 prompt: null
 setup_script_path: null
-state: ACTIVE
+state: INACTIVE
 tarball_source:
   type: internal
   url: null
