@@ -7,12 +7,12 @@ name: 'GitHub PR Reviewer (multi-repo): OpenHands OSS'
 preset_metadata: null
 prompt: null
 setup_script_path: null
-state: INACTIVE
+state: ACTIVE
 tarball_source:
   type: internal
   url: null
 timeout: 1200
 trigger:
-  schedule: '*/15 * * * *'
+  schedule: '0 * * * *'
   timezone: UTC
   type: cron

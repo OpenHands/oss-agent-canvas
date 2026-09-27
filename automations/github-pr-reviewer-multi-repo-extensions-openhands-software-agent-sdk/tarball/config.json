@@ -17,7 +17,7 @@
   ],
   "github_token_secret": "GITHUB_TOKEN_REVIEW",
   "trigger_reviewer": "all-hands-bot",
-  "max_new_per_run": 2,
+  "max_new_per_run": 1,
   "source_repository": "OpenHands/extensions",
   "source_branch": "main",
   "source_commit": "f41c2faa9e6336a3eabac3d3147ec7356c3b0578"
