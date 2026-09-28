@@ -1,3 +1,4 @@
+agent_profile_id: null
 enabled: true
 entrypoint: python3 main.py
 keep_alive: false
