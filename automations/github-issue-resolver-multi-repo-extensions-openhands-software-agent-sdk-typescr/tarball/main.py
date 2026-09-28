@@ -74,7 +74,7 @@ REPOS = [
     {"repo": "OpenHands/extensions"},
     {"repo": "OpenHands/OpenHands"},
     {"repo": "OpenHands/software-agent-sdk"},
-    {"repo": "OpenHands/typescript-client"},
+    {"repo": "OpenHands/automation"},
 ]
 
 # Module-level defaults shared by every repo (override per-entry in REPOS).

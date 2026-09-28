@@ -1,0 +1,18 @@
+agent_profile_id: null
+enabled: true
+entrypoint: python3 worker.py
+keep_alive: null
+model: null
+name: 'GitHub stale CI cleanup: OpenHands OSS'
+preset_metadata: null
+prompt: null
+setup_script_path: null
+state: ACTIVE
+tarball_source:
+  type: internal
+  url: null
+timeout: 300
+trigger:
+  schedule: 0 * * * *
+  timezone: UTC
+  type: cron

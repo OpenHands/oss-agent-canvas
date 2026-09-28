@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import sys
 from functools import cached_property
 from urllib.parse import quote
@@ -27,6 +28,9 @@ from maintainer_handoff import (
 # every current-head check and workflow run, so a red head still blocks.
 CHECK_GATE_MARKER = "<!-- openhands-review-gate:"
 NON_BLOCKING_CHECK_CONCLUSIONS = frozenset({"success", "neutral", "skipped"})
+# A completed run with this conclusion has not finished its work: GitHub
+# parks a fork head's workflows here until a maintainer approves them, so
+# it is pending, not failing. See _classify_runs.
 # How many unrequested heads one scheduled scan examines, per repository. Each
 # one costs a review read plus the exact-head check/workflow reads, so an
 # unbounded scan spends the whole run's API budget in the largest repository.
@@ -328,6 +332,25 @@ class PullRequestReviewer(GitHubRepository):
             f"second result.{self_review_note}"
         )
 
+    def _linked_issue_is_low_priority(self, pr):
+        """Return whether any same-repository closing issue is priority:low."""
+        numbers = {
+            int(number)
+            for number in re.findall(
+                r"(?im)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)",
+                pr.get("body") or "",
+            )
+        }
+        for number in numbers:
+            issue = self.gh("GET", f"/issues/{number}")
+            labels = {
+                (item.get("name") or "").casefold()
+                for item in issue.get("labels", [])
+            }
+            if "priority:low" in labels:
+                return True
+        return False
+
     def _finish_completed_review(self, pr, trigger, label=None):
         """Complete an exact-head review, including an optional human handoff.
 
@@ -373,7 +396,9 @@ class PullRequestReviewer(GitHubRepository):
             return False
         # A scope stop is not an approval: it requests the maintainer decision
         # the change is missing, through the same handoff as an approval.
-        if approved or maintainer_decision:
+        if (approved or maintainer_decision) and not self._linked_issue_is_low_priority(
+            pr
+        ):
             maintainers = parse_maintainers(self.config.get("maintainers"))
             if maintainers:
                 try:
@@ -534,9 +559,17 @@ class PullRequestReviewer(GitHubRepository):
         for run in reporters:
             name = run.get("name") or "unnamed check"
             status = (run.get("status") or "").lower()
-            if status != "completed":
+            conclusion = (run.get("conclusion") or "").lower()
+            if status == "completed" and conclusion == "action_required":
+                # A fork head's workflows sit at `action_required` until a
+                # maintainer approves them, and the check runs they would create
+                # do not exist yet. Counting that as a failure misreports a head
+                # only awaiting approval as red and stalls it indefinitely, so
+                # treat it as waiting: the head is re-evaluated once approved.
                 pending.append(name)
-            elif (run.get("conclusion") or "").lower() in NON_BLOCKING_CHECK_CONCLUSIONS:
+            elif status != "completed":
+                pending.append(name)
+            elif conclusion in NON_BLOCKING_CHECK_CONCLUSIONS:
                 continue
             else:
                 blocking.append(name)
@@ -695,10 +728,10 @@ class PullRequestReviewer(GitHubRepository):
         short = sha[:12]
         listed = "\n".join(f"- `{name}`" for name in names)
         if state == "blocked":
-            heading = "### ⚠️ Review paused: current-head checks failed"
+            heading = "### ⚠️ Review paused: current-head checks did not pass"
             lead = (
-                f"The current head `{short}` has failing checks, so no review "
-                "conversation was started:"
+                f"The current head `{short}` has checks that did not pass, so no "
+                "review conversation was started:"
             )
             action = (
                 "Fix the checks above and push. The scheduled scan then starts "
@@ -765,14 +798,12 @@ class PullRequestReviewer(GitHubRepository):
         return state, sha
 
     def _outstanding_review_request(self, pr):
-        """Whether an open, non-draft PR still holds a request for the reviewer.
+        """Whether an open PR, including a draft, still requests this reviewer.
 
         The list endpoint already answers this: `requested_reviewers` is the live
         set, so a review that was submitted, or a request that was withdrawn, is
-        simply absent. Drafts are excluded because a draft is not reviewable.
+        simply absent. An explicit request opts a draft into review.
         """
-        if pr.get("draft"):
-            return False
         return any(
             (item.get("login") or "").lower() == self.trigger_reviewer
             for item in pr.get("requested_reviewers") or []
