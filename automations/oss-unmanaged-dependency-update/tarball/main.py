@@ -7,7 +7,6 @@ import os
 import re
 import subprocess
 import tempfile
-import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -252,7 +251,7 @@ def update_sdk_dockerfile(text: str, token: str, now: datetime) -> tuple[str, li
                 if not match:
                     raise RuntimeError(f"Missing checksum for {filename}")
                 checksums[arch] = match.group(1)
-            text = replace_all_exact(text, f"node-v{old}-linux-${{NARCH}}", f"node-v{new}-linux-${{NARCH}}", 2)
+            text = replace_all_exact(text, f"v{old}", f"v{new}", 3)
             for arch, checksum in checksums.items():
                 pattern = rf"(NARCH={arch}; NODE_SHA256=)[0-9a-f]{{64}}"
                 text, count = re.subn(pattern, rf"\g<1>{checksum}", text)
@@ -386,9 +385,15 @@ def update_repository(token: str, now: datetime) -> str | None:
         repo_dir = Path(temp_dir) / "repo"
         run("git", "clone", "--depth", "1", f"https://github.com/{SDK_REPO}.git", str(repo_dir), env=env)
         if existing_pr:
-            run("git", "fetch", "origin", f"{BRANCH}:{BRANCH}", cwd=repo_dir, env=env)
-            run("git", "checkout", BRANCH, cwd=repo_dir)
-            run("git", "rebase", "origin/main", cwd=repo_dir, env=env)
+            run(
+                "git",
+                "fetch",
+                "origin",
+                f"+refs/heads/{BRANCH}:refs/remotes/origin/{BRANCH}",
+                cwd=repo_dir,
+                env=env,
+            )
+            run("git", "checkout", "-B", BRANCH, "origin/main", cwd=repo_dir)
         else:
             run("git", "checkout", "-b", BRANCH, cwd=repo_dir)
 
@@ -407,7 +412,11 @@ def update_repository(token: str, now: datetime) -> str | None:
         run("git", "commit", "-m", "chore(deps): update unmanaged runtime dependencies\n\nCo-authored-by: openhands <openhands@all-hands.dev>", cwd=repo_dir)
         push_args = ["git", "push", "origin", f"HEAD:{BRANCH}"]
         if existing_pr:
-            push_args.insert(2, "--force-with-lease")
+            expected_sha = existing_pr["head"]["sha"]
+            push_args.insert(
+                2,
+                f"--force-with-lease=refs/heads/{BRANCH}:{expected_sha}",
+            )
         run(*push_args, cwd=repo_dir, env=env)
 
         body = pr_body(changes)
