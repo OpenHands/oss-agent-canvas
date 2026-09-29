@@ -1,17 +1,23 @@
+agent_profile_id: null
 enabled: true
 entrypoint: python3 main.py
 keep_alive: null
-model: deepseek-v4
+model: deepseek-v4.1-flash
 name: Slack Channel Monitor - All Joined Channels
 preset_metadata: null
 prompt: null
 setup_script_path: null
+state: ACTIVE
 tarball_source:
   type: internal
   url: null
 timeout: 1800
 trigger:
+  destination: dispatch_run
   filter: team_id == 'T07E1S2M2Q6'
   'on': app_mention
   source: slack
+  subject_key_expr: null
+  turn_text_expr: null
   type: event
+  wake_agent: true

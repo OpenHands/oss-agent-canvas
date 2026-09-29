@@ -1,7 +1,8 @@
+agent_profile_id: null
 enabled: false
 entrypoint: .venv/bin/python main.py
 keep_alive: false
-model: gpt-5.6-sol
+model: deepseek-v4.1-flash
 name: "Weekly AGENTS.md relevance review \u2014 OpenHands/OpenHands"
 preset_metadata: null
 prompt: "Maintain the AGENTS.md files in the cloned OpenHands/OpenHands repository.\
@@ -38,6 +39,7 @@ prompt: "Maintain the AGENTS.md files in the cloned OpenHands/OpenHands reposito
   \ mark the PR ready for review, merge it, or create a PR when there is no meaningful\
   \ diff."
 setup_script_path: setup.sh
+state: INACTIVE
 tarball_executables:
 - setup.sh
 tarball_source:

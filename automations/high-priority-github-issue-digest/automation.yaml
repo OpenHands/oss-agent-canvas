@@ -1,11 +1,13 @@
+agent_profile_id: null
 enabled: false
 entrypoint: python3 main.py
 keep_alive: false
-model: gpt-5.6-sol
+model: deepseek-v4.1-flash
 name: High-priority GitHub issue digest
 preset_metadata: null
 prompt: null
 setup_script_path: null
+state: INACTIVE
 tarball_source:
   type: internal
   url: null
