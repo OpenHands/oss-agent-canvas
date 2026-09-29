@@ -1,12 +1,14 @@
+agent_profile_id: null
 enabled: true
 entrypoint: python3 main.py
 keep_alive: null
-model: null
+model: deepseek-v4.1-flash
 name: 'Fix Failing Version Bump (dependabot): extensions, OpenHands, software-agent-sdk,
   automation, enterprise'
 preset_metadata: null
 prompt: null
 setup_script_path: null
+state: ACTIVE
 tarball_source:
   type: internal
   url: null
