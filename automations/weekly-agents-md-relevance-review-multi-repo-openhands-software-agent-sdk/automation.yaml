@@ -2,7 +2,7 @@ agent_profile_id: null
 enabled: true
 entrypoint: .venv/bin/python main.py
 keep_alive: false
-model: gpt-5.6-sol
+model: deepseek-v4.1-flash
 name: 'Weekly AGENTS.md relevance review (multi-repo): extensions, OpenHands, software-agent-sdk,
   automation, enterprise'
 preset_metadata: null
