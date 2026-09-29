@@ -19,6 +19,7 @@ BRANCH = "automation/update-unmanaged-dependencies"
 DISCLOSURE = "_This pull request was created by an AI agent (OpenHands) on behalf of the user._"
 SDK_REPO = "OpenHands/software-agent-sdk"
 SDK_DOCKERFILE = "openhands-agent-server/openhands/agent_server/docker/Dockerfile"
+APP_EDITOR_REPO = "OpenHands/extensions"
 
 
 @dataclass(frozen=True)
@@ -200,7 +201,6 @@ def current_versions(text: str) -> dict[str, str]:
         "node": r"FROM node:(\d+\.\d+\.\d+)-trixie-slim AS node-runtime",
         "uv": r"COPY --from=ghcr\.io/astral-sh/uv:(\d+\.\d+\.\d+) /uv /uvx /bin/",
         "acp_node": r"node-v(\d+\.\d+\.\d+)-linux-\$\{NARCH\}",
-        "openvscode": r'ARG RELEASE_TAG="openvscode-server-v(\d+\.\d+\.\d+)"',
         "tini": r"releases/download/v(\d+\.\d+\.\d+)/tini-static-\$\{TARCH\}",
     }
     result = {}
@@ -221,9 +221,6 @@ def update_sdk_dockerfile(text: str, token: str, now: datetime) -> tuple[str, li
         "node": select_release(node_releases(token), now, 24),
         "uv": select_release(github_releases("astral-sh/uv", token), now),
         "acp_node": select_release(node_releases(token), now, 22),
-        "openvscode": select_release(
-            github_releases("gitpod-io/openvscode-server", token, "openvscode-server-v"), now
-        ),
         "tini": select_release(github_releases("krallin/tini", token), now),
     }
 
