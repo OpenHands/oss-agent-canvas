@@ -462,8 +462,12 @@ This automation was triggered by a webhook event:
     ]
     if slack_token and secrets.get("GITHUB_TOKEN"):
         try:
+            # get_secrets() returns LookupSecret references, not raw values.
             _post_slack_summary(
-                repos, secrets["GITHUB_TOKEN"], slack_token, run_started_at
+                repos,
+                secrets["GITHUB_TOKEN"].get_value().strip(),
+                slack_token.get_value().strip(),
+                run_started_at,
             )
         except Exception as e:
             print(f"  slack summary failed: {e}")
