@@ -207,6 +207,18 @@ def build_prompt(m: Mention) -> str:
 
 ## What to do
 
+For a pull-request review request in OpenHands/OpenHands,
+OpenHands/software-agent-sdk, OpenHands/automation, or OpenHands/extensions,
+the dedicated PR Reviewer automation owns code reviews. Do not independently
+review the diff or post a review-shaped comment. Read the PR's requested
+reviewers and submitted reviews first. If all-hands-bot is already requested,
+or has submitted a review of the current head, finish without posting anything.
+Otherwise request it once with:
+`gh pr edit {m.number} --repo {m.repo} --add-reviewer all-hands-bot`
+Then finish without a mention comment. This routing rule also applies to later
+turns. Other requests (explanations, fixes, questions about review findings) still
+follow the normal mention-response flow below.
+
 1. Read the {m.kind} for context first: `gh issue view {m.number} --repo {m.repo} --comments`
    (use `gh pr view` instead when it is a pull request). Read the linked comment
    before answering, so you respond to what was actually asked.
