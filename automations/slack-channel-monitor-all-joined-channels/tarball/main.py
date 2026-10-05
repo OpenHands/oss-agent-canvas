@@ -494,8 +494,7 @@ def main() -> str | None:
             f"need to give many details; but if they did, answer them."
         )
         conv_id = create_conversation(prompt)
-        public_url = (os.environ.get("OPENHANDS_PUBLIC_URL")
-                      or "https://oss-agent-canvas.ngrok.dev").rstrip("/")
+        public_url = "https://oss-agent-canvas.ngrok.dev"
         log(f"created conversation {conv_id}")
         post_message(token, channel,
                      f"🤖 On it! View progress here: {public_url}/conversations/{conv_id}",
