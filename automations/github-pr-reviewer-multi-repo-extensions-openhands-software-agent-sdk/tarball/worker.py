@@ -342,8 +342,8 @@ class PullRequestReviewer(GitHubRepository):
             f"second result.{self_review_note}"
         )
 
-    def _linked_issue_is_low_priority(self, pr):
-        """Return whether any same-repository closing issue is priority:low."""
+    def _linked_issue_allows_handoff(self, pr):
+        """Require a successfully fetched closing issue labeled medium or high."""
         numbers = {
             int(number)
             for number in re.findall(
@@ -352,12 +352,19 @@ class PullRequestReviewer(GitHubRepository):
             )
         }
         for number in numbers:
-            issue = self.gh("GET", f"/issues/{number}")
+            try:
+                issue = self.gh("GET", f"/issues/{number}")
+            except HTTPError as exc:
+                if exc.code != 404:
+                    raise
+                continue
             labels = {
                 (item.get("name") or "").casefold()
                 for item in issue.get("labels", [])
             }
-            if "priority:low" in labels:
+            if "pull_request" not in issue and labels & {
+                "priority:medium", "priority:high"
+            }:
                 return True
         return False
 
@@ -406,7 +413,7 @@ class PullRequestReviewer(GitHubRepository):
             return False
         # A scope stop is not an approval: it requests the maintainer decision
         # the change is missing, through the same handoff as an approval.
-        if (approved or maintainer_decision) and not self._linked_issue_is_low_priority(
+        if (approved or maintainer_decision) and self._linked_issue_allows_handoff(
             pr
         ):
             maintainers = parse_maintainers(self.config.get("maintainers"))
