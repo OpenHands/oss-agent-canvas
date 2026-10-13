@@ -2,7 +2,7 @@ enabled: true
 entrypoint: python3 main.py
 keep_alive: null
 model: null
-name: 'Linear Ticket Resolver: Local Storage project for all-hands-bot'
+name: 'Linear Assistant: @all-hands-bot-internal mentions and assignments'
 preset_metadata: null
 prompt: null
 setup_script_path: null
