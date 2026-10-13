@@ -49,7 +49,7 @@ from pathlib import Path
 CONFIG = json.loads((Path(__file__).with_name("config.json")).read_text())
 LINEAR_PROJECT_ID = CONFIG["linear_project_id"]
 LINEAR_BOT_USER_ID = CONFIG["linear_bot_user_id"]
-LINEAR_API_KEY_SECRET = CONFIG.get("linear_api_key_secret", "LINEAR_API_KEY")
+LINEAR_API_KEY_SECRET = CONFIG.get("linear_api_key_secret", "LINEAR_BOT_READ_AND_MENTION_TOKEN")
 REPOS: list[str] = CONFIG["repos"]
 GITHUB_BOT_USERNAME = CONFIG.get("github_bot_username", "all-hands-bot")
 DRAFT_PR = bool(CONFIG.get("draft_pr", True))
