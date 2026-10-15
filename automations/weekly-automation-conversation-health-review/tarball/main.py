@@ -74,6 +74,11 @@ import os
 import sys
 import time
 
+if "--replay" in sys.argv or "--review-host" in sys.argv:
+    from health_review import main as review_main
+
+    raise SystemExit(review_main())
+
 # Detect execution mode based on AGENT_SERVER_URL presence
 agent_server_url = os.environ.get("AGENT_SERVER_URL", "").rstrip("/")
 IS_LOCAL_MODE = bool(agent_server_url)
