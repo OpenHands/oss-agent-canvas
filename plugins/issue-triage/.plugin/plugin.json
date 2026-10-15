@@ -1,0 +1,84 @@
+{
+  "name": "issue-triage",
+  "version": "0.1.0",
+  "description": "Triage new and reopened GitHub issues: resolve scope from repo evidence, apply priority and ready-for-dev labels, and write the managed acceptance-criteria section.",
+  "author": {
+    "name": "OpenHands",
+    "email": "contact@all-hands.dev"
+  },
+  "homepage": "https://github.com/OpenHands/oss-agent-canvas",
+  "repository": "https://github.com/OpenHands/oss-agent-canvas",
+  "license": "MIT",
+  "keywords": [
+    "automation",
+    "issue-triage",
+    "github"
+  ],
+  "automation": {
+    "schema_version": "openhands.automation.plugin.v1",
+    "entrypoint": {
+      "runner": "script",
+      "command": "python3 worker.py",
+      "working_dir": "scripts"
+    },
+    "runtime": {
+      "agent_profile": {
+        "required": true,
+        "default_name": "factory-triage",
+        "allowed_tools": [
+          "terminal",
+          "file_editor",
+          "task_tracker",
+          "browser_tool_set"
+        ],
+        "allowed_secret_refs": [
+          "GITHUB_TOKEN_ISSUE_TRIAGE"
+        ]
+      },
+      "plugins": []
+    },
+    "config_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repos": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Repositories whose issues are triaged. Each entry is owner/repo.",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+          },
+          "default": [
+            "OpenHands/extensions",
+            "OpenHands/OpenHands",
+            "OpenHands/software-agent-sdk",
+            "OpenHands/automation",
+            "OpenHands/enterprise",
+            "OpenHands/saas-deploy",
+            "OpenHands/evaluation"
+          ]
+        },
+        "github_token_secret": {
+          "type": "string",
+          "description": "Name of the stored secret holding the GitHub token used for reads, labels, and body updates.",
+          "pattern": "^[A-Z_][A-Z0-9_]*$",
+          "default": "GITHUB_TOKEN_ISSUE_TRIAGE"
+        },
+        "base_branch": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Branch to read repository guidance from. Defaults to each repository's default branch."
+        }
+      }
+    },
+    "suggested_trigger": {
+      "type": "event",
+      "source": "github-events",
+      "on": "*",
+      "filter": "contains(['OpenHands/extensions', 'OpenHands/OpenHands', 'OpenHands/software-agent-sdk', 'OpenHands/automation', 'OpenHands/enterprise', 'OpenHands/saas-deploy', 'OpenHands/evaluation'], repository.full_name) && contains(keys(@), 'issue') && !contains(keys(@), 'comment') && (contains(['opened','reopened'], action) || (action == 'unlabeled' && label.name == 'ready-for-dev' && sender.login != 'github-actions[bot]'))",
+      "destination": "dispatch_run",
+      "wake_agent": true
+    }
+  }
+}
