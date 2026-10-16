@@ -1,0 +1,42 @@
+{
+  "name": "github-mention-responder",
+  "version": "0.1.0",
+  "description": "Executable automation plugin for GitHub Mention Responder (multi-repo): extensions, OpenHands, software-agent-sdk, automation, enterprise.",
+  "author": {
+    "name": "OpenHands",
+    "email": "contact@all-hands.dev"
+  },
+  "homepage": "https://github.com/OpenHands/oss-agent-canvas",
+  "repository": "https://github.com/OpenHands/oss-agent-canvas",
+  "license": "MIT",
+  "keywords": [
+    "automation",
+    "github-mention-responder"
+  ],
+  "automation": {
+    "schema_version": "openhands.automation.plugin.v1",
+    "entrypoint": {
+      "runner": "script",
+      "working_dir": "scripts",
+      "command": "python3 main.py"
+    },
+    "runtime": {
+      "plugins": []
+    },
+    "config_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "suggested_trigger": {
+      "type": "event",
+      "source": "github-events",
+      "on": "*",
+      "filter": "contains(['OpenHands/extensions', 'OpenHands/OpenHands', 'OpenHands/software-agent-sdk', 'OpenHands/automation', 'OpenHands/enterprise', 'OpenHands/saas-deploy', 'OpenHands/evaluation'], repository.full_name) && contains(['VascoSch92', 'neubig'], sender.login) && ((action == 'created' && contains(keys(@), 'comment') && icontains(comment.body || '', '@all-hands-bot')) || (action == 'opened' && contains(keys(@), 'issue') && !contains(keys(@), 'comment') && icontains(issue.body || '', '@all-hands-bot')) || (action == 'opened' && contains(keys(@), 'pull_request') && !contains(keys(@), 'comment') && icontains(pull_request.body || '', '@all-hands-bot')) || (action == 'submitted' && contains(keys(@), 'review') && icontains(review.body || '', '@all-hands-bot')))",
+      "destination": "dispatch_run",
+      "subject_key_expr": null,
+      "turn_text_expr": null,
+      "wake_agent": true
+    }
+  }
+}
