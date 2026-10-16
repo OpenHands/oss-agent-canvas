@@ -1,0 +1,5 @@
+.env
+local-project.json
+synthetic-cases.json
+smoke-results.json
+*.log

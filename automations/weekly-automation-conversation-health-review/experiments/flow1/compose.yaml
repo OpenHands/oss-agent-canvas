@@ -1,0 +1,86 @@
+name: laminar-flow1-local
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: laminar
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U postgres -d laminar]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+    mem_limit: 512m
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.3-alpine
+    environment:
+      CLICKHOUSE_USER: ch_user
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./clickhouse-profiles-config.xml:/etc/clickhouse-server/users.d/lmnr.xml:ro
+      - ./clickhouse-server-config.xml:/etc/clickhouse-server/config.d/lmnr.xml:ro
+    mem_limit: 2g
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+  valkey:
+    image: valkey/valkey:9.1.2-alpine
+    mem_limit: 128m
+  frontend:
+    image: ghcr.io/lmnr-ai/frontend-ee:0.1.825
+    ports:
+      - 127.0.0.1:15667:3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_started
+    environment: &laminar-environment
+      PORT: 3000
+      HOSTNAME: 0.0.0.0
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/laminar
+      BACKEND_URL: http://app-server:8000
+      BACKEND_RT_URL: http://app-server:8002
+      NEXT_INTERNAL_URL: http://frontend:3000
+      NEXTAUTH_URL: http://localhost:15667
+      NEXT_PUBLIC_URL: http://localhost:15667
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
+      SHARED_SECRET_TOKEN: ${SHARED_SECRET_TOKEN}
+      AEAD_SECRET_KEY: ${AEAD_SECRET_KEY}
+      ENVIRONMENT: LITE
+      LAMINAR_CLOUD: "false"
+      SIGNALS_ENABLED: "true"
+      QUICKWIT_ENABLED: "false"
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: ch_user
+      CLICKHOUSE_RO_USER: ch_user
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_RO_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      REDIS_URL: redis://valkey:6379
+    mem_limit: 1536m
+  app-server:
+    image: ghcr.io/lmnr-ai/app-server-ee:0.1.825
+    ports:
+      - 127.0.0.1:18000:8000
+      - 127.0.0.1:18001:8001
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_started
+    environment:
+      <<: *laminar-environment
+      PORT: 8000
+      GRPC_PORT: 8001
+      AGGREGATE_TRACES: "true"
+      ENABLE_TRACING: "false"
+    mem_limit: 1536m
+volumes:
+  postgres-data:
+  clickhouse-data:
