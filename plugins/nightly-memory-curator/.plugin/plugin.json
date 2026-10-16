@@ -1,0 +1,38 @@
+{
+  "name": "nightly-memory-curator",
+  "version": "0.1.0",
+  "description": "Executable automation plugin for Nightly Memory Curator.",
+  "author": {
+    "name": "OpenHands",
+    "email": "contact@all-hands.dev"
+  },
+  "homepage": "https://github.com/OpenHands/oss-agent-canvas",
+  "repository": "https://github.com/OpenHands/oss-agent-canvas",
+  "license": "MIT",
+  "keywords": [
+    "automation",
+    "nightly-memory-curator"
+  ],
+  "automation": {
+    "schema_version": "openhands.automation.plugin.v1",
+    "entrypoint": {
+      "runner": "script",
+      "working_dir": "scripts",
+      "command": ".venv/bin/python main.py",
+      "setup_script": "scripts/setup.sh"
+    },
+    "runtime": {
+      "plugins": []
+    },
+    "config_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "suggested_trigger": {
+      "type": "cron",
+      "schedule": "0 21 * * *",
+      "timezone": "Europe/Zurich"
+    }
+  }
+}
