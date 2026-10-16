@@ -1,0 +1,20 @@
+{
+  "linear_bot_user_id": "95876836-8eac-4548-8abe-00c00515e19f",
+  "linear_api_key_secret": "LINEAR_BOT_READ_AND_MENTION_TOKEN",
+  "linear_team_keys": ["OSS"],
+  "repos": [
+    "OpenHands/agent-canvas",
+    "OpenHands/software-agent-sdk",
+    "OpenHands/automation",
+    "OpenHands/OpenHands",
+    "OpenHands/extensions"
+  ],
+  "github_bot_username": "all-hands-bot",
+  "draft_pr": true,
+  "max_concurrent_tasks": 2,
+  "max_active_age_seconds": 10800,
+  "max_creation_attempts": 3,
+  "branch_prefix": "openhands/",
+  "openhands_url": "https://oss-agent-canvas.ngrok.dev",
+  "http_timeout_seconds": 30
+}

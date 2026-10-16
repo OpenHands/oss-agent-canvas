@@ -1,0 +1,102 @@
+{
+  "name": "linear-assistant",
+  "version": "0.1.0",
+  "description": "Executable automation plugin for Linear Assistant: @all-hands-bot-internal mentions and assignments.",
+  "author": {
+    "name": "OpenHands",
+    "email": "contact@all-hands.dev"
+  },
+  "homepage": "https://github.com/OpenHands/oss-agent-canvas",
+  "repository": "https://github.com/OpenHands/oss-agent-canvas",
+  "license": "MIT",
+  "keywords": [
+    "automation",
+    "linear-assistant"
+  ],
+  "automation": {
+    "schema_version": "openhands.automation.plugin.v1",
+    "entrypoint": {
+      "runner": "script",
+      "working_dir": "scripts",
+      "command": "python3 main.py"
+    },
+    "runtime": {
+      "plugins": []
+    },
+    "config_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "linear_bot_user_id": {
+          "type": "string",
+          "default": "95876836-8eac-4548-8abe-00c00515e19f"
+        },
+        "linear_api_key_secret": {
+          "type": "string",
+          "default": "LINEAR_BOT_READ_AND_MENTION_TOKEN"
+        },
+        "linear_team_keys": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "default": "OSS"
+          },
+          "default": [
+            "OSS"
+          ]
+        },
+        "repos": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "default": "OpenHands/agent-canvas"
+          },
+          "default": [
+            "OpenHands/agent-canvas",
+            "OpenHands/software-agent-sdk",
+            "OpenHands/automation",
+            "OpenHands/OpenHands",
+            "OpenHands/extensions"
+          ]
+        },
+        "github_bot_username": {
+          "type": "string",
+          "default": "all-hands-bot"
+        },
+        "draft_pr": {
+          "type": "boolean",
+          "default": true
+        },
+        "max_concurrent_tasks": {
+          "type": "integer",
+          "default": 2
+        },
+        "max_active_age_seconds": {
+          "type": "integer",
+          "default": 10800
+        },
+        "max_creation_attempts": {
+          "type": "integer",
+          "default": 3
+        },
+        "branch_prefix": {
+          "type": "string",
+          "default": "openhands/"
+        },
+        "openhands_url": {
+          "type": "string",
+          "default": "https://oss-agent-canvas.ngrok.dev"
+        },
+        "http_timeout_seconds": {
+          "type": "integer",
+          "default": 30
+        }
+      }
+    },
+    "suggested_trigger": {
+      "type": "cron",
+      "schedule": "*/5 * * * *",
+      "timezone": "UTC"
+    }
+  }
+}
