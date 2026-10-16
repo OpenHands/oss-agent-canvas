@@ -18,7 +18,7 @@
     "entrypoint": {
       "runner": "script",
       "working_dir": "scripts",
-      "command": ".venv/bin/python main.py",
+      "command": "env .venv/bin/python main.py",
       "setup_script": "scripts/setup.sh"
     },
     "runtime": {
