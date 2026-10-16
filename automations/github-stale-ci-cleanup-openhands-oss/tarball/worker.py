@@ -79,7 +79,7 @@ def _state_path(repo):
 def _kv_request(key, method, value=None):
     if not KV_TOKEN or not KV_BASE:
         return None
-    data = json.dumps({"value": value}).encode() if value is not None else None
+    data = json.dumps(value).encode() if value is not None else None
     request = Request(
         f"{KV_BASE}/v1/kv/{quote(key, safe='')}",
         data=data,
@@ -101,7 +101,13 @@ def _kv_request(key, method, value=None):
 
 def load_state(repo):
     if KV_TOKEN and KV_BASE:
-        return _kv_request(_state_key(repo), "GET") or {"version": 1, "prs": {}}
+        state = _kv_request(_state_key(repo), "GET") or {"version": 1, "prs": {}}
+        if "prs" not in state and "value" in state:
+            # Earlier versions saved {"value": state}, and the store keeps the
+            # whole body, so each save nested the last one a level deeper.
+            state = state["value"]
+            state.pop("value", None)
+        return state
     path = _state_path(repo)
     if not path.exists():
         return {"version": 1, "prs": {}}
@@ -127,12 +133,16 @@ def complete_run(status="COMPLETED", error=None):
     body = {"status": status, "run_id": os.environ.get("AUTOMATION_RUN_ID", "")}
     if error:
         body["error"] = error
+    # A run on OpenHands Cloud or Enterprise is not given a callback key; it
+    # authenticates with its API key.
+    api_key = os.environ.get("AUTOMATION_CALLBACK_API_KEY") or os.environ.get(
+        "OPENHANDS_API_KEY", ""
+    )
     request = Request(
         url,
         data=json.dumps(body).encode(),
         headers={
-            "Authorization": "Bearer "
-            + os.environ.get("AUTOMATION_CALLBACK_API_KEY", ""),
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         },
     )
@@ -349,6 +359,28 @@ class StaleCIPullRequestCloser(GitHubRepository):
             for comment in comments
         )
 
+    def _backfill_first_failed_at(self, pr, record):
+        """Age a record from the required-check failure, unless it is a reset.
+
+        Versions before this one stored first *observation* time, so a record
+        whose CI had already been failing for longer than we had been watching
+        under-counted the window; re-age it to the newest required-check
+        failure. Versions before this one also cleared `warning` on author
+        follow-up to open a fresh window without leaving a marker, so such a
+        reset is indistinguishable from a first sighting by record shape alone
+        and is recognized from the comment history instead: the author of the
+        pull request commented after the newest required-check failure. Aging
+        that record would collapse the fresh window the follow-up just opened,
+        so it is left alone.
+        """
+        failed_at = pr.get("_failed_at")
+        if failed_at is None:
+            return
+        if self.author_followed_up(pr, self.comments(pr["number"]), failed_at):
+            record["reset_at"] = record["first_failed_at"]
+            return
+        record["first_failed_at"] = min(record["first_failed_at"], failed_at)
+
     def reconcile(self, pr, records, now):
         number = pr["number"]
         key = str(number)
@@ -372,14 +404,10 @@ class StaleCIPullRequestCloser(GitHubRepository):
                 "first_failed_at": now if failed_at is None else failed_at,
             }
             records[key] = record
-        elif (
-            not record.get("warning")
-            and not record.get("reset_at")
-            and pr.get("_failed_at") is not None
-        ):
-            # Backfill records created by versions that used first observation time.
-            record["first_failed_at"] = min(record["first_failed_at"], pr["_failed_at"])
+
         warning = record.get("warning")
+        if not warning and not record.get("reset_at"):
+            self._backfill_first_failed_at(pr, record)
         if not warning:
             if now - record["first_failed_at"] < WARN_AFTER_SECONDS:
                 return "observing"
