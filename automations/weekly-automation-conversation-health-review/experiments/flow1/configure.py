@@ -60,15 +60,19 @@ else:
 
 profile_path = f"/api/workspaces/{args.workspace_id}/llm-profiles"
 profiles = call(profile_path)
-if not any(profile["name"] == "Laminar Cloud flow-1" for profile in profiles):
+profile = next((item for item in profiles if item["name"] == "Laminar Cloud flow-1"), None)
+if profile is None:
     cloud_key = args.cloud_key_file.read_text().strip().split("=", 1)[1]
-    call(profile_path, {
+    profile = call(profile_path, {
         "name": "Laminar Cloud flow-1",
         "provider": "custom",
         "config": {"baseUrl": "https://api.lmnr.ai/v1"},
         "secrets": {"apiKey": cloud_key},
         "models": ["flow-1"],
     })
+
+config["profileId"] = profile["id"]
+config_path.write_text(json.dumps(config))
 
 cost_path = f"/api/projects/{args.project_id}/custom-model-costs"
 existing_costs = call(cost_path)

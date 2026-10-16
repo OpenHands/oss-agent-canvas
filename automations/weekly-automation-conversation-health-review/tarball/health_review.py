@@ -5,7 +5,9 @@ import datetime as dt
 import hashlib
 import json
 import os
+import random
 import re
+import secrets
 import sqlite3
 import time
 import urllib.error
@@ -491,10 +493,40 @@ def summarize_conversation(run, state, events, mode):
         "skills": "skills",
         "lifecycle": "lifecycle",
     }
+    registry["task"]["event_ids"] = [
+        event["id"]
+        for event in messages
+        if (event.get("llm_message") or {}).get("role") == "user"
+    ]
+    registry["task"]["event_files"] = [
+        event.get("_source_file")
+        for event in messages
+        if (event.get("llm_message") or {}).get("role") == "user"
+    ]
     for index, error in enumerate(errors):
         ref = "error" + str(index + 1)
         registry[ref] = {"record": error, "event_ids": [error["id"]]}
         error["ref"] = ref
+    context["message_evidence"] = []
+    for index, event in enumerate(messages):
+        message = event.get("llm_message") or {}
+        if message.get("role") != "assistant":
+            continue
+        ref = "m" + str(index + 1)
+        text = content_text(message.get("content"))
+        record = {
+            "role": "assistant",
+            "text": excerpt(redact(text), 2000),
+            "content_clipped": len(text) > 2000,
+        }
+        registry[ref] = {
+            "record": record,
+            "event_ids": [event["id"]],
+            "event_files": [event.get("_source_file")],
+        }
+        context["message_evidence"].append({"ref": ref, **record})
+    context["coverage"]["assistant_message_count"] = len(context["message_evidence"])
+    context["message_evidence"] = context["message_evidence"][-2:]
     return redact(context), registry
 
 
@@ -510,11 +542,7 @@ def collect(args):
         or manifest.get("selection_cutoff")
         or dt.datetime.now(dt.UTC).isoformat()
     )
-    since = timestamp(
-        args.since
-        or state.get("last_reviewed_through")
-        or (until - dt.timedelta(days=7)).isoformat()
-    )
+    since = timestamp(args.since or (until - dt.timedelta(days=7)).isoformat())
     if since >= until:
         raise ValueError("Review window must have positive duration")
     db_path = args.db or (
@@ -575,22 +603,28 @@ def collect(args):
                 available.append(run)
             else:
                 absent += 1
+    population = {}
+    for run in available:
+        population.setdefault(uuid.UUID(run["conversation_id"]).hex, run)
+    candidates = sorted(population)
+    seed = args.seed if args.seed is not None else secrets.randbits(64)
     if args.conversation_id:
         wanted = {uuid.UUID(value).hex for value in args.conversation_id}
-        available = [
-            run for run in available if uuid.UUID(run["conversation_id"]).hex in wanted
-        ]
-        if {uuid.UUID(run["conversation_id"]).hex for run in available} != wanted:
+        if not wanted.issubset(population):
             raise ValueError(
                 "Requested conversation is absent from the window or native files"
             )
+        if len(wanted) > args.conversation_limit:
+            raise ValueError("Explicit conversation IDs exceed --conversation-limit")
+        selected = sorted(wanted)
+    else:
+        selected = random.Random(seed).sample(
+            candidates, min(args.conversation_limit, len(candidates))
+        )
     cases = []
     registries = {}
-    used = set()
-    for run in available:
-        if run["conversation_id"] in used:
-            continue
-        used.add(run["conversation_id"])
+    for identifier in selected:
+        run = population[identifier]
         directory = conversation_root / uuid.UUID(run["conversation_id"]).hex
         native_state, events = read_conversation(directory)
         context, registry = summarize_conversation(
@@ -605,16 +639,39 @@ def collect(args):
             if item["conversation_id"] == run["conversation_id"]
         ]
         context["case_id"] = "c" + str(len(cases) + 1)
+        context["native_snapshot_sha256"] = hashlib.sha256(
+            encode(
+                {
+                    "events": events,
+                    "execution_status": native_state.get("execution_status"),
+                }
+            ).encode()
+        ).hexdigest()
         cases.append(context)
         registries[context["case_id"]] = registry
-        if len(cases) == args.conversation_limit:
-            break
     if not cases:
         raise ValueError("No readable native conversations in the review window")
     context = {
         "window": {"since": since.isoformat(), "until": until.isoformat()},
         "automation_overview": overview,
         "conversations": cases,
+        "selection": {
+            "method": "explicit_ids"
+            if args.conversation_id
+            else "uniform_random_without_replacement",
+            "unit": "unique_conversation",
+            "seed": seed if not args.conversation_id else None,
+            "population_size": len(candidates),
+            "sample_size": len(selected),
+            "inclusion_probability": len(selected) / len(candidates)
+            if not args.conversation_id
+            else None,
+            "population_sha256": hashlib.sha256(
+                encode(candidates).encode()
+            ).hexdigest(),
+            "selected_conversation_ids": [str(uuid.UUID(value)) for value in selected],
+            "frame": "Conversations associated with runs created in the review window and with available native base_state.json; snapshot availability can limit coverage",
+        },
         "coverage": {
             "run_metadata_count": len(runs),
             "read_conversations": len(cases),
@@ -650,7 +707,7 @@ SCHEMA = {
                     "lens": {"type": "string", "enum": list(LENSES)},
                     "case_id": {
                         "type": "string",
-                        "enum": ["c1", "c2", "c3", "c4", "c5"],
+                        "enum": ["c" + str(index) for index in range(1, 21)],
                     },
                     "support": {
                         "type": "string",
@@ -740,10 +797,10 @@ def validate_findings(result, registries):
                 )
         elif support == "policy_violation":
             if "task" not in references or not any(
-                re.fullmatch(r"e\d+", ref) for ref in references
+                re.fullmatch(r"[em]\d+", ref) for ref in references
             ):
                 raise ValueError(
-                    "Policy claim requires task policy and an observed action"
+                    "Policy claim requires task policy and an observed action or message"
                 )
         elif support == "measured_regression":
             raise ValueError("No comparable historical baseline is loaded")
@@ -771,12 +828,20 @@ def separate_findings(result, registries):
 def model_context(context):
     selected = {case["automation_id"] for case in context["conversations"]}
     result = dict(context)
+    result.pop("selection", None)
     result["conversations"] = [
         {
             key: value
             for key, value in case.items()
             if key
-            not in ("automation_id", "conversation_id", "run_id", "associated_run_ids")
+            not in (
+                "automation_id",
+                "conversation_id",
+                "run_id",
+                "associated_run_ids",
+                "native_snapshot_sha256",
+                "assistant_final_messages_unverified",
+            )
         }
         for case in context["conversations"]
     ]
@@ -805,6 +870,17 @@ def verification_context(context, findings, registries):
         case = dict(case)
         supported = [
             finding for finding in findings if finding["case_id"] == identifier
+        ]
+        message_refs = {item["ref"] for item in case.get("message_evidence", [])}
+        message_refs.update(
+            ref
+            for finding in supported
+            for ref in finding["evidence"]
+            if re.fullmatch(r"m\d+", ref)
+        )
+        case["message_evidence"] = [
+            {"ref": ref, **registries[identifier][ref]["record"]}
+            for ref in sorted(message_refs, key=lambda value: int(value[1:]))
         ]
         if all(finding["support"] == "observed_error" for finding in supported):
             case["task"] = excerpt(case["task"], 2400)
@@ -969,16 +1045,26 @@ def run(args):
     instruction += "\nSUPPORT CONTRACT: observed_error requires a cited failing native result, nonzero reported exit marker, or ConversationErrorEvent. policy_violation requires the task policy plus an observed action contradicting it. measured_regression requires a comparable baseline, which is unavailable in this pilot. No-action observations and missing results in still-running conversations are coverage notes, not findings.\nEvidence examples: a command failing followed by a successful retry is recovered step overhead, not automatically an unresolved task failure. A running conversation with a COMPLETED DB row has unknown outcome. A repository lacking live reproduction can still meet its stated readiness policy; check the supplied task before criticizing it. Use exact native automation identity. Exit 137 or a tool abort does not alone prove infrastructure failure or successful recovery; distinguish observed command failure, inferred cause, and final task outcome. Select only references present in the case. Do not invent references such as conversation summary. Absence of a skill invocation or an authorization check in sampled evidence does not establish a defect. Do not invent numerical comparisons or label costs excessive without an applicable baseline. Mere running state is a coverage caveat, not by itself an actionable defect. Token counts alone do not prove excessive cost; SDK cost fields and cache accounting are not verified billing. Ignore differences that are expected from the stated task. Prefer at most three strong findings to speculative concerns.\n"
     inference_started = time.monotonic()
     if args.analyze:
+        flow1 = None
+        if args.analyzer == "flow1":
+            from flow1_review import Flow1Analyzer
+
+            flow1 = Flow1Analyzer(args)
 
         def analyze_case(case):
-            subset = {**context, "conversations": [case]}
-            result, measurement = call_model(
-                args,
-                args.model,
-                instruction,
-                model_context(subset),
-                "analysis-" + case["case_id"],
-            )
+            if flow1:
+                result, measurement = flow1.analyze(
+                    case, registries[case["case_id"]], instruction
+                )
+            else:
+                subset = {**context, "conversations": [case]}
+                result, measurement = call_model(
+                    args,
+                    args.model,
+                    instruction,
+                    model_context(subset),
+                    "analysis-" + case["case_id"],
+                )
             valid, invalid = separate_findings(
                 result, {case["case_id"]: registries[case["case_id"]]}
             )
@@ -1029,15 +1115,21 @@ def run(args):
         "collection_seconds": collection_seconds,
         "inference_wall_seconds": inference_wall_seconds,
         "workers": args.workers,
+        "analyzer": args.analyzer if args.analyze else None,
         "policy_file": str(policy_path),
         "policy_sha256": hashlib.sha256(policy.encode()).hexdigest(),
         "input_sha256": hashlib.sha256(encode(context).encode()).hexdigest(),
         "coverage": context["coverage"],
         "window": context["window"],
+        "selection": context["selection"],
         "findings": findings,
         "rejected_candidates": rejected,
         "measurements": measurements,
-        "analysis_status": "model_judgments_not_human_validated"
+        "analysis_status": (
+            "partial_analysis"
+            if any(item.get("status") == "error" for item in measurements)
+            else "model_judgments_not_human_validated"
+        )
         if args.analyze
         else "collection_only",
         "state_update": {
@@ -1056,7 +1148,10 @@ def run(args):
             "automation_overview_bytes": len(
                 encode(model_context(context)["automation_overview"]).encode()
             ),
-            "omitted_generic_system_and_tool_schemas": True,
+            "provider_prompt_capture": "Signal definition and imported spans only; Laminar constructs the provider prompts"
+            if args.analyzer == "flow1" and args.analyze
+            else "Exact credential-free provider request bodies",
+            "omitted_native_skill_catalog_and_tool_schemas": True,
             "cases": [
                 {
                     "conversation_id": case["conversation_id"],
@@ -1072,6 +1167,7 @@ def run(args):
         "Automation & conversation health review",
         "",
         "Sampled conversation coverage; no production state advanced.",
+        f"Analysis errors: {sum(item.get('status') == 'error' for item in measurements)}; inspect measurements before interpreting no findings.",
         f"Rejected unsupported or malformed candidates: {len(rejected)}.",
         "",
     ]
@@ -1150,11 +1246,22 @@ def main():
     parser.add_argument("--since")
     parser.add_argument("--until")
     parser.add_argument("--row-limit", type=bounded(1, 10000), default=5000)
-    parser.add_argument("--conversation-limit", type=bounded(1, 5), default=3)
+    parser.add_argument("--conversation-limit", type=bounded(1, 20), default=3)
     parser.add_argument("--conversation-id", action="append", default=[])
+    parser.add_argument("--seed", type=int)
     parser.add_argument("--layout", choices=("compact", "verbose"), default="compact")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--analyze", action="store_true")
+    parser.add_argument("--analyzer", choices=("flow1", "llm"), default="flow1")
+    parser.add_argument("--flow1-config", type=Path)
+    parser.add_argument("--flow1-api-url", default="http://127.0.0.1:18000")
+    parser.add_argument("--flow1-frontend-url", default="http://127.0.0.1:15667")
+    parser.add_argument("--flow1-profile-id")
+    parser.add_argument("--flow1-max-steps", type=bounded(1, 8), default=4)
+    parser.add_argument("--flow1-output-tokens", type=bounded(128, 8192), default=4096)
+    parser.add_argument(
+        "--max-trace-bytes", type=bounded(1000, 4000000), default=2000000
+    )
     parser.add_argument("--workers", type=bounded(1, 2), default=2)
     parser.add_argument("--model", default="openai/gpt-6-luna")
     parser.add_argument("--coordinator")

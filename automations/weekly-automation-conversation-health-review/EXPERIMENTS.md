@@ -85,7 +85,7 @@ Per-run source snapshots and input/policy hashes identify the experiment variant
 Native IDs and event filenames are resolved from input records, not model output.
 No credentials or raw production exports are committed here.
 
-Thirteen targeted tests cover read-only native input handling, the original
+The original thirteen targeted tests cover read-only native input handling, the original
 entrypoint's replay branch, middle-of-session failure/retry preservation,
 embedded exit markers, reference validation, prompt interception and redaction,
 input budgets, captured policy selection, and focused error-line retention.
@@ -93,6 +93,56 @@ input budgets, captured policy selection, and focused error-line retention.
 Before publishing automated findings, create independent human labels, test the
 support gates for missed semantic issues, audit negative cases, and measure repeated
 cold/warm runs. The explicit gates favor precision and can miss issues with no
-tool error or explicit policy evidence. Laminar flow-1 and production integration
-remain separate milestones; this prototype requires only native inputs plus the
-configured inference endpoint.
+tool error or explicit policy evidence. The October 16 extension below adds local
+Laminar flow-1 analysis. Production integration remains a separate milestone.
+
+
+## Random sampling and native flow-1 replay — October 16
+
+Selection is now uniform without replacement over unique available conversations
+in the metadata window. A recorded seed and population hash reproduce selection;
+run duplication, cost and status do not affect it. The default window is a fixed
+week, independent of the saved production cutoff. No weighting, family quotas,
+statistical outlier selection or outer improvement loop is implemented.
+
+The analyzer imports full redacted action/result payloads and assistant messages
+into local Laminar. Native IDs are retained in a reference manifest. This avoids
+feeding flow-1 the alternate analyzer's already clipped timeline. Laminar builds
+its own preview/read context; the adapter records Signal definitions and imported
+spans, not its internal provider prompts. This is an extension of the native
+monitor entrypoint, not a separate production pipeline.
+
+A small synthetic native bundle contained six conversations in SQLite plus native
+state/event files. Seed 42 selected conversations 6, 1 and 5: a healthy run, a failed
+test followed by a false success claim, and an explicitly acknowledged failed
+check followed by a successful rerun. Their 14 native events exercised the same
+readers and adapter used for host replay.
+
+| Sampled case | Signal result | Native evidence | Inference time | Usage cost before credits |
+|---|---|---|---:|---:|
+| Healthy test run | noEvent | — | 1.217 s | $0.00017617 |
+| Failure hidden by success claim | event | task, e1, m2 | 2.444 s | $0.00030777 |
+| Acknowledged failure and successful rerun | noEvent | — | 1.598 s | $0.00027897 |
+
+The run completed in 4.614 seconds of wall time with two workers and three Signal
+calls. Total published-rate usage value was $0.00076291, with 5,952 cached input
+tokens per call. There were no rejected references or analysis errors. These are
+tiny warm-cache connectivity/control cases, not a production performance or
+quality evaluation. This run did not exercise the optional coordinator.
+
+Earlier attempts exposed two integration issues: a 1,800-token cap truncated one
+response, and flow-1 sometimes cited Laminar's six-character span IDs rather than
+the requested evidence labels. The default Signal output cap is now 4,096 tokens;
+full/short span IDs, including Laminar's virtual LLM output spans, resolve only
+through the selected trace's manifest. Unknown or ambiguous citations fail closed.
+A recovered control initially claimed a code fix absent from its events; that
+unsupported claim was removed before the final run.
+
+Twenty-nine targeted tests now pass, adding coverage for unweighted sampling,
+duplicate run records, missing export coverage, full native output retention,
+trace-specific citations, changed/oversized snapshots, incomplete Signal results,
+local-only test routes, cached-token pricing and bounded message context for
+optional verification. Changed/oversized traces and
+Signal failures are never replaced with new samples; errors and returned usage
+remain visible. No new production-data experiment or automated fix was run for
+this extension.

@@ -2,7 +2,9 @@
 
 Flow-1 works through Laminar Signals. Its Cloud endpoint does not accept the
 native monitor's general-purpose Chat Completions/Responses requests. This
-isolated experiment tests the actual Signal engine without changing the monitor.
+isolated setup runs the actual Signal engine. The native monitor prototype can
+now use it directly with `--analyze --flow1-config`; its production invocation
+still uses the existing SDK path.
 
 The running instance is http://localhost:15667. Its private working directory is
 `~/experiments/laminar-flow1-local`. The approved Cloud key is stored with
@@ -36,7 +38,8 @@ logs frontend` (several minutes on first boot). Sign in at localhost with
 `flow1-local@example.test`, create a workspace/project, and read their IDs from
 the URL/settings. Run `configure.py` from its source directory with the data
 directory plus `--project-id` and `--workspace-id`. It creates a local ingest-only
-key and the flow-1 profile, then configures model costs. Restart `app-server`
+key and the flow-1 profile, saves `profileId` in the private `local-project.json`,
+then configures model costs. Re-run with both IDs to update older configurations. Restart `app-server`
 after first-time migrations. All exposed ports bind to loopback. No production
 data is copied. `docker compose stop` stops the instance and retains its data.
 
@@ -44,6 +47,23 @@ The profile uses Custom / Chat Completions, `https://api.lmnr.ai/v1`, and model
 `flow-1`. Cloud receives the trace portions requested by the Signal; the vendor
 documents zero prompt/completion retention for this endpoint. Runs and traces
 remain local. Cloud token usage is billed to the key's workspace.
+
+## Random native replay
+
+From the repository root, analyze a random sample of available native conversations:
+
+```bash
+python automations/weekly-automation-conversation-health-review/tarball/main.py \
+  --replay /private/replay-data --output /private/random-flow1-review \
+  --seed 42 --conversation-limit 3 --analyze \
+  --flow1-config "$HOME/experiments/laminar-flow1-local/local-project.json"
+```
+
+This stdlib adapter imports native events through `/v1/spans`; no Python Laminar
+SDK is required. Each selected trace receives one bounded Signal invocation.
+It saves imported spans, native reference mappings, Signal definitions, responses
+and usage privately. It does not intercept Laminar's internal provider prompts.
+See the [monitor README](../../README.md) for sampling, limits and alternate models.
 
 ## Cost measurement
 

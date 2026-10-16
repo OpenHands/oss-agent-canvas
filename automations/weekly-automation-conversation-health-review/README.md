@@ -3,7 +3,9 @@
 The existing `tarball/main.py` supports native-data review alongside its original
 SDK execution mode. The scheduled entrypoint and production prompt are unchanged.
 The prototype derives its four review lenses from that same prompt; it does not
-require a Laminar export or a conversion to a different trajectory format.
+require a pre-existing Laminar export. Flow-1 analysis imports selected native
+events into local Laminar; collection and the alternate LLM analyzer work directly
+from the same native inputs.
 
 Python 3.12 or later is sufficient for the native mode. It uses only the standard
 library and does not import the SDK or start an agent server.
@@ -44,68 +46,124 @@ Without `--state-file`, host mode GETs `--state-url` using
 `OPENHANDS_AUTOMATION_API_KEY`. Only a verified HTTP 404 initializes an empty
 state. An unreadable or malformed state is an error, not a reset.
 
-## Analysis
+## Random sampling
 
-Set `LLM_API_KEY` and `LLM_BASE_URL` in the environment. `LITELLM_API_KEY` and
-`BASE_URL` are accepted aliases. Add `--analyze` to run Luna at low reasoning
-effort. `--model`, `--api responses|chat`, and `--effort` are explicit options.
-Use Chat Completions for compatible non-OpenAI routes; effort for that API is
-the provider's default and is recorded as such.
+The default window is the seven days before `--until` (now, or the replay
+manifest's cutoff). `--since` overrides it. The saved production review cutoff
+does not extend this window: sampled reviews never advance that state.
+
+Sample uniformly without replacement from unique conversations associated with
+runs created in this window and with available native state files. Each available
+conversation has the same chance; duplicate run records, status, cost and
+automation family do not change its weight. Sampling is across the whole
+available population, not separately per automation. Missing exports can limit
+that population; the report records this coverage limitation.
+
+The default sample is three conversations; `--conversation-limit` accepts 1–20.
+`--seed 42` reproduces selection for an unchanged population. Without it, a fresh
+seed is generated and recorded. The manifest includes the population size/hash,
+sample size, inclusion probability and selected IDs. Selected read errors abort
+collection; analysis errors and oversized traces are reported without replacing
+them with another sample. A metadata row-limit overflow also aborts rather than
+sampling a truncated window.
+
+Repeatable `--conversation-id` arguments explicitly select development examples
+and are labeled `explicit_ids`, not a random sample.
+
+## Flow-1 analysis
+
+`--analyze` uses the local Laminar Signals/flow-1 path by default. Set up the
+isolated instance with [experiments/flow1](experiments/flow1/README.md), then run:
 
 ```bash
 python automations/weekly-automation-conversation-health-review/tarball/main.py \
-  --replay /private/replay-data --output /private/review-analysis \
-  --analyze --model openai/gpt-6-luna --workers 2
+  --replay /private/replay-data --output /private/random-review \
+  --seed 42 --conversation-limit 3 --analyze \
+  --flow1-config "$HOME/experiments/laminar-flow1-local/local-project.json"
 ```
 
-The algorithm has no agent loop:
+The private configuration contains the local project/profile IDs and ingest-only
+key; the Cloud inference key stays in Laminar's configured profile. Re-run
+`configure.py` for an older configuration that lacks `profileId`. Internal test
+routes are restricted to loopback HTTP origins. On a VM, run Laminar there or
+forward its ports to loopback; override `--flow1-api-url` and
+`--flow1-frontend-url` for different local ports.
 
-1. Aggregate the database window in a read-only transaction.
-2. Pair native actions and observations across each available conversation.
-   Keep an ordered compact timeline, task instructions, usage and skill facts.
-   Expand failed/missing results, reported exit markers, adjacent retry context,
-   repeated operations, and the last steps within a fixed detail budget.
-3. Analyze each selected conversation independently, with at most two concurrent
-   requests. Give the model short case/evidence references and resolve them back
-   to native IDs and supplied excerpts in code.
-4. Optionally run one verification request with `--coordinator
-   openai/gpt-6.1-sol`. It receives the candidates and the relevant timelines.
-   Cited episodes and nearby follow-up steps receive focused output-line windows;
-   the complete compact timeline remains visible. Abbreviated task context is
-   explicitly marked and cannot establish a policy violation or final outcome.
-   This costs additional time/tokens; an existing evidence reference alone does
-   not establish that a claim is correct.
+1. Read the database window and randomly select unique available conversations.
+2. Pair actions/results and import their full redacted native payloads, assistant
+   messages, original instructions and error events as Laminar spans. A manifest
+   maps them to native IDs and lists omitted event kinds, such as accumulated
+   statistics. A snapshot hash rejects data changed after collection.
+3. Run one Signal per selected conversation, with at most two concurrent calls.
+   Laminar prepares flow-1's trace-reading context. The Signal asks for at most
+   one actionable finding, checks recovery, and requires supported citations.
+4. Resolve evidence labels and unambiguous Laminar span citations to native
+   events. Reject unsupported or malformed candidates. Optionally verify the
+   candidates with one general-purpose model request using `--coordinator`.
 
-Candidates must distinguish observed errors, explicit policy violations, and
-measured regressions. Error claims need a cited failed result/error marker;
-policy claims need task policy plus an observed action. Regression claims are
-rejected because this pilot does not load a comparable historical baseline.
-This deliberately limits the pilot's recall; it is not a general anomaly detector.
+There is no outer agent loop or inference retry. Laminar's bounded trace reader
+uses at most four steps and 4,096 output tokens by default. Set
+`--flow1-max-steps`, `--flow1-output-tokens` and `--max-trace-bytes` explicitly to
+change these limits. The imported trace budget defaults to 2 MB; exceeding it is
+an analysis error, not silent clipping. These are workload limits, not a dollar
+spending cap.
 
-Select particular examples with repeatable `--conversation-id` arguments.
-The default limit is three conversations; at most five are permitted. The default
-model input budget is 200,000 bytes per request, with 1,800 output tokens and no
-automatic retries. Large verification batches can need an explicitly larger
-`--max-input-bytes`. These are workload limits, not a dollar spending cap.
+Error claims need a cited failed result/error marker; policy claims need task
+policy plus an observed action or assistant message. Regression claims are
+rejected because this pilot has no comparable historical baseline. Valid
+references establish provenance, not the truth of every model judgment.
+
+## Alternate LLM analysis and verification
+
+`--analyzer llm` retains the compact native-context analyzer. Set `LLM_API_KEY`
+and `LLM_BASE_URL`; `LITELLM_API_KEY` and `BASE_URL` are accepted aliases.
+The default model is Luna at low reasoning effort. `--model`,
+`--api responses|chat`, and `--effort` are explicit options. Chat Completions uses
+the provider's default effort and records that fact.
+
+```bash
+python automations/weekly-automation-conversation-health-review/tarball/main.py \
+  --replay /private/replay-data --output /private/llm-review \
+  --seed 42 --analyze --analyzer llm --model openai/gpt-6-luna
+```
+
+This path keeps an ordered compact timeline and expands failed/missing results,
+retry context, repeated operations and final steps within a detail budget. Only
+the final two assistant messages accompany ordinary analysis; verification also
+includes any earlier messages cited by a candidate, without duplicating finals.
+`--coordinator openai/gpt-6.1-sol` works with either analyzer and requires the same
+LLM environment settings. Verification receives candidates, the compact timeline,
+and focused cited episodes with adjacent follow-up output. Abbreviated task
+context cannot establish policy violations or final outcomes. The default general
+LLM request budget is 200,000 bytes and 1,800 output tokens; large verification
+batches can need a larger `--max-input-bytes`.
 
 ## Inspecting prompts and results
 
-Every actual LLM request is recorded under `requests/` before transmission.
-The recorded JSON is the exact redacted request body; authorization headers are
-never recorded. Responses and per-call usage, timing, and proxy-reported cost
-are saved under `responses/` and `measurements/`. Missing cost remains unknown.
+For flow-1, `requests/` captures the Signal definition; `laminar/` captures the
+imported redacted spans and native reference manifest. Laminar constructs the
+actual provider prompts internally: this adapter does not capture those bodies.
+For the alternate analyzer and coordinator, `requests/` contains the exact
+redacted provider request body before transmission. Authorization headers are
+never recorded. Responses, usage, timing and reported cost are saved under
+`responses/` and `measurements/`. Flow-1 additionally calculates usage cost from
+published fresh/cache/output rates, before credits; this is not a verified invoice.
+Missing usage/cost stays unknown.
 Parallel wall time and the sum of request times are separate measurements.
 
 `inputs.json` preserves all deterministic window rollups and selected native
 context. `evidence.json` maps model references to supplied records, native event
 IDs, and available event filenames. `prompt_audit.json` records payload sizes.
-The model does not receive generic agent system prompts, complete tool schemas,
-full skill catalogs, accumulated stats events, or agent reasoning transcripts.
-Only the relevant automation rollups accompany each independent case.
+The alternate analyzer receives only the relevant automation rollups for each
+case. Both paths omit the native skill catalog, tool schemas and accumulated
+stats events. Native instructions supplied as MessageEvents remain available to
+flow-1; Laminar adds its own trace-reader prompt.
 
 `review.json` and `report.txt` retain Security, Resources, Errors, and Skills.
-Invalid references are rejected and recorded separately. The report's original
-IDs come from code rather than model-generated copies. Output directories must
+Invalid candidates are recorded separately. Incomplete or failed Signal calls
+produce `partial_analysis`, with errors and any returned usage retained; zero
+findings is not proof that every case was analyzed successfully. The report's
+original IDs come from code rather than model-generated copies. Output directories must
 be new; files are owner-only and should remain outside git.
 
 ## Limits of this prototype
@@ -115,8 +173,8 @@ must be explicitly selected. Deploying host reads into a sandbox still requires
 the appropriate read-only data mount or host-side collection. This change does
 not make host paths automatically visible inside an isolated container.
 
-The local modes never send Slack messages or update production KV/SQL. Sampled
-coverage does not advance `last_reviewed_through`. Unavailable host/security
+The local modes never send Slack messages, open fix PRs or update production
+KV/SQL. Sampled coverage does not advance `last_reviewed_through`. Unavailable host/security
 checks and historical baselines are reported as unavailable. A completed run row,
 running conversation state, missing result, or clipped excerpt is not itself an
 outcome label. Cumulative token usage is not verified billing, and available
