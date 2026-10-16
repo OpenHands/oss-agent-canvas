@@ -4,6 +4,13 @@ entrypoint: python3 worker.py
 keep_alive: null
 model: null
 name: 'GitHub PR Reviewer (reviewer-request events): OpenHands OSS'
+observability_associations:
+  github.action: action
+  github.head_sha: pull_request.head.sha
+  github.pr_number: pull_request.number
+  github.pr_url: pull_request.html_url
+  github.repository: repository.full_name
+  github.sender: sender.login
 preset_metadata: null
 prompt: null
 setup_script_path: null

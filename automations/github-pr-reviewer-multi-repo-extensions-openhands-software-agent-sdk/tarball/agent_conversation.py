@@ -8,6 +8,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 import httpx
 from openhands.sdk import RemoteConversation
+from openhands.sdk.automation import automation_conversation_kwargs
 from openhands.sdk.conversation.request import (
     SendMessageRequest,
     StartConversationRequest,
@@ -80,7 +81,12 @@ class AgentConversationDispatcher:
         return self._workspace.__exit__(*args)
 
     def deliver(
-        self, subject: str, delivery: str, prompt: str, head: str = ""
+        self,
+        subject: str,
+        delivery: str,
+        prompt: str,
+        head: str = "",
+        metadata: dict[str, str | int] | None = None,
     ) -> dict[str, str]:
         """Deliver one revision of `subject`, deduping a repeated head.
 
@@ -121,6 +127,7 @@ class AgentConversationDispatcher:
                     initial_message=SendMessageRequest(
                         content=[TextContent(text=prompt)], run=True
                     ),
+                    **automation_conversation_kwargs(metadata=metadata),
                 ),
                 visualizer=None,
             )

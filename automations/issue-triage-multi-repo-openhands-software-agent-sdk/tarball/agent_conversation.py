@@ -8,6 +8,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 import httpx
 from openhands.sdk import RemoteConversation
+from openhands.sdk.automation import automation_conversation_kwargs
 from openhands.sdk.conversation.request import (
     SendMessageRequest,
     StartConversationRequest,
@@ -106,6 +107,7 @@ class AgentConversationDispatcher:
                     initial_message=SendMessageRequest(
                         content=[TextContent(text=prompt)], run=True
                     ),
+                    **automation_conversation_kwargs(),
                 ),
                 visualizer=None,
             )

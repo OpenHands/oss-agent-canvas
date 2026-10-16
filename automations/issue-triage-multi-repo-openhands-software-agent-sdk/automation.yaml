@@ -5,6 +5,12 @@ keep_alive: null
 model: null
 name: 'Issue Triage (multi-repo): extensions, OpenHands, software-agent-sdk, automation,
   enterprise'
+observability_associations:
+  github.action: action
+  github.issue_number: issue.number
+  github.issue_url: issue.html_url
+  github.repository: repository.full_name
+  github.sender: sender.login
 preset_metadata: null
 prompt: null
 setup_script_path: null

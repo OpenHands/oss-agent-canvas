@@ -64,6 +64,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from openhands.sdk.automation import automation_conversation_kwargs
+
 # ── Multi-repo configuration ──────────────────────────────────────────────────
 # Each repo is processed independently with its own per-repo KV state key
 # (state-v1:<repo-slug>), so issue numbers / assigners / state buckets never
@@ -268,11 +270,18 @@ def _build_secrets_payload() -> dict:
     return secrets
 
 
-def create_conversation(initial_message: str, workspace_dir: Path) -> str:
+def create_conversation(initial_message: str, workspace_dir: Path, repo: str, issue: dict) -> str:
+    metadata = {
+        "github.repository": repo,
+        "github.issue_number": issue["number"],
+    }
+    if issue.get("html_url"):
+        metadata["github.issue_url"] = issue["html_url"]
     payload: dict = {
         "workspace": {"working_dir": str(workspace_dir)},
         "agent": _get_agent_dict(),
         "initial_message": {"content": [{"text": initial_message}]},
+        **automation_conversation_kwargs(metadata=metadata),
     }
     secrets = _build_secrets_payload()
     if secrets:
@@ -757,7 +766,7 @@ def _process_new_assignment(read_token: str, write_token: str, repo: str, base_b
         workspace_dir = _prepare_repository(repo, number, base_branch, branch_name)
         comments_text = _issue_comments_text(read_token, repo, number)
         prompt = _build_resolution_prompt(issue, repo, branch_name, base_branch, comments_text)
-        conv_id = create_conversation(prompt, workspace_dir)
+        conv_id = create_conversation(prompt, workspace_dir, repo, issue)
     except Exception as exc:
         if workspace_dir:
             shutil.rmtree(workspace_dir, ignore_errors=True)

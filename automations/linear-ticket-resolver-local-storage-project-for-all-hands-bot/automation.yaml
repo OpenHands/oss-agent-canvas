@@ -1,0 +1,19 @@
+agent_profile_id: null
+enabled: false
+entrypoint: python3 main.py
+keep_alive: null
+model: null
+name: 'Linear Assistant: @all-hands-bot-internal mentions and assignments'
+observability_associations: null
+preset_metadata: null
+prompt: null
+setup_script_path: null
+state: INACTIVE
+tarball_source:
+  type: internal
+  url: null
+timeout: 1200
+trigger:
+  schedule: '*/5 * * * *'
+  timezone: UTC
+  type: cron

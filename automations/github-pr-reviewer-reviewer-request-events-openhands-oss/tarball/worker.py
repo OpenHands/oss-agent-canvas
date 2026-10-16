@@ -1134,11 +1134,19 @@ class PullRequestReviewer(GitHubRepository):
     def _start_review(
         self, repository_id, pr, trigger, sha, trigger_label, delivery_key=None
     ):
+        metadata = {
+            "github.repository": self.repository,
+            "github.pr_number": pr["number"],
+            "github.head_sha": sha,
+        }
+        if pr.get("html_url"):
+            metadata["github.pr_url"] = pr["html_url"]
         result = self.dispatcher.deliver(
             subject=f"{repository_id}:pr:{pr['number']}",
             delivery=delivery_key or f"{trigger['id']}:{sha}",
             prompt=self._prompt(pr, trigger, trigger_label, delivery_key),
             head=sha,
+            metadata=metadata,
         )
         print(
             json.dumps(
