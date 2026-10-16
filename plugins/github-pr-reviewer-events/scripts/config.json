@@ -1,0 +1,24 @@
+{
+  "repos": [
+    "OpenHands/OpenHands",
+    "OpenHands/software-agent-sdk",
+    "OpenHands/automation",
+    "OpenHands/extensions"
+  ],
+  "trigger_label": "openhands-review-canary",
+  "review_tone": "concise",
+  "maintainers": [
+    "neubig",
+    "VascoSch92",
+    "simonrosenberg",
+    "juanmichelini",
+    "malhotra5",
+    "enyst"
+  ],
+  "github_token_secret": "GITHUB_TOKEN_REVIEW",
+  "trigger_reviewer": "all-hands-bot",
+  "max_new_per_run": 2,
+  "source_repository": "OpenHands/extensions",
+  "source_branch": "main",
+  "source_commit": "f41c2faa9e6336a3eabac3d3147ec7356c3b0578"
+}
