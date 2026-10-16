@@ -1,0 +1,218 @@
+You are conducting the Weekly High-Impact Regression Hunt for the OpenHands/software-agent-sdk repository. Follow the specification below exactly and completely.
+
+## MINDSET — READ THIS BEFORE DOING ANYTHING
+
+This is an ADVERSARIAL regression hunt, not a code review. Your job is to BREAK the code that recent PRs shipped, not to admire it.
+
+Two rules override everything else:
+
+1. **NO CONCLUSION WITHOUT EXECUTION.** You may NOT conclude "no bug" or "looks clean" for any PR until you have written AND RUN a concrete probe against the current main baseline for each plausible failure mode you identified. Reading a diff and reasoning about it is NEVER sufficient to dismiss a concern. "The PR has good tests" is NEVER sufficient evidence of no bug — the entire premise of this hunt (see spec lens #9) is that existing tests pass while behavior is silently wrong. If you cannot run code, you cannot dismiss the concern.
+
+2. **ASSUME EACH PR HAS A BUG UNTIL EXECUTION PROVES OTHERWISE.** For every behavior-changing PR, your default hypothesis is that it introduced a regression. Your job is to construct the input or sequence that exposes it, run it, and let the result — not your prose reasoning — decide.
+
+### Forbidden conclusions
+Do NOT produce any of these as a basis for closing a PR without an executed reproduction:
+- "The PR is well-tested, so there's no regression risk."
+- "Looks clean."
+- "This is a known trade-off / intentional design choice."
+- "The implementation follows existing patterns."
+- "I don't see a bug here" (after only reading).
+
+### Required experiment pattern
+For each PR, after reading the diff and identifying plausible failure modes via the risk lenses, you MUST:
+a. Write a small, deterministic probe — a `python -c` script, a pytest case, or a shell sequence — that exercises the specific failure mode. The probe must target the BEHAVIOR, not just re-assert what the existing tests already assert.
+b. RUN it against the current main baseline (the cloned repo at origin/main). Capture the real output.
+c. Only then decide: if the probe shows materially incorrect, unsafe, unavailable, or misleading behavior, treat it as a confirmed bug and follow the spec's PR policy. If the probe genuinely passes AND you've exhausted the plausible failure modes, record the probe and its output as evidence.
+
+### Depth over breadth
+Investigate FEWER PRs DEEPLY rather than all PRs shallowly. It is better to thoroughly try to break 5-8 PRs (with executed probes for each plausible failure mode) than to read 24 PRs and dismiss them all. If you run low on time/iterations, prioritize the PRs with the highest-impact plausible failure modes and execute probes for those.
+
+## WORKFLOW
+
+1. Determine the date of the prior weekly audit (use the KV store to track the last-run timestamp; if none exists, default to 7 days ago).
+2. Use the GitHub API (gh CLI with the GITHUB_TOKEN secret) to list every behavior-changing PR merged into main since the prior audit. Consider a PR behavior-changing if it touches production code (not just tests/docs/CI).
+3. For each such PR, follow the Required investigation method in the spec: read the PR description, production diff, test diff, and nearby callers; apply every relevant risk lens (sections 1-10); identify the highest-impact plausible failure mode; WRITE AND RUN a deterministic reproduction probe against the current main baseline. Do NOT skip the execution step.
+4. Treat something as a bug only if it is materially incorrect, unsafe, unavailable, or misleading — as shown by an EXECUTED probe, not by reasoning alone.
+5. For each CONFIRMED bug: write a regression test that fails on unmodified main, implement the narrowest production fix, verify the test fails on main and passes with the fix (both RUN, not assumed), and open one PR per bug using the repository's PR template (.github/PULL_REQUEST_TEMPLATE.md) without altering its structure. Complete all AGENT template fields including Why, Summary, Issue Number when applicable, How to Test, Video/Screenshots, Type, and Notes, with the additional required contents listed in the spec's Pull request policy. Keep the HUMAN section untouched. Do not open speculative, coverage-only, test-only, or broad-refactor PRs. When opening a PR, you MUST request review from (a) the author of the original source PR that introduced the bug, and (b) the person who approved that original PR. Look up both via the GitHub API (the PR author is on the PR object; the approver is found via the PR's reviews filtered to state=APPROVED). Add them as reviewers on the new PR using `gh pr edit <pr> --reviewer <user>` or the REST API. If either person is unavailable (e.g. is a bot, has left the org, or GitHub rejects the reviewer request), note it in the PR description and continue.
+6. If no bug is confirmed AFTER executing probes for the PRs you investigated, publish an audit note (as a file in the workspace) listing reviewed PRs, applicable lenses, the PROBES YOU RAN and their OUTPUT, and unconfirmed leads. The audit note must contain evidence of execution, not just reasoning. The correct weekly outcome can be no PRs opened — but only after genuine experimentation.
+7. After completing the run, update the KV store with this run's timestamp so the next run picks up from here.
+
+All exemplar links in the spec are pinned to the reviewed baseline commit 64042bce9f620caac920f8399170488b35e67b74; use their test structure as a model but do not assume their subject area is the only place a pattern applies.
+
+=== FULL SPECIFICATION (WEEKLY_REGRESSION_HUNT.md) ===
+
+# Weekly High-Impact Regression Hunt
+
+Conduct a weekly regression hunt for `OpenHands/software-agent-sdk`. The goal is
+to find confirmed, high-impact bugs introduced by recent behavior-changing PRs;
+it is not to increase a coverage percentage.
+
+Review every behavior-changing PR merged since the prior weekly audit. For each
+one, read its intent, production diff, tests, and adjacent callers. Record every
+applicable risk lens below, including when no bug is found.
+
+All exemplar links are pinned to the reviewed baseline commit
+[`64042bce9f620caac920f8399170488b35e67b74`](https://github.com/OpenHands/software-agent-sdk/tree/64042bce9f620caac920f8399170488b35e67b74),
+not to a moving branch. Use their test structure as a model; do not assume their
+subject area is the only place the pattern applies.
+
+## 1. Boundary contracts and alternate valid inputs
+
+**Risk.** Structured-data code often works for a single fixture but fails on
+valid edge representations: empty values, `null`, booleans, unknown fields,
+nested objects, Unicode, or JSON-mode serialization.
+
+**Check.** Identify the public contract, enumerate alternate valid forms, and
+compare Python-object, API-JSON, and persisted-JSON behavior.
+
+**Exemplar.** [Hook configuration JSON round trip](https://github.com/OpenHands/software-agent-sdk/blob/64042bce9f620caac920f8399170488b35e67b74/tests/sdk/hooks/test_config.py#L289)
+serializes using the real wire format and reloads it rather than only checking
+in-memory construction.
+
+## 2. Stateful transitions and multi-step sequences
+
+**Risk.** Isolated methods may work while a valid sequence leaves stale, lost,
+or contradictory state.
+
+**Check.** Exercise sequences such as create -> use -> switch -> use, or
+navigate/fork/resume/retry. Check which cache, derived field, or ownership state
+must be invalidated or recomputed.
+
+**Exemplar.** [Navigate to an empty tree and then emit](https://github.com/OpenHands/software-agent-sdk/blob/64042bce9f620caac920f8399170488b35e67b74/tests/sdk/conversation/local/test_conversation_tree.py#L171)
+asserts the resulting event-tree semantics, not merely that both calls returned.
+
+## 3. Persistence, migrations, and backward compatibility
+
+**Risk.** New objects may work while old settings, old logs, or restart behavior
+break after a schema or lifecycle change.
+
+**Check.** Test old payload -> current load -> current save -> current reload.
+Include omitted fields, aliases, old versions, and lifecycle artifacts.
+
+**Exemplar.** [Legacy resume with a non-tree artifact tail](https://github.com/OpenHands/software-agent-sdk/blob/64042bce9f620caac920f8399170488b35e67b74/tests/sdk/conversation/local/test_conversation_tree.py#L346)
+combines old persisted data with new runtime behavior and proves history remains
+visible.
+
+## 4. Multiple construction and configuration paths
+
+**Risk.** A logical object can be built through SDK code, API requests, profiles,
+plugins, environment configuration, or persisted storage; defaults and
+validation can diverge.
+
+**Check.** Compare each supported entry point, especially omitted versus `null`,
+empty, and explicit values. Confirm that validation, defaults, authorization,
+and visible tools agree.
+
+**Exemplar.** [Profile launch adds the browser when usable](https://github.com/OpenHands/software-agent-sdk/blob/64042bce9f620caac920f8399170488b35e67b74/tests/agent_server/test_agent_profile_conv_start.py#L292)
+and its [unusable-browser counterpart](https://github.com/OpenHands/software-agent-sdk/blob/64042bce9f620caac920f8399170488b35e67b74/tests/agent_server/test_agent_profile_conv_start.py#L327)
+test the resolved launch result through the agent-server path.
+
+## 5. Failure, retry, reconnect, and cancellation recovery
+
+**Risk.** A transient or partial failure can leave a client, cache, or
+conversation unusable even if the normal call succeeds.
+
+**Check.** Fail before, during, and after partial success. Verify retry policy,
+post-recovery usability, and absence of duplicate or missing state.
+
+**Exemplar.** [Retry after a retryable WebSocket close](https://github.com/OpenHands/software-agent-sdk/blob/64042bce9f620caac920f8399170488b35e67b74/tests/sdk/conversation/remote/test_websocket_client.py#L250)
+models the failure and verifies retry and restored subscription behavior.
+
+## 6. Concurrency, locks, caches, and background work
+
+**Risk.** Single-threaded tests miss deadlocks, double cleanup, stale cached
+state, lost updates, and blocked event loops.
+
+**Check.** Hold an operation at a deterministic point, then issue competing
+calls, cancellation, and cleanup. Assert liveness, exactly-once cleanup, lock
+release, and a consistent final state.
+
+**Exemplar.** [Concurrent close serializes shared cleanup](https://github.com/OpenHands/software-agent-sdk/blob/64042bce9f620caac920f8399170488b35e67b74/tests/tools/browser_use/test_browser_cleanup.py#L139)
+drives competing cleanup calls and checks synchronization rather than timing.
+
+## 7. External-system and platform variance
+
+**Risk.** Mocks hide behavior specific to shells, filesystems, Git, browsers,
+MCP servers, and providers. OS and protocol assumptions are especially fragile.
+
+**Check.** Identify the external behavior the unit mock does not model. Add a
+small protocol-contract or real integration test when the variance matters.
+
+**Exemplar.** [PowerShell multiline submission](https://github.com/OpenHands/software-agent-sdk/blob/64042bce9f620caac920f8399170488b35e67b74/tests/tools/terminal/test_windows_terminal_send_keys.py#L68)
+captures the interactive protocol's blank-line requirement directly.
+
+## 8. Credentials, redaction, and sensitive persistence boundaries
+
+**Risk.** Credentials move through environment parsing, validation, encrypted
+storage, logs, API responses, retries, and restart; a functional path can still
+leak secrets or fail to reload.
+
+**Check.** Test create/update/save/reload/error paths. Assert both that values
+remain usable where required and that they are absent from logs, errors,
+telemetry, and responses.
+
+**Exemplar.** [Startup logging includes environment keys but not values](https://github.com/OpenHands/software-agent-sdk/blob/64042bce9f620caac920f8399170488b35e67b74/tests/workspace/test_api_remote_workspace.py#L246)
+checks the observable output rather than just a logging call.
+
+## 9. Semantic assertions
+
+**Risk.** A status-code, object-existence, or no-exception assertion can pass
+while a feature silently does the wrong thing.
+
+**Check.** State the externally meaningful invariant: provenance, chosen model,
+active branch, visible tools, or persisted value. Ask whether the existing test
+would pass if the result were silently wrong.
+
+**Exemplar.** [Active view contains only the active branch](https://github.com/OpenHands/software-agent-sdk/blob/64042bce9f620caac920f8399170488b35e67b74/tests/sdk/conversation/local/test_conversation_tree.py#L108)
+asserts the user-visible meaning of the tree.
+
+## 10. Negative-space and silent-success cases
+
+**Risk.** The most damaging defects can return success with subtly incorrect
+output. Invalid, malformed, empty, ambiguous, or unsupported input needs a
+deliberate behavior.
+
+**Check.** Ask what could silently be wrong while still returning success. Test
+malformed, empty, Unicode, duplicate, ambiguous, and unsupported cases.
+
+**Exemplar.** [Malformed shell input does not crash parsing](https://github.com/OpenHands/software-agent-sdk/blob/64042bce9f620caac920f8399170488b35e67b74/tests/sdk/security/test_shell_parser.py#L48)
+makes the safe behavior for malformed input explicit.
+
+## Required investigation method
+
+1. Read the PR description, production diff, test diff, and nearby callers.
+2. Apply every relevant risk lens above.
+3. Identify the highest-impact plausible failure mode.
+4. Attempt a deterministic reproduction against the current `main` baseline.
+5. Treat it as a bug only if it is materially incorrect, unsafe, unavailable,
+   or misleading.
+6. Write a regression test first; it must fail on unmodified `main`.
+7. Implement the narrowest production fix.
+8. Verify that the regression test fails on unmodified `main`, passes with the
+   fix, relevant neighboring tests pass, and the assertion proves a user-visible
+   or safety-critical invariant.
+
+## Pull request policy
+
+Open a PR only for a confirmed bug. Keep one independently reviewable bug per
+PR. Do not open speculative, coverage-only, test-only, or broad-refactor PRs.
+
+The PR must use the repository's [PR template](https://github.com/OpenHands/software-agent-sdk/blob/64042bce9f620caac920f8399170488b35e67b74/.github/PULL_REQUEST_TEMPLATE.md)
+without changing its structure. Keep the `HUMAN` section untouched. Complete all
+of the `AGENT` template fields, including `Why`, `Summary`, `Issue Number` when
+applicable, `How to Test`, `Video/Screenshots`, `Type`, and `Notes`.
+
+In `Why` and `How to Test`, additionally include:
+
+- the source PR(s) reviewed;
+- the applicable risk lens or lenses;
+- the deterministic reproduction and impact;
+- root cause;
+- proof that the regression test fails on unmodified `main`;
+- before/after test commands and results;
+- an end-to-end validation or reproduction, as required by the template;
+- why the original tests did not catch the case.
+
+If no bug is confirmed, publish an audit note with reviewed PRs, applicable
+lenses, reproduction attempts, and unconfirmed leads. The correct weekly
+outcome can be **no PRs opened**; the standard is confirmed impact, not activity.
