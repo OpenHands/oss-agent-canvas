@@ -1,0 +1,66 @@
+{
+  "name": "llm-model-list-update",
+  "version": "0.1.0",
+  "description": "Executable automation plugin for LLM Model List Update.",
+  "author": {
+    "name": "OpenHands",
+    "email": "contact@all-hands.dev"
+  },
+  "homepage": "https://github.com/OpenHands/oss-agent-canvas",
+  "repository": "https://github.com/OpenHands/oss-agent-canvas",
+  "license": "MIT",
+  "keywords": [
+    "automation",
+    "llm-model-list-update"
+  ],
+  "automation": {
+    "schema_version": "openhands.automation.plugin.v1",
+    "entrypoint": {
+      "runner": "script",
+      "working_dir": "scripts",
+      "command": ".venv/bin/python main.py",
+      "setup_script": "scripts/setup.sh"
+    },
+    "runtime": {
+      "plugins": []
+    },
+    "config_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repos": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string",
+                "default": "https://github.com/OpenHands/software-agent-sdk"
+              },
+              "ref": {
+                "type": "string",
+                "default": "main"
+              }
+            },
+            "additionalProperties": false,
+            "default": {
+              "url": "https://github.com/OpenHands/software-agent-sdk",
+              "ref": "main"
+            }
+          },
+          "default": [
+            {
+              "url": "https://github.com/OpenHands/software-agent-sdk",
+              "ref": "main"
+            }
+          ]
+        }
+      }
+    },
+    "suggested_trigger": {
+      "type": "cron",
+      "schedule": "0 9 * * 3,6",
+      "timezone": "UTC"
+    }
+  }
+}
