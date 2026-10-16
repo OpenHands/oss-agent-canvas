@@ -1,0 +1,65 @@
+{
+  "name": "docs-release-to-pr",
+  "version": "0.1.0",
+  "description": "Executable automation plugin for [Docs] Release -> Docs Issue -> Docs PR (event-driven).",
+  "author": {
+    "name": "OpenHands",
+    "email": "contact@all-hands.dev"
+  },
+  "homepage": "https://github.com/OpenHands/oss-agent-canvas",
+  "repository": "https://github.com/OpenHands/oss-agent-canvas",
+  "license": "MIT",
+  "keywords": [
+    "automation",
+    "docs-release-to-pr"
+  ],
+  "automation": {
+    "schema_version": "openhands.automation.plugin.v1",
+    "entrypoint": {
+      "runner": "script",
+      "working_dir": "scripts",
+      "command": ".venv/bin/python main.py",
+      "setup_script": "scripts/setup.sh"
+    },
+    "runtime": {
+      "plugins": []
+    },
+    "config_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repos": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string",
+                "default": "https://github.com/OpenHands/docs"
+              }
+            },
+            "additionalProperties": false,
+            "default": {
+              "url": "https://github.com/OpenHands/docs"
+            }
+          },
+          "default": [
+            {
+              "url": "https://github.com/OpenHands/docs"
+            }
+          ]
+        }
+      }
+    },
+    "suggested_trigger": {
+      "type": "event",
+      "source": "github-events",
+      "on": "*",
+      "filter": "(repository.full_name == 'OpenHands/OpenHands' && contains(keys(@), 'release') && action == 'published') || (repository.full_name == 'OpenHands/docs' && contains(keys(@), 'issue') && !contains(keys(@), 'comment') && contains(['opened','unlabeled'], action) && starts_with(issue.title || '', 'automation: Docs update for OpenHands '))",
+      "destination": "dispatch_run",
+      "subject_key_expr": null,
+      "turn_text_expr": null,
+      "wake_agent": true
+    }
+  }
+}
