@@ -1,0 +1,19 @@
+agent_profile_id: null
+enabled: false
+entrypoint: python3 main.py
+keep_alive: null
+model: null
+name: "OSS \u2192 OHE parity discovery and issue routing"
+observability_associations: null
+preset_metadata: null
+prompt: null
+setup_script_path: null
+state: INACTIVE
+tarball_source:
+  type: internal
+  url: null
+timeout: 1800
+trigger:
+  schedule: 17 13 * * *
+  timezone: UTC
+  type: cron
