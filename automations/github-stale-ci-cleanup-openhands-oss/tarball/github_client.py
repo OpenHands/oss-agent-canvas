@@ -5,9 +5,11 @@ import json
 import os
 import re
 import subprocess
+import time
 from functools import cached_property
+from http.client import IncompleteRead
 from pathlib import Path
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
@@ -80,6 +82,7 @@ def github_request(
     params: dict | None = None,
     body: dict | None = None,
     accept: str = "application/vnd.github+json",
+    retries: int | None = None,
 ) -> tuple:
     url = f"https://api.github.com{path}"
     if params:
@@ -91,10 +94,26 @@ def github_request(
         "Content-Type": "application/json",
     }
     data = json.dumps(body).encode() if body is not None else None
-    req = Request(url, data=data, headers=headers, method=method)
-    with urlopen(req, timeout=90) as r:
-        raw = r.read()
-        return (json.loads(raw) if raw.strip() else {}), dict(r.headers)
+    # Reads are safe to replay; writes are not, so only retry them when the
+    # caller opts in.
+    attempts = (3 if method == "GET" else 0) if retries is None else retries
+    for attempt in range(attempts + 1):
+        req = Request(url, data=data, headers=headers, method=method)
+        try:
+            with urlopen(req, timeout=90) as r:
+                raw = r.read()
+            return (json.loads(raw) if raw.strip() else {}), dict(r.headers)
+        except HTTPError as exc:
+            # A 5xx or a 429 is GitHub-side and worth another try; anything
+            # else (401/403/404/422) is a real answer to this request.
+            if not (exc.code >= 500 or exc.code == 429) or attempt == attempts:
+                raise
+        except (IncompleteRead, URLError) as exc:
+            # GitHub intermittently truncates a large GraphQL response or drops
+            # the connection mid-read. Neither is a valid answer, so replay it.
+            if attempt == attempts:
+                raise
+        time.sleep(2**attempt)
 
 
 def github_paginate(token: str, path: str, params: dict | None = None) -> list:
@@ -175,9 +194,11 @@ class GitHubRepository:
             self.token, method, f"/repos/{self.repository}" + path, body=body
         )[0]
 
-    def api(self, method, path, params=None, body=None):
+    def api(self, method, path, params=None, body=None, retries=None):
         """Call a GitHub endpoint that is not scoped to one repository."""
-        return github_request(self.token, method, path, params=params, body=body)[0]
+        return github_request(
+            self.token, method, path, params=params, body=body, retries=retries
+        )[0]
 
     def shell(self, args, cwd=None, timeout=300):
         result = subprocess.run(

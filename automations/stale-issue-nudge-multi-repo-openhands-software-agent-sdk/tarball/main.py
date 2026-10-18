@@ -31,6 +31,7 @@ run is still reported as FAILED.
 """
 
 import base64
+import http.client
 import json
 import os
 import re
@@ -136,13 +137,19 @@ def github_request(token, method, path, params=None, body=None):
             with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as response:
                 raw = response.read()
                 return json.loads(raw) if raw.strip() else {}
-        except urllib.error.HTTPError:
-            raise  # a real HTTP error (4xx/5xx) - retrying won't help
-        except (urllib.error.URLError, TimeoutError) as exc:
+        except urllib.error.HTTPError as exc:
+            # A 5xx or 429 is GitHub-side and a GET is safe to replay. Anything
+            # else (401/403/404/422) is a real answer; and a write is never
+            # replayed, because a lost response would duplicate the comment.
+            retryable = method == "GET" and (exc.code >= 500 or exc.code == 429)
+            if not retryable or attempt == REQUEST_RETRIES - 1:
+                raise
             last_error = exc
-            if attempt < REQUEST_RETRIES - 1:
-                print(f"{method} {path}: {exc}; retrying")
-                time.sleep(RETRY_BACKOFF_SECONDS[min(attempt, len(RETRY_BACKOFF_SECONDS) - 1)])
+        except (urllib.error.URLError, TimeoutError, http.client.IncompleteRead) as exc:
+            last_error = exc
+        if attempt < REQUEST_RETRIES - 1:
+            print(f"{method} {path}: {last_error}; retrying")
+            time.sleep(RETRY_BACKOFF_SECONDS[min(attempt, len(RETRY_BACKOFF_SECONDS) - 1)])
     raise last_error
 
 
@@ -151,7 +158,19 @@ def get_current_login(token):
 
 
 def fetch_maintainers(token, repository):
-    data = github_request(token, "GET", f"/repos/{repository}/contents/MAINTAINERS")
+    """Return the @handles in MAINTAINERS, or [] when the file is absent.
+
+    A missing roster is the normal state for a repository that has never had
+    one, not a run-level error: the caller already falls back to an unnamed
+    ask, and failing the whole run would abort every remaining repository in
+    REPOS. A 404 is therefore an empty roster; anything else still raises.
+    """
+    try:
+        data = github_request(token, "GET", f"/repos/{repository}/contents/MAINTAINERS")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return []
+        raise
     content = base64.b64decode(data["content"]).decode()
     return sorted(set(re.findall(r"^-\s*@(\S+)", content, re.MULTILINE)))
 
