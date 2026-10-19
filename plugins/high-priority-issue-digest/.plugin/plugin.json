@@ -1,0 +1,37 @@
+{
+  "name": "high-priority-issue-digest",
+  "version": "0.1.0",
+  "description": "Executable automation plugin for High-priority GitHub issue digest.",
+  "author": {
+    "name": "OpenHands",
+    "email": "contact@all-hands.dev"
+  },
+  "homepage": "https://github.com/OpenHands/oss-agent-canvas",
+  "repository": "https://github.com/OpenHands/oss-agent-canvas",
+  "license": "MIT",
+  "keywords": [
+    "automation",
+    "high-priority-issue-digest"
+  ],
+  "automation": {
+    "schema_version": "openhands.automation.plugin.v1",
+    "entrypoint": {
+      "runner": "script",
+      "working_dir": "scripts",
+      "command": "python3 main.py"
+    },
+    "runtime": {
+      "plugins": []
+    },
+    "config_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "suggested_trigger": {
+      "type": "cron",
+      "schedule": "0 12 * * 1,3",
+      "timezone": "UTC"
+    }
+  }
+}
