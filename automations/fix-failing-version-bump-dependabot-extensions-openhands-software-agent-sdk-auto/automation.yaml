@@ -1,0 +1,21 @@
+agent_profile_id: null
+enabled: true
+entrypoint: cd "$AUTOMATION_PLUGIN_ROOT/scripts" && python3 main.py
+keep_alive: null
+model: null
+name: 'Fix Failing Version Bump (dependabot): extensions, OpenHands, software-agent-sdk,
+  automation, enterprise'
+observability_associations: null
+preset_metadata:
+  preset_type: plugin_spec
+prompt: null
+setup_script_path: null
+state: ACTIVE
+tarball_source:
+  type: external
+  url: plugin-spec://runtime
+timeout: 1200
+trigger:
+  schedule: 0 0,12 * * *
+  timezone: UTC
+  type: cron
