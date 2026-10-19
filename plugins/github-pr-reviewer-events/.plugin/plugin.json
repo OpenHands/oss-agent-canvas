@@ -1,0 +1,116 @@
+{
+  "name": "github-pr-reviewer-events",
+  "version": "0.1.0",
+  "description": "Executable automation plugin for GitHub PR Reviewer (reviewer-request events): OpenHands OSS.",
+  "author": {
+    "name": "OpenHands",
+    "email": "contact@all-hands.dev"
+  },
+  "homepage": "https://github.com/OpenHands/oss-agent-canvas",
+  "repository": "https://github.com/OpenHands/oss-agent-canvas",
+  "license": "MIT",
+  "keywords": [
+    "automation",
+    "github-pr-reviewer-events"
+  ],
+  "automation": {
+    "schema_version": "openhands.automation.plugin.v1",
+    "entrypoint": {
+      "runner": "script",
+      "working_dir": "scripts",
+      "command": "python3 worker.py"
+    },
+    "runtime": {
+      "plugins": [],
+      "agent_profile": {
+        "required": true,
+        "default_name": "factory-reviewer",
+        "allowed_tools": [
+          "terminal",
+          "file_editor",
+          "task_tracker",
+          "browser_tool_set"
+        ],
+        "allowed_secret_refs": [
+          "GITHUB_TOKEN_REVIEW"
+        ]
+      }
+    },
+    "config_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repos": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "default": "OpenHands/OpenHands"
+          },
+          "default": [
+            "OpenHands/OpenHands",
+            "OpenHands/software-agent-sdk",
+            "OpenHands/automation",
+            "OpenHands/extensions"
+          ]
+        },
+        "trigger_label": {
+          "type": "string",
+          "default": "openhands-review-canary"
+        },
+        "review_tone": {
+          "type": "string",
+          "default": "concise"
+        },
+        "maintainers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "default": "neubig"
+          },
+          "default": [
+            "neubig",
+            "VascoSch92",
+            "simonrosenberg",
+            "juanmichelini",
+            "malhotra5",
+            "enyst"
+          ]
+        },
+        "github_token_secret": {
+          "type": "string",
+          "default": "GITHUB_TOKEN_REVIEW"
+        },
+        "trigger_reviewer": {
+          "type": "string",
+          "default": "all-hands-bot"
+        },
+        "max_new_per_run": {
+          "type": "integer",
+          "default": 2
+        },
+        "source_repository": {
+          "type": "string",
+          "default": "OpenHands/extensions"
+        },
+        "source_branch": {
+          "type": "string",
+          "default": "main"
+        },
+        "source_commit": {
+          "type": "string",
+          "default": "f41c2faa9e6336a3eabac3d3147ec7356c3b0578"
+        }
+      }
+    },
+    "suggested_trigger": {
+      "type": "event",
+      "source": "github-events",
+      "on": "*",
+      "filter": "contains(['OpenHands/OpenHands', 'OpenHands/software-agent-sdk', 'OpenHands/automation', 'OpenHands/extensions'], repository.full_name) && contains(keys(@), 'pull_request') && ((action == 'review_requested' && requested_reviewer.login == 'all-hands-bot') || (action == 'submitted' && contains(keys(@), 'review') && review.user.login == 'all-hands-bot'))",
+      "destination": "dispatch_run",
+      "subject_key_expr": null,
+      "turn_text_expr": null,
+      "wake_agent": true
+    }
+  }
+}
