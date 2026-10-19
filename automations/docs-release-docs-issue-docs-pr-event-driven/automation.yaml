@@ -1,11 +1,14 @@
-enabled: true
+agent_profile_id: null
+enabled: false
 entrypoint: .venv/bin/python main.py
 keep_alive: null
 model: null
 name: '[Docs] Release -> Docs Issue -> Docs PR (event-driven)'
+observability_associations: null
 preset_metadata: null
 prompt: null
 setup_script_path: setup.sh
+state: INACTIVE
 tarball_executables:
 - setup.sh
 tarball_source:
@@ -22,4 +25,6 @@ trigger:
   'on': '*'
   source: github-events
   subject_key_expr: null
+  turn_text_expr: null
   type: event
+  wake_agent: true

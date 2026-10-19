@@ -1,0 +1,34 @@
+agent_profile_id: null
+enabled: true
+entrypoint: cd "$AUTOMATION_PLUGIN_ROOT/scripts" && python3 main.py
+keep_alive: null
+model: null
+name: 'GitHub Mention Responder (multi-repo): extensions, OpenHands, software-agent-sdk,
+  automation, enterprise'
+observability_associations: null
+preset_metadata:
+  preset_type: plugin_spec
+prompt: null
+setup_script_path: null
+state: ACTIVE
+tarball_source:
+  type: external
+  url: plugin-spec://runtime
+timeout: 1800
+trigger:
+  destination: dispatch_run
+  filter: contains(['OpenHands/extensions', 'OpenHands/OpenHands', 'OpenHands/software-agent-sdk',
+    'OpenHands/automation', 'OpenHands/enterprise', 'OpenHands/saas-deploy', 'OpenHands/evaluation'],
+    repository.full_name) && contains(['VascoSch92', 'neubig'], sender.login) && ((action
+    == 'created' && contains(keys(@), 'comment') && icontains(comment.body || '',
+    '@all-hands-bot')) || (action == 'opened' && contains(keys(@), 'issue') && !contains(keys(@),
+    'comment') && icontains(issue.body || '', '@all-hands-bot')) || (action == 'opened'
+    && contains(keys(@), 'pull_request') && !contains(keys(@), 'comment') && icontains(pull_request.body
+    || '', '@all-hands-bot')) || (action == 'submitted' && contains(keys(@), 'review')
+    && icontains(review.body || '', '@all-hands-bot')))
+  'on': '*'
+  source: github-events
+  subject_key_expr: null
+  turn_text_expr: null
+  type: event
+  wake_agent: true

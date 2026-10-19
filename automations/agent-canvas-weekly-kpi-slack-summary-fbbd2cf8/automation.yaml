@@ -1,8 +1,10 @@
-enabled: true
+agent_profile_id: null
+enabled: false
 entrypoint: .venv/bin/python main.py
 keep_alive: null
 model: null
 name: Agent Canvas weekly KPI Slack summary
+observability_associations: null
 preset_metadata:
   preset_type: prompt
   prompt: "# Agent Canvas weekly KPI Slack summary automation prompt\n\nYou are running\
@@ -120,6 +122,7 @@ prompt: "# Agent Canvas weekly KPI Slack summary automation prompt\n\nYou are ru
   \ in the **All Hands AI** Slack workspace (`allhandsai.slack.com`, team ID `T07E1S2M2Q6`),\
   \ authenticating with the registered `SLACK_BOT_TOKEN` secret.\n"
 setup_script_path: setup.sh
+state: INACTIVE
 tarball_executables:
 - setup.sh
 tarball_source:

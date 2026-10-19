@@ -1,14 +1,15 @@
 agent_profile_id: null
-enabled: true
+enabled: false
 entrypoint: .venv/bin/python main.py
 keep_alive: false
 model: deepseek-v4.1-flash
 name: 'Weekly AGENTS.md relevance review (multi-repo): extensions, OpenHands, software-agent-sdk,
   automation, enterprise'
+observability_associations: null
 preset_metadata: null
 prompt: null
 setup_script_path: setup.sh
-state: ACTIVE
+state: INACTIVE
 tarball_executables:
 - setup.sh
 tarball_source:

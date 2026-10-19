@@ -1,8 +1,10 @@
-enabled: true
+agent_profile_id: null
+enabled: false
 entrypoint: .venv/bin/python main.py
 keep_alive: null
 model: null
 name: Weekly High-Impact Regression Hunt
+observability_associations: null
 preset_metadata: null
 prompt: "You are conducting the Weekly High-Impact Regression Hunt for the OpenHands/software-agent-sdk\
   \ repository. Follow the specification below exactly and completely.\n\n## MINDSET\
@@ -174,6 +176,7 @@ prompt: "You are conducting the Weekly High-Impact Regression Hunt for the OpenH
   \ attempts, and unconfirmed leads. The correct weekly\noutcome can be **no PRs opened**;\
   \ the standard is confirmed impact, not activity.\n"
 setup_script_path: setup.sh
+state: INACTIVE
 tarball_executables:
 - setup.sh
 tarball_source:

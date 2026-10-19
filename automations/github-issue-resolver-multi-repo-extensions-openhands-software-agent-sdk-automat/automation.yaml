@@ -1,0 +1,29 @@
+agent_profile_id: null
+enabled: true
+entrypoint: cd "$AUTOMATION_PLUGIN_ROOT/scripts" && python3 main.py
+keep_alive: null
+model: null
+name: 'GitHub Issue Resolver (multi-repo): extensions, OpenHands, software-agent-sdk,
+  automation, enterprise'
+observability_associations: null
+preset_metadata:
+  preset_type: plugin_spec
+prompt: null
+setup_script_path: null
+state: ACTIVE
+tarball_source:
+  type: external
+  url: plugin-spec://runtime
+timeout: 1800
+trigger:
+  destination: dispatch_run
+  filter: contains(['OpenHands/extensions', 'OpenHands/OpenHands', 'OpenHands/software-agent-sdk',
+    'OpenHands/automation', 'OpenHands/enterprise', 'OpenHands/saas-deploy', 'OpenHands/evaluation'],
+    repository.full_name) && ((action == 'assigned' && contains(keys(@), 'issue')
+    && assignee.login == 'all-hands-bot') || starts_with(ref || '', 'refs/heads/openhands/issue-'))
+  'on': '*'
+  source: github-events
+  subject_key_expr: null
+  turn_text_expr: null
+  type: event
+  wake_agent: true

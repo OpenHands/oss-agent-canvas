@@ -1,0 +1,29 @@
+agent_profile_id: null
+enabled: true
+entrypoint: cd "$AUTOMATION_PLUGIN_ROOT/scripts" && env .venv/bin/python main.py
+keep_alive: null
+model: null
+name: '[Docs] Release -> Docs Issue -> Docs PR (event-driven)'
+observability_associations: null
+preset_metadata:
+  preset_type: plugin_spec
+prompt: null
+setup_script_path: scripts/setup.sh
+state: ACTIVE
+tarball_source:
+  type: external
+  url: plugin-spec://runtime
+timeout: 1800
+trigger:
+  destination: dispatch_run
+  filter: '(repository.full_name == ''OpenHands/OpenHands'' && contains(keys(@), ''release'')
+    && action == ''published'') || (repository.full_name == ''OpenHands/docs'' &&
+    contains(keys(@), ''issue'') && !contains(keys(@), ''comment'') && contains([''opened'',''unlabeled''],
+    action) && starts_with(issue.title || '''', ''automation: Docs update for OpenHands
+    ''))'
+  'on': '*'
+  source: github-events
+  subject_key_expr: null
+  turn_text_expr: null
+  type: event
+  wake_agent: true
