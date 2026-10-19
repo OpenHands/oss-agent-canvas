@@ -1,0 +1,108 @@
+{
+  "name": "github-pr-reviewer-canary",
+  "version": "0.1.0",
+  "description": "Executable automation plugin for GitHub PR Reviewer continuous canary: OpenHands automation.",
+  "author": {
+    "name": "OpenHands",
+    "email": "contact@all-hands.dev"
+  },
+  "homepage": "https://github.com/OpenHands/oss-agent-canvas",
+  "repository": "https://github.com/OpenHands/oss-agent-canvas",
+  "license": "MIT",
+  "keywords": [
+    "automation",
+    "github-pr-reviewer-canary"
+  ],
+  "automation": {
+    "schema_version": "openhands.automation.plugin.v1",
+    "entrypoint": {
+      "runner": "script",
+      "working_dir": "scripts",
+      "command": "python3 worker.py"
+    },
+    "runtime": {
+      "plugins": [],
+      "agent_profile": {
+        "required": true,
+        "default_name": "factory-reviewer",
+        "allowed_tools": [
+          "terminal",
+          "file_editor",
+          "task_tracker",
+          "browser_tool_set"
+        ],
+        "allowed_secret_refs": [
+          "GITHUB_TOKEN_REVIEW"
+        ]
+      }
+    },
+    "config_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repos": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "default": "OpenHands/automation"
+          },
+          "default": [
+            "OpenHands/automation"
+          ]
+        },
+        "trigger_label": {
+          "type": "string",
+          "default": "openhands-review-canary"
+        },
+        "review_tone": {
+          "type": "string",
+          "default": "concise"
+        },
+        "maintainers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "default": "neubig"
+          },
+          "default": [
+            "neubig",
+            "VascoSch92",
+            "simonrosenberg",
+            "juanmichelini",
+            "malhotra5",
+            "enyst"
+          ]
+        },
+        "github_token_secret": {
+          "type": "string",
+          "default": "GITHUB_TOKEN_REVIEW"
+        },
+        "trigger_reviewer": {
+          "type": "string",
+          "default": "all-hands-bot"
+        },
+        "max_new_per_run": {
+          "type": "integer",
+          "default": 1
+        },
+        "source_repository": {
+          "type": "string",
+          "default": "OpenHands/extensions"
+        },
+        "source_branch": {
+          "type": "string",
+          "default": "factory/reviewer-continuous-canary"
+        },
+        "source_commit": {
+          "type": "string",
+          "default": "ca83635bcd06166e7052ebe24c5883d0407bab38"
+        }
+      }
+    },
+    "suggested_trigger": {
+      "type": "cron",
+      "schedule": "0 0 * * *",
+      "timezone": "UTC"
+    }
+  }
+}
