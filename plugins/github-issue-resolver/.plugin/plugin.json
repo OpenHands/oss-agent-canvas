@@ -1,0 +1,42 @@
+{
+  "name": "github-issue-resolver",
+  "version": "0.1.0",
+  "description": "Executable automation plugin for GitHub Issue Resolver (multi-repo): extensions, OpenHands, software-agent-sdk, automation, enterprise.",
+  "author": {
+    "name": "OpenHands",
+    "email": "contact@all-hands.dev"
+  },
+  "homepage": "https://github.com/OpenHands/oss-agent-canvas",
+  "repository": "https://github.com/OpenHands/oss-agent-canvas",
+  "license": "MIT",
+  "keywords": [
+    "automation",
+    "github-issue-resolver"
+  ],
+  "automation": {
+    "schema_version": "openhands.automation.plugin.v1",
+    "entrypoint": {
+      "runner": "script",
+      "working_dir": "scripts",
+      "command": "python3 main.py"
+    },
+    "runtime": {
+      "plugins": []
+    },
+    "config_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "suggested_trigger": {
+      "type": "event",
+      "source": "github-events",
+      "on": "*",
+      "filter": "contains(['OpenHands/extensions', 'OpenHands/OpenHands', 'OpenHands/software-agent-sdk', 'OpenHands/automation', 'OpenHands/enterprise', 'OpenHands/saas-deploy', 'OpenHands/evaluation'], repository.full_name) && ((action == 'assigned' && contains(keys(@), 'issue') && assignee.login == 'all-hands-bot') || starts_with(ref || '', 'refs/heads/openhands/issue-'))",
+      "destination": "dispatch_run",
+      "subject_key_expr": null,
+      "turn_text_expr": null,
+      "wake_agent": true
+    }
+  }
+}
