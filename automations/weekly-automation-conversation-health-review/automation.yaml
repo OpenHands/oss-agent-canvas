@@ -1,8 +1,10 @@
-enabled: true
+agent_profile_id: null
+enabled: false
 entrypoint: .venv/bin/python main.py
 keep_alive: null
 model: null
 name: Weekly Automation & Conversation Health Review
+observability_associations: null
 preset_metadata: null
 prompt: "You are auditing the shared OSS automation VM (`dev-oss-automation-vm`) that\
   \ hosts this automation platform: Agent Canvas, its agent-server, and every other\
@@ -70,6 +72,7 @@ prompt: "You are auditing the shared OSS automation VM (`dev-oss-automation-vm`)
   \ Single top-level message, no thread, no attachment.\n\nFinally, write the updated\
   \ KV state so next week doesn't repeat unchanged findings.\n"
 setup_script_path: setup.sh
+state: INACTIVE
 tarball_executables:
 - setup.sh
 tarball_source:
