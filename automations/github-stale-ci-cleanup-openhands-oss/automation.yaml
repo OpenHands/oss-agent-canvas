@@ -1,5 +1,5 @@
 agent_profile_id: null
-enabled: true
+enabled: false
 entrypoint: python3 worker.py
 keep_alive: null
 model: null
@@ -8,7 +8,7 @@ observability_associations: null
 preset_metadata: null
 prompt: null
 setup_script_path: null
-state: ACTIVE
+state: INACTIVE
 tarball_source:
   type: internal
   url: null
