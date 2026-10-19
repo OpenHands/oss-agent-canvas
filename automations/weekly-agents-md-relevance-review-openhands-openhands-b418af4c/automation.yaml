@@ -1,0 +1,20 @@
+agent_profile_id: null
+enabled: false
+entrypoint: cd "$AUTOMATION_PLUGIN_ROOT/scripts" && env .venv/bin/python main.py
+keep_alive: null
+model: null
+name: "Weekly AGENTS.md relevance review \u2014 OpenHands/OpenHands"
+observability_associations: null
+preset_metadata:
+  preset_type: plugin_spec
+prompt: null
+setup_script_path: scripts/setup.sh
+state: INACTIVE
+tarball_source:
+  type: external
+  url: plugin-spec://runtime
+timeout: 1800
+trigger:
+  schedule: 0 12 * * 1
+  timezone: UTC
+  type: cron
