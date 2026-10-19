@@ -1,0 +1,30 @@
+agent_profile_id: 514715b0-9015-4585-86ba-e98b997bbd3d
+enabled: true
+entrypoint: cd "$AUTOMATION_PLUGIN_ROOT/scripts" && python3 worker.py
+keep_alive: null
+model: null
+name: 'Issue Triage (multi-repo): extensions, OpenHands, software-agent-sdk, automation,
+  enterprise'
+observability_associations: null
+preset_metadata:
+  preset_type: plugin_spec
+prompt: null
+setup_script_path: null
+state: ACTIVE
+tarball_source:
+  type: external
+  url: plugin-spec://runtime
+timeout: 600
+trigger:
+  destination: dispatch_run
+  filter: contains(['OpenHands/extensions', 'OpenHands/OpenHands', 'OpenHands/software-agent-sdk',
+    'OpenHands/automation', 'OpenHands/enterprise', 'OpenHands/saas-deploy', 'OpenHands/evaluation'],
+    repository.full_name) && contains(keys(@), 'issue') && !contains(keys(@), 'comment')
+    && (contains(['opened','reopened'], action) || (action == 'unlabeled' && label.name
+    == 'ready-for-dev' && sender.login != 'github-actions[bot]'))
+  'on': '*'
+  source: github-events
+  subject_key_expr: null
+  turn_text_expr: null
+  type: event
+  wake_agent: true
