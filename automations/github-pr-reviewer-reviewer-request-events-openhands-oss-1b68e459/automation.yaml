@@ -1,0 +1,29 @@
+agent_profile_id: 697a379b-babc-40bc-909d-89e318c14d41
+enabled: false
+entrypoint: cd "$AUTOMATION_PLUGIN_ROOT/scripts" && python3 worker.py
+keep_alive: null
+model: null
+name: 'GitHub PR Reviewer (reviewer-request events): OpenHands OSS'
+observability_associations: null
+preset_metadata:
+  preset_type: plugin_spec
+prompt: null
+setup_script_path: null
+state: INACTIVE
+tarball_source:
+  type: external
+  url: plugin-spec://runtime
+timeout: 1200
+trigger:
+  destination: dispatch_run
+  filter: contains(['OpenHands/OpenHands', 'OpenHands/software-agent-sdk', 'OpenHands/automation',
+    'OpenHands/extensions'], repository.full_name) && contains(keys(@), 'pull_request')
+    && ((action == 'review_requested' && requested_reviewer.login == 'all-hands-bot')
+    || (action == 'submitted' && contains(keys(@), 'review') && review.user.login
+    == 'all-hands-bot'))
+  'on': '*'
+  source: github-events
+  subject_key_expr: null
+  turn_text_expr: null
+  type: event
+  wake_agent: true
