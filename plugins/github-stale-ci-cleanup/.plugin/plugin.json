@@ -1,0 +1,55 @@
+{
+  "name": "github-stale-ci-cleanup",
+  "version": "0.1.0",
+  "description": "Executable automation plugin for GitHub stale CI cleanup: OpenHands OSS.",
+  "author": {
+    "name": "OpenHands",
+    "email": "contact@all-hands.dev"
+  },
+  "homepage": "https://github.com/OpenHands/oss-agent-canvas",
+  "repository": "https://github.com/OpenHands/oss-agent-canvas",
+  "license": "MIT",
+  "keywords": [
+    "automation",
+    "github-stale-ci-cleanup"
+  ],
+  "automation": {
+    "schema_version": "openhands.automation.plugin.v1",
+    "entrypoint": {
+      "runner": "script",
+      "working_dir": "scripts",
+      "command": "python3 worker.py"
+    },
+    "runtime": {
+      "plugins": []
+    },
+    "config_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repos": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "default": "OpenHands/extensions"
+          },
+          "default": [
+            "OpenHands/extensions",
+            "OpenHands/OpenHands",
+            "OpenHands/software-agent-sdk",
+            "OpenHands/automation"
+          ]
+        },
+        "github_token_secret": {
+          "type": "string",
+          "default": "GITHUB_TOKEN_REVIEW"
+        }
+      }
+    },
+    "suggested_trigger": {
+      "type": "cron",
+      "schedule": "0 * * * *",
+      "timezone": "UTC"
+    }
+  }
+}
