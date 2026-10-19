@@ -1,0 +1,39 @@
+You are auditing the shared OSS automation VM (`dev-oss-automation-vm`) that hosts this automation platform: Agent Canvas, its agent-server, and every other automation defined here. This is a **read-only** health and improvement review — never modify, enable, disable, delete, or dispatch any automation (including this one), and never write to `automations.db`.
+
+## Guardrails
+- Never print or forward any secret/credential value, even partially masked. Describe that one appeared ("a masked OpenAI key recurs in N error events for automation X") without repeating it.
+- Only message Slack via the one post described in "Report" below. No GitHub issues/PRs/comments.
+- If a data source is unavailable, say so rather than guessing.
+- Base every claim on evidence you gather this run.
+
+## Data sources
+Everything below is readable directly on this host — no sudo needed. Use Python's `sqlite3` module (no `sqlite3` CLI binary here). Write small scripts to aggregate rather than reading large files by hand.
+
+1. **Automations & runs**: `/var/lib/agent-canvas/.openhands/automation/automations.db`, opened read-only (`file:...?mode=ro`, `uri=True`). Tables: `automations` (id, name, trigger, enabled, model, timeout, prompt, created/updated/deleted_at) and `automation_runs` (automation_id, status, error_detail, started_at, completed_at, conversation_id).
+2. **Conversations**: `/var/lib/agent-canvas/.openhands/agent-canvas/dev_conversations/<uuid-no-dashes>/` — join via `automation_runs.conversation_id` (dashes removed = directory name).
+   - `base_state.json`: `execution_status`; `stats.usage_to_metrics.default.accumulated_cost` and `accumulated_token_usage`; `agent.agent_context.skills`, `activated_knowledge_skills`, `invoked_skills`. Never read/repeat the encrypted `agent.llm.api_key` value.
+   - `events/event-*.json`: `"kind":"ConversationErrorEvent"` entries (`code`, `detail`) — real failures a `COMPLETED` run status can hide.
+3. **Cross-run memory**: KV store at `http://127.0.0.1:18001/api/automation/v1/kv/automation_health_review_state_v1`, header `Authorization: Bearer $OPENHANDS_AUTOMATION_API_KEY` (already set — don't print it). GET first (404 = first run, empty state). At the end, PUT `{"last_reviewed_through": "<ISO8601>", "fingerprints": [...]}`, passing back `if_version`; on a version conflict, GET and retry once.
+
+## Window
+Cover runs/conversations since `last_reviewed_through` (default 7 days ago if no prior state). Full breakdown for every enabled automation; one line for any deleted/disabled during the window.
+
+## Four lenses
+Ground every claim in a specific automation/run/conversation id. Prefer a few high-signal findings over an exhaustive list. Nothing worth reporting → write "No new findings".
+
+**Errors** — Cluster `error_detail` (normalized) per automation; report failure rate and flag any automation running hotter than its own baseline or peers. Split into: (a) known self-healing noise (e.g. `<urlopen error timed out>`/`Errno 110`) — only flag if volume clearly grew; (b) genuine bugs (tracebacks, `TypeError`-shaped messages, concurrency/lock errors, missing-config errors) — name the automation and quote the message; (c) silent failures — run `status=COMPLETED` but conversation `execution_status` is `error`/`stuck` or has a `ConversationErrorEvent` — a real success/failure blind spot. Skip anything with an unchanged fingerprint from a prior run beyond a one-line "still present" mention.
+
+**Resources** — Roll up cost/tokens per automation for the window; flag any automation or single run far outside its own or peers' norm (runaway loop, unbounded context, checkout bloat). Check `du -sh` on `dev_conversations/` and `workspaces/automation-runs/` (never pruned) for disproportionate growth. Flag `timeout` values mismatched with actual run durations.
+
+**Security** — Scan `error_detail`/events for credential-shaped strings indicating a leak or misconfiguration, not an intentional mask — report where and why, never the string. Flag automations (especially externally-triggered ones like `issues.opened`/Slack `app_mention`) whose granted capability exceeds their task. Flag disabled-but-not-deleted or test-named automations still holding live credentials. If `ps -eo cmd` shows secrets as plaintext args to `main.py` (read-only check, don't signal anything), note it once as a standing exposure.
+
+**Skills** — Tabulate `activated_knowledge_skills`/`invoked_skills` frequency; flag over-broad/frequent activation (context bloat) and tasks that plausibly needed a skill that never activated. Note any oversized skill content relative to task need (ties to Resources).
+
+## Report
+Post exactly one Slack message to channel `C0BGK8NRYUX` via `https://slack.com/api/chat.postMessage` using `$SLACK_BOT_TOKEN`:
+
+`*Automation & conversation health review — <window start> to <window end>*`
+
+then Security / Resources / Errors / Skills in order, each a header line + up to 5 one-line bullets naming the automation/run/conversation and a concrete recommendation ("No new findings" if none). End with "Sent by OpenHands on behalf of the user." Single top-level message, no thread, no attachment.
+
+Finally, write the updated KV state so next week doesn't repeat unchanged findings.
