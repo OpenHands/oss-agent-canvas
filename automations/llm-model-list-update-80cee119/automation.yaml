@@ -1,8 +1,10 @@
+agent_profile_id: null
 enabled: true
 entrypoint: .venv/bin/python main.py
 keep_alive: null
 model: null
 name: LLM Model List Update
+observability_associations: null
 preset_metadata:
   preset_type: prompt
   prompt: "# LLM Model List Update Automation \u2014 Prompt\n\nYou are running as\
@@ -492,6 +494,7 @@ prompt: "# LLM Model List Update Automation \u2014 Prompt\n\nYou are running as 
   \ new models into a single PR or the existing rolling PR).\n- Keep the Slack message\
   \ concise.\n- Always include the AI disclosure line in the Slack message.\n"
 setup_script_path: setup.sh
+state: ACTIVE
 tarball_executables:
 - setup.sh
 tarball_source:
