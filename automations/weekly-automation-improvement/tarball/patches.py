@@ -1,0 +1,294 @@
+import hashlib
+import json
+import os
+import re
+import subprocess
+from pathlib import Path
+
+from common import read_json, redact, write_json
+
+
+def command(argv, cwd=None, strip=True, **kwargs):
+    output = subprocess.run(
+        argv, cwd=cwd, capture_output=True, text=True, check=True, timeout=60, **kwargs
+    ).stdout
+    return output.strip() if strip else output
+
+
+def load_source(config_path):
+    config = read_json(config_path)
+    repo = config["repository"]
+    if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+        raise ValueError("Invalid configured GitHub repository")
+    revision = config["revision"]
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValueError("Source revision must be a full commit SHA")
+    checkout = Path(config["checkout"]).expanduser().resolve()
+    if (
+        command(["git", "rev-parse", "--verify", revision + "^{commit}"], checkout)
+        != revision
+    ):
+        raise ValueError(
+            "Source revision unavailable in the configured existing checkout"
+        )
+    paths = config["files"]
+    automation_ids = config["automation_ids"]
+    if (
+        not isinstance(automation_ids, list)
+        or not 1 <= len(automation_ids) <= 20
+        or any(not isinstance(value, str) or not value for value in automation_ids)
+    ):
+        raise ValueError("Configure the automation IDs authorized for this source")
+    if not isinstance(paths, list) or not 1 <= len(paths) <= 10:
+        raise ValueError("Configure one to ten permitted source files")
+    files = {}
+    for path in paths:
+        if (
+            not isinstance(path, str)
+            or not re.fullmatch(r"[\w./-]+", path)
+            or Path(path).is_absolute()
+            or ".." in Path(path).parts
+            or path.startswith("-")
+        ):
+            raise ValueError("Unsafe configured source path")
+        entry = command(["git", "ls-tree", revision, "--", path], checkout).split()
+        mode = entry[0] if entry else None
+        if mode not in ("100644", "100755"):
+            raise ValueError("Source must be a regular tracked file")
+        files[path] = command(
+            ["git", "show", revision + ":" + path], checkout, strip=False
+        )
+    if sum(len(text.encode()) for text in files.values()) > 80000:
+        raise ValueError("Configured source exceeds 80 KB")
+    return {
+        "repository": repo,
+        "revision": revision,
+        "files": files,
+        "automation_ids": automation_ids,
+        "executed_revision_verified": False,
+    }
+
+
+def run_checks(directory, checks, output, label):
+    results = []
+    safe_env = {
+        key: value
+        for key, value in os.environ.items()
+        if key in ("PATH", "LANG", "LC_ALL", "TMPDIR", "VIRTUAL_ENV")
+    }
+    for index, check in enumerate(checks):
+        argv = check["argv"]
+        if (
+            not isinstance(argv, list)
+            or not argv
+            or any(not isinstance(item, str) for item in argv)
+        ):
+            raise ValueError("Validation commands must be configured argv arrays")
+        path = output / f"{label}-{index}.log"
+        with path.open("x") as stream:
+            path.chmod(0o600)
+            try:
+                process = subprocess.run(
+                    argv,
+                    cwd=directory,
+                    env=safe_env,
+                    stdout=stream,
+                    stderr=subprocess.STDOUT,
+                    timeout=120,
+                )
+                code = process.returncode
+            except subprocess.TimeoutExpired:
+                code = 124
+        with path.open(errors="replace") as stream:
+            excerpt = stream.read(8000)
+        results.append(
+            {
+                "name": check["name"],
+                "argv": argv,
+                "exit_code": code,
+                "log": path.name,
+                "excerpt": redact(excerpt),
+            }
+        )
+    return results
+
+
+def propose_fix(args, report, snapshot):
+    config = read_json(args.source_config)
+    source = load_source(args.source_config)
+    if source != snapshot["source"]:
+        raise ValueError("Source changed since it was frozen")
+    proposal = report["proposals"][0]
+    findings = [
+        finding
+        for finding in report["findings"]
+        if finding["id"] in proposal["finding_ids"]
+    ]
+    if any(finding["cause"] != "workflow" for finding in findings):
+        raise ValueError("Only workflow findings may produce source-change PRs")
+    if any(
+        finding["automation_id"] not in source["automation_ids"] for finding in findings
+    ):
+        raise ValueError("Finding automation is outside the configured source scope")
+    checks = config["checks"]
+    if (
+        not isinstance(checks, list)
+        or not 1 <= len(checks) <= 4
+        or not any(check.get("baseline") == "fail" for check in checks)
+    ):
+        raise ValueError(
+            "Configure at most four checks, including a baseline-failing regression"
+        )
+    if any(check.get("baseline") not in ("pass", "fail") for check in checks):
+        raise ValueError("Every check needs an expected baseline outcome")
+    fingerprint = hashlib.sha256(
+        "|".join(sorted(finding["fingerprint"] for finding in findings)).encode()
+    ).hexdigest()[:20]
+    branch = "automation/improve-" + fingerprint
+    if args.publish_fix:
+        current_base = command(
+            [
+                "gh",
+                "api",
+                f"repos/{source['repository']}/git/ref/heads/{config['base_branch']}",
+                "--jq",
+                ".object.sha",
+            ]
+        )
+        if current_base != source["revision"]:
+            raise ValueError(
+                "Configured baseline is no longer the publication base; collect again"
+            )
+        existing = json.loads(
+            command(
+                [
+                    "gh",
+                    "pr",
+                    "list",
+                    "--repo",
+                    source["repository"],
+                    "--head",
+                    branch,
+                    "--state",
+                    "all",
+                    "--json",
+                    "url",
+                ]
+            )
+        )
+        if existing:
+            return {"status": "already_tracked", "pr_url": existing[0]["url"]}
+    checkout = Path(config["checkout"]).expanduser().resolve()
+    baseline = (args.output / "baseline").resolve()
+    candidate = (args.output / "candidate").resolve()
+    command(
+        ["git", "worktree", "add", "--detach", str(baseline), source["revision"]],
+        checkout,
+    )
+    command(
+        ["git", "worktree", "add", "--detach", str(candidate), source["revision"]],
+        checkout,
+    )
+    patch = args.output / "candidate.patch"
+    patch.write_text(proposal["patch"])
+    patch.chmod(0o600)
+    command(["git", "apply", "--index", "--check", str(patch.resolve())], candidate)
+    command(["git", "apply", "--index", str(patch.resolve())], candidate)
+    changed = command(
+        ["git", "diff", "--cached", "--name-only"], candidate
+    ).splitlines()
+    if not changed or not set(changed) <= set(source["files"]):
+        raise ValueError("Patch touches files outside the configured allowlist")
+    for name in changed:
+        if (candidate / name).is_symlink() or not (candidate / name).is_file():
+            raise ValueError("Patch must preserve regular source files")
+    command(["git", "diff", "--cached", "--check"], candidate)
+    expected_diff = command(["git", "diff", "HEAD", "--binary"], candidate, strip=False)
+    before = run_checks(baseline, checks, args.output, "baseline")
+    after = run_checks(candidate, checks, args.output, "candidate")
+    if (
+        command(["git", "diff", "HEAD", "--binary"], candidate, strip=False)
+        != expected_diff
+    ):
+        raise ValueError("Validation commands modified the candidate source")
+    results = {
+        "source_revision": source["revision"],
+        "changed_files": changed,
+        "baseline": before,
+        "candidate": after,
+        "status": "rejected",
+    }
+    for check, first, second in zip(checks, before, after, strict=True):
+        if (
+            (first["exit_code"] == 0) != (check["baseline"] == "pass")
+            or second["exit_code"] != 0
+            or first["exit_code"] == 124
+        ):
+            write_json(args.output / "validation.json", results)
+            return results
+    results["status"] = "checks_passed_not_task_quality_proven"
+    write_json(args.output / "validation.json", results)
+    if not args.publish_fix:
+        return results
+    remote = command(["git", "remote", "get-url", "origin"], checkout)
+    if remote not in (
+        f"https://github.com/{source['repository']}.git",
+        f"git@github.com:{source['repository']}.git",
+        f"https://github.com/{source['repository']}",
+    ):
+        raise ValueError(
+            "Configured checkout origin differs from the publication repository"
+        )
+    command(["git", "switch", "-c", branch], candidate)
+    command(["git", "add", "--", *changed], candidate)
+    command(["git", "commit", "-m", proposal["title"][:120]], candidate)
+    if (
+        command(
+            ["git", "diff", source["revision"], "HEAD", "--binary"],
+            candidate,
+            strip=False,
+        )
+        != expected_diff
+    ):
+        raise ValueError("Commit differs from the validated patch")
+    results["candidate_revision"] = command(["git", "rev-parse", "HEAD"], candidate)
+    command(["git", "push", "origin", branch], candidate)
+    links = sorted({url for finding in findings for url in finding["trace_urls"]})
+    body = (
+        proposal["hypothesis"]
+        + "\n\nTrace evidence:\n"
+        + "\n".join("- " + value for value in links)
+        + f"\n\nBaseline revision: {source['revision']}. Executed automation revision has not been verified.\n\n"
+        + proposal["evaluation_plan"]
+        + "\n\nExecuted configured checks:\n"
+        + "\n".join(
+            f"- {first['name']}: baseline exit {first['exit_code']}; candidate exit {second['exit_code']}"
+            for first, second in zip(before, after, strict=True)
+        )
+        + "\n\nThese checks do not establish general task-quality improvement. Human review controls merge and deployment. "
+        "Recovery: retain or restore the baseline revision through the normal reviewed release process.\n\n"
+        "Created by OpenHands on behalf of the user."
+    )
+    body_path = args.output / "pr-body.md"
+    body_path.write_text(redact(body))
+    body_path.chmod(0o600)
+    results["pr_url"] = command(
+        [
+            "gh",
+            "pr",
+            "create",
+            "--repo",
+            source["repository"],
+            "--base",
+            config["base_branch"],
+            "--head",
+            branch,
+            "--draft",
+            "--title",
+            proposal["title"][:120],
+            "--body-file",
+            str(body_path.resolve()),
+        ],
+        candidate,
+    )
+    return results

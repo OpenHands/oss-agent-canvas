@@ -1,0 +1,20 @@
+{
+  "repository": "OWNER/PRIVATE_AUTOMATIONS",
+  "checkout": "/private/existing-checkout",
+  "revision": "0000000000000000000000000000000000000000",
+  "base_branch": "main",
+  "automation_ids": ["REPLACE_WITH_THE_TARGET_AUTOMATION_ID"],
+  "files": ["path/to/automation.py"],
+  "checks": [
+    {
+      "name": "motivating regression",
+      "argv": ["python3", "-m", "pytest", "tests/test_regression.py", "-q"],
+      "baseline": "fail"
+    },
+    {
+      "name": "nearby healthy behavior",
+      "argv": ["python3", "-m", "pytest", "tests/test_healthy.py", "-q"],
+      "baseline": "pass"
+    }
+  ]
+}
