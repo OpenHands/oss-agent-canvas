@@ -33,8 +33,9 @@ same selections were retained across these collector iterations.
 
 The replay subprocess had Laminar credentials and host configuration removed.
 It loaded all input from the saved file before inference and completed all three
-Luna-low analysis calls in 11.626 seconds of wall time, with no errors or rejected
-references. The coordinator was not called because there were no candidates.
+`openai/gpt-6-luna` low-effort analysis calls in 11.626 seconds of wall time,
+with no errors or rejected references. The coordinator was not called because
+there were no candidates.
 
 | Call | Input tokens | Output tokens | Request time | Proxy-reported cost |
 |---|---:|---:|---:|---:|
@@ -64,8 +65,9 @@ In the final run:
 - Luna identified the false success report with references to the failing tool
   output and contradictory assistant message. The recovery and healthy cases
   produced no findings.
-- Sol-low received the cited evidence, task, counterevidence and frozen source,
-  then proposed one conditional return instead of unconditional success.
+- `openai/gpt-6.1-sol` at low effort received the cited evidence, task,
+  counterevidence and frozen source, then proposed one conditional return
+  instead of unconditional success.
 - The configured regression failed on the baseline and passed on the candidate.
   A configured healthy-case check passed on both revisions.
 - Baseline and candidate ran in separate git worktrees. The original checkout
@@ -78,22 +80,31 @@ The real-data replay, both control attempts and their costs are separate results
 After tightening patch-index validation, the final pipeline re-executed the saved
 model outputs and passed the same baseline/candidate checks without new inference.
 
+After removing flow-1 execution, a fresh inference run repeated the three
+controls with Luna 6 and Sol 6.1. It found only the false success report and
+produced one patch. The regression failed on baseline and passed on the candidate;
+the healthy check passed on both. The run completed without errors or rejected
+citations in 14.452 seconds including checks, at $0.0044774 proxy-reported cost.
+Laminar credentials were absent, requests/responses and usage were retained,
+and no PR was published. These remain synthetic development controls.
+
 ## Tests and remaining integration
 
-Nineteen targeted tests cover random conversation sampling, retained failed
+Sixteen targeted tests cover random conversation sampling, retained failed
 selections, SQL excerpt lengths, behavior-preserving message projection,
 trace-scoped/ambiguous/virtual-span citations, counterevidence, frozen replay,
 partial failures, unchanged baseline source, configured validation, source/file
-scope, new-file patch rejection, publication gating, and Signal trace/origin
-scope. Ruff and Python compilation pass.
+scope, new-file patch rejection and publication gating. Ruff and Python
+compilation pass.
 
 The upstream UI still reports EE 0.1.637. An empty-body probe of the prospective
-Signal test route returned HTTP 404 before inference. The flow-1 adapter has unit
-coverage but has not executed on upstream. Shared upgrade, profile and authorized
-route verification remain prerequisites; the validated analyzer here is Luna,
-not flow-1. The separate local Laminar tests in #17 do not remove that dependency.
+Signal test route returned HTTP 404 before inference. The experimental flow-1
+execution adapter was removed from this PR; [#50](https://github.com/OpenHands/oss-agent-canvas/issues/50)
+tracks the shared upgrade, profile and supported authenticated invocation API.
+The Luna/Sol pipeline does not depend on that work. The proxy lists Luna 6 and
+Sol 6.1; an explicit `openai/gpt-6.1-luna` request returned `model_not_found`.
 
-Before production enablement: verify the deployed Signal API/profile if selecting
-flow-1, configure the approved private source and task checks, verify executed
-revision attribution, and review representative findings. Durable resumability,
-stronger cross-run deduplication and production source uptake remain follow-ups.
+Before production enablement: configure the approved private source and task
+checks, verify executed revision attribution, and review representative findings.
+Durable resumability, stronger cross-run deduplication and production source
+uptake remain follow-ups.

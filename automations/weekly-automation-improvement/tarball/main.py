@@ -239,56 +239,18 @@ def validated_findings(result, sample):
     return valid, rejected
 
 
-def signal_analysis(client, args, sample):
-    properties = {
-        key: value for key, value in FINDING["properties"].items() if key != "evidence"
-    }
-    properties["evidence_refs"] = {
-        "type": "string",
-        "description": "Comma-separated exact full span IDs supporting the finding",
-    }
-    response = client.signal(
-        sample,
-        object_schema(properties),
-        POLICY + " Cite full Laminar span IDs; at most one finding.",
-    )
-    stats = response.get("stats", {})
-    measurement = {
-        "model": "flow-1",
-        "stats": stats,
-        "seconds": stats.get("durationMs", 0) / 1000,
-        "reported_cost_usd": stats.get("totalCostUsd") or None,
-        "input_basis": "upstream trace at Signal execution; not a frozen replay",
-    }
-    if response["result"] == "noEvent":
-        return {"findings": []}, measurement
-    finding = dict(response["finding"]["attributes"])
-    finding["evidence"] = [
-        value.strip()
-        for value in finding.pop("evidence_refs").split(",")
-        if value.strip()
-    ]
-    return {"findings": [finding]}, measurement
-
-
 def run(args):
     args.output.mkdir(parents=True, exist_ok=False, mode=0o700)
-    client = None
     if args.input:
         snapshot = read_json(args.input, limit=args.max_response_bytes * args.limit)
         validate_snapshot(snapshot, args.limit)
-        if args.analyzer == "flow1":
-            raise ValueError(
-                "Frozen replay uses --analyzer llm; flow1 reads live upstream trace IDs"
-            )
         clean = redact(snapshot)
         clean["selection"]["population_sha256"] = snapshot["selection"][
             "population_sha256"
         ]
         write_json(args.output / "input.json", clean)
     else:
-        client = Laminar(args)
-        snapshot = client.collect()
+        snapshot = Laminar(args).collect()
     if args.source_config:
         source = load_source(args.source_config)
         if snapshot.get("source") and snapshot["source"] != source:
@@ -322,17 +284,14 @@ def run(args):
         try:
             if sample.get("collection_error"):
                 raise ValueError(sample["collection_error"])
-            if args.analyzer == "flow1":
-                result, measurement = signal_analysis(client, args, sample)
-            else:
-                result, measurement = call_model(
-                    args,
-                    args.model,
-                    POLICY,
-                    evidence_context(sample),
-                    "analysis-" + sample["case_id"],
-                    ANALYSIS,
-                )
+            result, measurement = call_model(
+                args,
+                args.model,
+                POLICY,
+                evidence_context(sample),
+                "analysis-" + sample["case_id"],
+                ANALYSIS,
+            )
             measurements.append(measurement)
             valid, invalid = validated_findings(result, sample)
             findings.extend(valid)
@@ -396,7 +355,8 @@ def run(args):
         "snapshot_sha256": hashlib.sha256(encode(snapshot).encode()).hexdigest(),
         "selection": snapshot["selection"],
         "project_id": snapshot["project_id"],
-        "analyzer": args.analyzer,
+        "analysis_model": args.model,
+        "coordinator_model": args.coordinator,
         "findings": findings,
         "rejected_candidates": rejected,
         "proposals": proposals,
@@ -561,7 +521,6 @@ def main():
         "--max-input-bytes", type=bounded(1000, 1000000), default=750000
     )
     parser.add_argument("--max-output-tokens", type=bounded(128, 8192), default=4096)
-    parser.add_argument("--analyzer", choices=("llm", "flow1"), default="llm")
     parser.add_argument("--api", choices=("responses", "chat"), default="responses")
     parser.add_argument("--model", default="openai/gpt-6-luna")
     parser.add_argument("--coordinator", default="openai/gpt-6.1-sol")

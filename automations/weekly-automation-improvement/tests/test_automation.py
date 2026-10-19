@@ -39,7 +39,6 @@ def arguments(tmp_path, **overrides):
         input=None,
         source_config=None,
         collect_only=False,
-        analyzer="llm",
         model="small",
         coordinator="large",
         api="responses",
@@ -398,45 +397,6 @@ def test_laminar_excerpt_aliases_do_not_shadow_original_lengths(tmp_path, monkey
     assert " AS output," not in queries[0] and " AS input," not in queries[0]
 
 
-def test_signal_reuses_existing_trace_and_does_not_ingest(tmp_path, monkeypatch):
-    monkeypatch.setenv("LMNR_PROJECT_API_KEY", "test-key")
-    monkeypatch.setenv("LMNR_BASE_URL", "https://example.test")
-    monkeypatch.setenv("LMNR_FLOW1_PROFILE_ID", str(uuid.UUID(int=5)))
-    client = Laminar(arguments(tmp_path))
-    case = sample()
-    monkeypatch.setattr(
-        client, "query", lambda sql: [{"sessions": [case["conversation_id"]]}]
-    )
-    calls = []
-
-    def post(url, body, timeout=30):
-        calls.append((url, body))
-        return {"result": "noEvent", "stats": {"totalCostUsd": 0}}
-
-    monkeypatch.setattr(client, "post", post)
-    result = client.signal(case, app.FINDING, "Review")
-    assert result["result"] == "noEvent"
-    assert len(calls) == 1
-    assert calls[0][1]["traceId"] == case["trace_ids"][0]
-    assert calls[0][0].endswith("signal-test")
-    assert "spans" not in calls[0][1]
-
-
-def test_signal_rejects_cross_conversation_trace_before_inference(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setenv("LMNR_PROJECT_API_KEY", "test-key")
-    monkeypatch.setenv("LMNR_BASE_URL", "https://example.test")
-    monkeypatch.setenv("LMNR_FLOW1_PROFILE_ID", str(uuid.UUID(int=5)))
-    client = Laminar(arguments(tmp_path))
-    monkeypatch.setattr(
-        client, "query", lambda sql: [{"sessions": [str(uuid.UUID(int=999))]}]
-    )
-    monkeypatch.setattr(client, "post", lambda *a, **k: pytest.fail("Must not infer"))
-    with pytest.raises(ValueError, match="scope"):
-        client.signal(sample(), app.FINDING, "Review")
-
-
 def test_failed_candidate_never_pushes_or_opens_pr(source, tmp_path, monkeypatch):
     _, path, config = source
     args = arguments(tmp_path / "review", source_config=path, publish_fix=True)
@@ -485,19 +445,3 @@ def test_new_untracked_files_in_patch_are_rejected_before_checks(
     extra = "diff --git a/injected.py b/injected.py\nnew file mode 100644\n--- /dev/null\n+++ b/injected.py\n@@ -0,0 +1 @@\n+print('unexpected helper')\n"
     with pytest.raises(ValueError, match="allowlist"):
         propose_fix(args, fix_report(PATCH + extra), {"source": load_source(path)})
-
-
-def test_signal_origin_cannot_downgrade_or_send_credentials_to_another_host(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setenv("LMNR_PROJECT_API_KEY", "test-key")
-    monkeypatch.setenv("LMNR_BASE_URL", "https://example.test")
-    client = Laminar(arguments(tmp_path))
-    for origin in (
-        "http://example.test",
-        "https://another.test",
-        "https://example.test/path",
-    ):
-        monkeypatch.setenv("LMNR_SIGNAL_API_URL", origin)
-        with pytest.raises(ValueError, match="host and scheme"):
-            client.signal(sample(), app.FINDING, "Review")

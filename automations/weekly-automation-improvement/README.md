@@ -75,29 +75,21 @@ and a failed exit; no findings does not mean healthy. Raw responses and measured
 usage remain available. Redaction is best effort; inspect private artifacts before
 sharing them. Use the saved source files and snapshot hash to reproduce a run.
 
-## Models and flow-1
+## Models
 
-The runnable default is `--analyzer llm --model openai/gpt-6-luna`, followed by
-`--coordinator openai/gpt-6.1-sol` when there are candidates. Responses API uses
-low effort by default. `--api chat` supports compatible providers and records
-provider-default effort. No coordinator call is made when analysis finds nothing.
+The working proxy defaults are `--model openai/gpt-6-luna` for trajectory
+analysis and `--coordinator openai/gpt-6.1-sol` for investigating candidates and
+writing a source-grounded patch. Sol is called only when Luna finds candidates.
+Responses API uses low effort by default. `--api chat` supports compatible
+providers and records provider-default effort. Model IDs are configurable;
+the proxy returned `model_not_found` for `openai/gpt-6.1-luna` on October 19.
+The [official model catalog](https://developers.openai.com/api/docs/models)
+lists GPT-6 Luna and GPT-6.1 Sol; it has no Luna 6.1 entry.
 
-`--analyzer flow1` is an explicit experimental adapter to the EE Signal test
-route, using the existing upstream trace ID, a configured
-`LMNR_FLOW1_PROFILE_ID`, four steps and the configured output-token cap.
-`LMNR_SIGNAL_API_URL` may select another port on the same upstream host. The
-adapter refuses cross-conversation or fragmented trace scope. It does not
-silently substitute another model, create a Signal, or upload spans.
-
-**Upstream blocker verified October 19:** the shared UI is version 0.1.637 and
-its API returns HTTP 404 for this Signal route. Flow-1 has not run on upstream
-through this automation. A compatible upgrade, Cloud-backed profile, and
-supported authenticated execution route are required; verify that route rather
-than exposing an internal endpoint without authorization. See
-[saas-deploy #1515](https://github.com/OpenHands/saas-deploy/pull/1515) and
-[Laminar's profile guide](https://laminar.sh/docs/platform/llm-profiles#run-self-hosted-signals-on-the-laminar-cloud-model).
-Frozen replay intentionally uses the configurable LLM analyzer: a remote Signal
-reads current upstream state and cannot guarantee the frozen input.
+Flow-1 execution is deferred to [#50](https://github.com/OpenHands/oss-agent-canvas/issues/50).
+It requires a compatible shared Laminar deployment, a Cloud-backed profile and a
+supported authenticated invocation API. This automation reads existing Signal
+events but does not invoke flow-1 or depend on that upgrade.
 
 ## One patch and configured validation
 
@@ -149,9 +141,8 @@ response limits. One patch attempt, up to four configured checks per revision,
 
 `requests/`, `responses/` and `measurements/` retain redacted provider requests,
 responses, effective settings, token usage and proxy-reported cost. Missing cost
-stays unknown. Signal mode captures its definition and returned stats; Laminar
-constructs its internal provider prompts. `report.json` links findings to actual
-span/run/conversation IDs and records errors and validation status.
+stays unknown. `report.json` links findings to actual span/run/conversation IDs
+and records both configured models, errors and validation status.
 
 ```bash
 python3 -m pytest automations/weekly-automation-improvement/tests -q
