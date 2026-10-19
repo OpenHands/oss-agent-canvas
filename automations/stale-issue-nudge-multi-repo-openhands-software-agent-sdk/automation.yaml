@@ -1,12 +1,15 @@
-enabled: true
+agent_profile_id: null
+enabled: false
 entrypoint: python3 main.py
 keep_alive: false
 model: null
 name: 'Stale Issue Nudge (multi-repo): extensions, OpenHands, software-agent-sdk,
   automation, enterprise'
+observability_associations: null
 preset_metadata: null
 prompt: null
 setup_script_path: null
+state: INACTIVE
 tarball_source:
   type: internal
   url: null
