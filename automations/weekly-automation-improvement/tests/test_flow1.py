@@ -1,0 +1,227 @@
+import copy
+import json
+import uuid
+
+import pytest
+
+from test_automation import app, arguments, candidate, snapshot
+from flow1 import findings
+
+
+SIGNAL = str(uuid.UUID(int=10))
+RUN = str(uuid.UUID(int=11))
+EVENT = str(uuid.UUID(int=12))
+
+
+def frozen(with_finding=True):
+    value = snapshot()
+    value["analysis_backend"] = "flow1"
+    value["flow1_signal"] = {
+        "id": SIGNAL,
+        "projectId": value["project_id"],
+        "model": "flow-1",
+        "llmProfileId": str(uuid.UUID(int=13)),
+        "version": 1,
+    }
+    value["flow1_profile"] = {
+        "id": value["flow1_signal"]["llmProfileId"],
+        "provider": "custom",
+        "config": {"baseUrl": "https://api.lmnr.ai/v1"},
+        "models": ["flow-1"],
+    }
+    case = value["samples"][0]
+    case["flow1_trace_sessions"] = [
+        {
+            "trace_id": case["trace_ids"][0],
+            "conversation_ids": [case["conversation_id"]],
+        }
+    ]
+    case["flow1_runs"] = [
+        {
+            "signal_id": SIGNAL,
+            "signal_version": 1,
+            "run_id": RUN,
+            "trace_id": case["trace_ids"][0],
+            "status": "COMPLETED",
+            "updated_at": "2026-10-22T00:00:00Z",
+            "event_id": EVENT if with_finding else str(uuid.UUID(int=0)),
+            "input_tokens": 100,
+            "cache_read_tokens": 0,
+            "output_tokens": 20,
+        }
+    ]
+    payload = candidate() | {
+        "evidence": f"[failure](https://laminar.app.all-hands.dev/project/{value['project_id']}/traces/{case['trace_ids'][0]}?spanId={case['spans'][0]['span_id']}&chat=true)"
+    }
+    case["flow1_events"] = (
+        [
+            {
+                "id": EVENT,
+                "signal_id": SIGNAL,
+                "signal_version": 1,
+                "run_id": RUN,
+                "trace_id": case["trace_ids"][0],
+                "payload": json.dumps(payload),
+            }
+        ]
+        if with_finding
+        else []
+    )
+    return value
+
+
+def test_completed_no_event_skips_all_model_calls_and_laminar(tmp_path, monkeypatch):
+    value = frozen(False)
+    path = tmp_path / "frozen.json"
+    path.write_text(json.dumps(value))
+    monkeypatch.setattr(
+        app, "Laminar", lambda *a: pytest.fail("Replay uses no Laminar API")
+    )
+    monkeypatch.setattr(
+        app, "call_model", lambda *a: pytest.fail("No finding needs no model")
+    )
+    args = arguments(tmp_path / "review", input=path)
+    app.run(args)
+    report = json.loads((args.output / "report.json").read_text())
+    assert report["analysis_backend"] == "flow1"
+    assert report["findings"] == report["errors"] == []
+    assert report["measurements"][0]["reported_cost_usd"] is None
+
+
+def test_flow1_finding_goes_directly_to_sol_with_evidence(tmp_path, monkeypatch):
+    value = frozen()
+    path = tmp_path / "frozen.json"
+    path.write_text(json.dumps(value))
+    calls = []
+
+    def model(args, model, policy, context, name, schema):
+        calls.append((model, name, context))
+        return {"proposals": []}, {"model": model}
+
+    monkeypatch.setattr(app, "call_model", model)
+    args = arguments(tmp_path / "review", input=path)
+    app.run(args)
+    assert [(m, n) for m, n, _ in calls] == [("large", "coordinator")]
+    assert calls[0][2]["findings"][0]["evidence"] == ["s1"]
+    assert "FAILED" in json.dumps(calls[0][2]["cases"])
+    assert "payload" not in calls[0][2]["cases"][0]["prior_signals_unverified"][0]
+
+
+@pytest.mark.parametrize("status", ["FAILED", "PENDING", "PROCESSING"])
+def test_unfinished_or_failed_signal_is_not_clean(status):
+    value = frozen(False)
+    value["samples"][0]["flow1_runs"][0]["status"] = status
+    with pytest.raises(ValueError, match="not a clean case"):
+        findings(value, value["samples"][0])
+
+
+def test_multitrace_conversation_requires_every_trace_to_be_analyzed():
+    value = frozen(False)
+    value["samples"][0]["trace_ids"].append(str(uuid.UUID(int=15)))
+    with pytest.raises(ValueError, match="scope|Missing|ownership"):
+        findings(value, value["samples"][0])
+
+
+@pytest.mark.parametrize(
+    "mismatch", ["project", "trace", "span", "version", "missing_event", "later_span"]
+)
+def test_foreign_stale_or_missing_evidence_fails_closed(mismatch):
+    value = frozen()
+    case = value["samples"][0]
+    event = case["flow1_events"][0]
+    payload = json.loads(event["payload"])
+    if mismatch == "project":
+        payload["evidence"] = payload["evidence"].replace(
+            value["project_id"], str(uuid.UUID(int=90))
+        )
+    elif mismatch == "trace":
+        payload["evidence"] = payload["evidence"].replace(
+            case["trace_ids"][0], str(uuid.UUID(int=90))
+        )
+    elif mismatch == "span":
+        payload["evidence"] = payload["evidence"].replace(
+            case["spans"][0]["span_id"], str(uuid.UUID(int=90))
+        )
+    elif mismatch == "version":
+        event["signal_version"] = 2
+    elif mismatch == "missing_event":
+        case["flow1_events"] = []
+    else:
+        case["spans"][0]["end_time"] = "2026-10-22T01:00:00Z"
+    event["payload"] = json.dumps(payload)
+    with pytest.raises(ValueError):
+        findings(value, case)
+
+
+def test_latest_failed_run_does_not_fall_back_to_an_older_success():
+    value = frozen(False)
+    case = value["samples"][0]
+    case["flow1_runs"].append(
+        case["flow1_runs"][0]
+        | {
+            "run_id": str(uuid.UUID(int=16)),
+            "status": "FAILED",
+            "updated_at": "2026-10-22T01:00:00Z",
+        }
+    )
+    with pytest.raises(ValueError, match="failed"):
+        findings(value, case)
+
+
+def test_collector_scopes_runs_and_preserves_random_selection(tmp_path, monkeypatch):
+    monkeypatch.setenv("LMNR_PROJECT_API_KEY", "test")
+    monkeypatch.setenv("LMNR_BASE_URL", "https://example.test")
+    value = frozen(False)
+    client = app.Laminar(arguments(tmp_path, analyzer="flow1", signal_id=SIGNAL))
+    monkeypatch.setattr(
+        client,
+        "request",
+        lambda url: value["flow1_profile"]
+        if "/llm-profiles/" in url
+        else value["flow1_signal"],
+    )
+    queries = []
+
+    def query(sql):
+        queries.append(sql)
+        if "GROUP BY conversation_id" in sql:
+            return [copy.deepcopy(value["samples"][0])]
+        if "FROM signal_runs" in sql:
+            return value["samples"][0]["flow1_runs"]
+        return []
+
+    monkeypatch.setattr(client, "query", query)
+    monkeypatch.setattr(
+        client,
+        "load_sample",
+        lambda case: case.update(spans=value["samples"][0]["spans"]),
+    )
+    result = client.collect()
+    assert result["analysis_backend"] == "flow1"
+    assert result["selection"]["method"] == "uniform_random_without_replacement"
+    assert "including pending/failed" in result["selection"]["frame"]
+    assert SIGNAL in queries[0] and "signal_version=1" in queries[0]
+    assert result["samples"][0]["flow1_runs"][0]["run_id"] == RUN
+
+
+def test_lifecycle_only_trace_does_not_become_a_clean_analysis():
+    value = frozen(False)
+    case = value["samples"][0]
+    case["spans"][0].update(name="automation.conversation", input="", output="")
+    with pytest.raises(ValueError, match="Insufficient"):
+        findings(value, case)
+
+
+def test_zero_usage_completed_run_does_not_prove_model_analysis():
+    value = frozen(False)
+    value["samples"][0]["flow1_runs"][0].update(input_tokens=0, output_tokens=0)
+    with pytest.raises(ValueError, match="no recorded model usage"):
+        findings(value, value["samples"][0])
+
+
+def test_shared_webhook_trace_cannot_be_attributed_to_one_automation():
+    value = frozen()
+    case = value["samples"][0]
+    case["flow1_trace_sessions"][0]["conversation_ids"].append(str(uuid.UUID(int=99)))
+    with pytest.raises(ValueError, match="shared across conversations"):
+        findings(value, case)
