@@ -1,5 +1,5 @@
 enabled: false
-entrypoint: python3 main.py
+entrypoint: python3 main.py --analyzer flow1
 keep_alive: false
 model: null
 name: Weekly Automation Improvement

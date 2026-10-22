@@ -388,13 +388,15 @@ def test_laminar_excerpt_aliases_do_not_shadow_original_lengths(tmp_path, monkey
 
     def query(sql):
         queries.append(sql)
+        if "SELECT DISTINCT trace_id" in sql:
+            return [{"trace_id": row["trace_id"]}]
         return [copy.deepcopy(row)] if "original_output_bytes" in sql else []
 
     monkeypatch.setattr(client, "query", query)
     case = sample()
     client.load_sample(case | {"spans": []})
-    assert "length(output) AS original_output_bytes" in queries[0]
-    assert " AS output," not in queries[0] and " AS input," not in queries[0]
+    assert "length(output) AS original_output_bytes" in queries[1]
+    assert " AS output," not in queries[1] and " AS input," not in queries[1]
 
 
 def test_failed_candidate_never_pushes_or_opens_pr(source, tmp_path, monkeypatch):

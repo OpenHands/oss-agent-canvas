@@ -108,3 +108,40 @@ Before production enablement: configure the approved private source and task
 checks, verify executed revision attribution, and review representative findings.
 Durable resumability, stronger cross-run deduplication and production source
 uptake remain follow-ups.
+
+
+## Flow-1 persisted-Signals adapter — October 22
+
+- 33 targeted tests cover both existing Luna behavior and native Signal replay,
+  completed no-event cases, direct Sol handoff, project/trace/span/version scope,
+  missing/failed/pending runs, latest-failed-run handling, missing events,
+  post-analysis trace changes, lifecycle-only content, shared-trace ownership and zero model usage.
+- A synthetic persisted-Signals fixture with one false success claim, one recovered
+  run and one healthy run exercised the real Sol proxy and existing patch checks.
+  Only the false success case supplied a synthetic finding. One Sol call proposed
+  one patch: regression failed before/passed after, healthy check passed on both.
+  Final-code replay: wall time 12.062s; Sol latency 10.928s;
+  873 input / 323 output tokens; proxy-reported $0.004976. No improvement PR was published. This tests the adapter
+  and patch path, **not Flow-1 detector accuracy**.
+- The production dedicated Cloud-backed Signal was created with a reserved trigger
+  for manual backfills only. A one-trace authenticated UI backfill persisted a
+  COMPLETED/no-event record with zero model tokens. The trace contained lifecycle
+  metadata, so this is job-persistence evidence, not proof of model inference.
+- A public-API collection froze this native Signal run and its conversation.
+  Offline replay rejected insufficient execution content and did not call a model
+  or publish a PR. Production SQL column names/status values were exercised.
+- Production historical spans are readable, but `traces` currently exposes only
+  October 22 entries. A historical trace visible in `spans` is missing from both
+  SQL `traces` and UI backfill selection. Frontend startup reported
+  `traces_replacing has no readable rows; nothing to migrate`. The image-shipped
+  backfill uses `min(start_time)` and treats epoch/unparseable values as absent;
+  this is a possible early-exit cause, requiring direct database verification.
+- Project-wide daily counts show LLM/TOOL spans through October 19 and only DEFAULT
+  spans on October 20–22. Recent random examples have missing task/execution
+  content. This predates the October 22 production upgrade; cause is unconfirmed.
+  Neither issue is papered over by resampling or treating no-event as healthy.
+
+Private inputs, native run receipts and model artifacts are outside git at
+`~/experiments/laminar-flow1-integration-20261022`. No production database/cache
+mutation, broad historical backfill, live detector trigger or schedule enablement
+was performed. Deployment blockers remain in issue #50.

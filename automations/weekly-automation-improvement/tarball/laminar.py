@@ -65,10 +65,10 @@ class Laminar:
             raise ValueError("Remote Laminar requires HTTPS")
         self.measurements = []
 
-    def post(self, url, body, timeout=30):
+    def request(self, url, body=None, timeout=30):
         request = urllib.request.Request(
             url,
-            data=encode(body).encode(),
+            data=encode(body).encode() if body is not None else None,
             headers={
                 "Authorization": "Bearer " + self.key,
                 "Content-Type": "application/json",
@@ -88,7 +88,7 @@ class Laminar:
         return json.loads(raw)
 
     def query(self, sql):
-        return self.post(self.base + "/v1/sql/query", {"query": sql})["data"]
+        return self.request(self.base + "/v1/sql/query", {"query": sql})["data"]
 
     def collect(self):
         until = timestamp(
@@ -99,6 +99,35 @@ class Laminar:
         if not dt.timedelta(0) < until - since <= dt.timedelta(days=7):
             raise ValueError("Choose a positive window of at most seven days")
         window = f"start_time >= '{since.strftime('%Y-%m-%d %H:%M:%S')}' AND start_time < '{until.strftime('%Y-%m-%d %H:%M:%S')}'"
+        definition = None
+        profile = None
+        signal_scope = ""
+        if getattr(self.args, "analyzer", None) == "flow1":
+            from flow1 import signal_definition
+
+            identifier = str(uuid.UUID(self.args.signal_id))
+            definition = signal_definition(
+                self.request(self.base + "/v1/signals/" + identifier),
+                self.args.project_id,
+            )
+            profile = self.request(
+                self.base + "/v1/llm-profiles/" + definition["llmProfileId"]
+            )
+            profile = {
+                key: profile[key] for key in ("id", "provider", "config", "models")
+            }
+            if (
+                profile["provider"] != "custom"
+                or profile["config"].get("baseUrl", "").rstrip("/")
+                != "https://api.lmnr.ai/v1"
+            ):
+                raise ValueError(
+                    "Flow-1 requires the Laminar Cloud Chat Completions profile"
+                )
+            signal_scope = (
+                f" AND trace_id IN (SELECT trace_id FROM signal_runs WHERE signal_id='{identifier}' "
+                f"AND signal_version={definition['version']})"
+            )
         population = self.query(
             f"SELECT JSONExtractString(attributes, '{SESSION}') AS conversation_id, "
             "groupUniqArray(trace_id) AS trace_ids, "
@@ -106,7 +135,7 @@ class Laminar:
             f"any(JSONExtractString(attributes, '{META}automation.run_id')) AS run_id, "
             f"any(JSONExtractString(attributes, '{META}automation.name')) AS automation_name, "
             "min(start_time) AS started_at FROM spans "
-            f"WHERE {window} AND name = 'automation.conversation' "
+            f"WHERE {window} AND name = 'automation.conversation'{signal_scope} "
             "GROUP BY conversation_id HAVING conversation_id != '' "
             f"ORDER BY conversation_id LIMIT {self.args.population_limit + 1}"
         )
@@ -142,11 +171,21 @@ class Laminar:
             },
             "samples": [],
         }
+        if definition:
+            snapshot["analysis_backend"] = "flow1"
+            snapshot["flow1_signal"] = definition
+            snapshot["flow1_profile"] = profile
+            snapshot["selection"]["frame"] += (
+                "; restricted to conversations with a run of this Signal version, "
+                "including pending/failed runs, without weighting by findings"
+            )
         for index, candidate in enumerate(selected, 1):
             sample = {**candidate, "case_id": f"c{index}", "spans": [], "signals": []}
             snapshot["samples"].append(sample)
             try:
                 self.load_sample(sample)
+                if definition:
+                    self.load_flow1(sample, definition)
             except (ValueError, KeyError, OSError) as error:
                 sample["collection_error"] = str(error)
         snapshot["collection_measurements"] = self.measurements
@@ -161,7 +200,19 @@ class Laminar:
 
     def load_sample(self, sample):
         session = str(uuid.UUID(sample["conversation_id"]))
-        condition = f"JSONExtractString(attributes, '{SESSION}') = '{session}'"
+        trace_rows = self.query(
+            f"SELECT DISTINCT trace_id FROM spans WHERE JSONExtractString(attributes, '{SESSION}') = '{session}' "
+            f"ORDER BY trace_id LIMIT {self.args.max_spans + 1}"
+        )
+        if not trace_rows or len(trace_rows) > self.args.max_spans:
+            raise ValueError("Missing or oversized conversation trace scope")
+        ids = ",".join(
+            "'" + str(uuid.UUID(row["trace_id"])) + "'" for row in trace_rows
+        )
+        condition = (
+            f"trace_id IN ({ids}) AND (JSONExtractString(attributes, '{SESSION}') = '{session}' "
+            f"OR JSONExtractString(attributes, '{SESSION}') = '')"
+        )
         columns = (
             "span_id,parent_span_id,trace_id,name,span_type,status,start_time,end_time,"
             "substring(input,1,4000) AS input_excerpt,if(span_type='LLM',output,substring(output,1,6000)) AS output_excerpt,"
@@ -227,6 +278,8 @@ class Laminar:
             raise ValueError(
                 "Selected conversation exceeds --max-sample-bytes; not resampled"
             )
+        if getattr(self.args, "analyzer", None) == "flow1":
+            return
         ids = ",".join(
             "'" + str(uuid.UUID(value)) + "'" for value in sample["trace_ids"]
         )
@@ -240,3 +293,35 @@ class Laminar:
             )
         except (ValueError, OSError):
             sample["signal_coverage"] = "unavailable"
+
+    def load_flow1(self, sample, definition):
+        ids = ",".join(
+            "'" + str(uuid.UUID(value)) + "'" for value in sample["trace_ids"]
+        )
+        sample["flow1_trace_sessions"] = self.query(
+            f"SELECT trace_id,groupUniqArray(JSONExtractString(attributes, '{SESSION}')) AS conversation_ids "
+            f"FROM spans WHERE trace_id IN ({ids}) AND JSONExtractString(attributes, '{SESSION}') != '' GROUP BY trace_id"
+        )
+        scope = (
+            f"signal_id='{definition['id']}' AND signal_version={definition['version']} "
+            f"AND trace_id IN ({ids})"
+        )
+        runs = self.query(
+            "SELECT signal_id,signal_version,run_id,trace_id,status,error_message,event_id,"
+            "updated_at,input_tokens,cache_read_tokens,output_tokens "
+            f"FROM signal_runs WHERE {scope} ORDER BY updated_at,run_id LIMIT 51"
+        )
+        if len(runs) > 50:
+            raise ValueError("Flow-1 run count exceeds its budget")
+        events = self.query(
+            "SELECT id,signal_id,signal_version,run_id,trace_id,name,payload,timestamp,severity "
+            f"FROM signal_events WHERE {scope} ORDER BY timestamp,id LIMIT 51"
+        )
+        if len(events) > 50:
+            raise ValueError("Flow-1 event count exceeds its budget")
+        sample["flow1_runs"] = runs
+        sample["flow1_events"] = events
+        sample["signals"] = events
+        sample["signal_coverage"] = "selected_flow1_signal_version"
+        if len(encode(sample).encode()) > self.args.max_sample_bytes:
+            raise ValueError("Flow-1 evidence exceeds --max-sample-bytes")

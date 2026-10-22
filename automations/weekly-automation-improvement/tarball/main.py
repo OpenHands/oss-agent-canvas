@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 
 from common import bounded, call_model, encode, read_json, redact, write_json
+from flow1 import findings as flow1_findings
 from laminar import Laminar
 from patches import load_source, propose_fix
 
@@ -141,7 +142,12 @@ def evidence_context(sample, findings=None):
                 for span in visible
             ],
         },
-        "prior_signals_unverified": sample["signals"],
+        "prior_signals_unverified": [
+            {key: event.get(key) for key in ("id", "run_id", "trace_id", "severity")}
+            for event in sample["flow1_events"]
+        ]
+        if "flow1_events" in sample
+        else sample["signals"],
         **({"timeline": timeline} if findings is not None else {}),
     }
 
@@ -251,6 +257,19 @@ def run(args):
         write_json(args.output / "input.json", clean)
     else:
         snapshot = Laminar(args).collect()
+    analyzer = getattr(args, "analyzer", None) or snapshot.get(
+        "analysis_backend", "luna"
+    )
+    if analyzer not in ("luna", "flow1"):
+        raise ValueError("Unsupported frozen analysis backend")
+    if analyzer == "flow1" and snapshot.get("analysis_backend") != "flow1":
+        raise ValueError("Flow-1 replay requires frozen Signal runs and events")
+    if (
+        analyzer == "flow1"
+        and getattr(args, "signal_id", None)
+        and args.signal_id != snapshot["flow1_signal"]["id"]
+    ):
+        raise ValueError("Configured Signal differs from frozen evidence")
     if args.source_config:
         source = load_source(args.source_config)
         if snapshot.get("source") and snapshot["source"] != source:
@@ -284,14 +303,17 @@ def run(args):
         try:
             if sample.get("collection_error"):
                 raise ValueError(sample["collection_error"])
-            result, measurement = call_model(
-                args,
-                args.model,
-                POLICY,
-                evidence_context(sample),
-                "analysis-" + sample["case_id"],
-                ANALYSIS,
-            )
+            if analyzer == "flow1":
+                result, measurement = flow1_findings(snapshot, sample)
+            else:
+                result, measurement = call_model(
+                    args,
+                    args.model,
+                    POLICY,
+                    evidence_context(sample),
+                    "analysis-" + sample["case_id"],
+                    ANALYSIS,
+                )
             measurements.append(measurement)
             valid, invalid = validated_findings(result, sample)
             findings.extend(valid)
@@ -355,7 +377,9 @@ def run(args):
         "snapshot_sha256": hashlib.sha256(encode(snapshot).encode()).hexdigest(),
         "selection": snapshot["selection"],
         "project_id": snapshot["project_id"],
-        "analysis_model": args.model,
+        "analysis_backend": analyzer,
+        "analysis_model": "flow-1" if analyzer == "flow1" else args.model,
+        "flow1_signal": snapshot.get("flow1_signal"),
         "coordinator_model": args.coordinator,
         "findings": findings,
         "rejected_candidates": rejected,
@@ -522,6 +546,8 @@ def main():
     )
     parser.add_argument("--max-output-tokens", type=bounded(128, 8192), default=4096)
     parser.add_argument("--api", choices=("responses", "chat"), default="responses")
+    parser.add_argument("--analyzer", choices=("luna", "flow1"))
+    parser.add_argument("--signal-id", default=os.environ.get("LMNR_SIGNAL_ID"))
     parser.add_argument("--model", default="openai/gpt-6-luna")
     parser.add_argument("--coordinator", default="openai/gpt-6.1-sol")
     parser.add_argument("--effort", choices=("none", "low", "medium"), default="low")
@@ -529,6 +555,11 @@ def main():
     parser.add_argument("--evaluate-fix", action="store_true")
     parser.add_argument("--publish-fix", action="store_true")
     args = parser.parse_args()
+    if not args.input and args.analyzer == "flow1":
+        try:
+            args.signal_id = str(uuid.UUID(args.signal_id))
+        except (ValueError, TypeError, AttributeError):
+            parser.error("Set --signal-id or LMNR_SIGNAL_ID for Flow-1 collection")
     if not args.input:
         try:
             args.project_id = str(uuid.UUID(args.project_id))
