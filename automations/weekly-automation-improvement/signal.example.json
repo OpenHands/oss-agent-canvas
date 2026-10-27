@@ -48,7 +48,7 @@
   "trigger": {
     "type": "spanName",
     "spanNames": [
-      "automation.improvement.manual_backfill_only"
+      "conversation.arun"
     ]
   },
   "filters": [
@@ -63,5 +63,6 @@
   "mode": "realtime",
   "model": "flow-1",
   "disabled": true,
-  "llmProfileId": "REPLACE_WITH_CLOUD_FLOW1_PROFILE_UUID"
+  "llmProfileId": "REPLACE_WITH_CLOUD_FLOW1_PROFILE_UUID",
+  "sampleRate": 5
 }

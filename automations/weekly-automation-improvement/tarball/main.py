@@ -130,6 +130,7 @@ def evidence_context(sample, findings=None):
     return {
         "case_id": sample["case_id"],
         "automation_id": sample["automation_id"],
+        "source_resolution": sample.get("source_resolution"),
         "automation_name": sample["automation_name"],
         "initial_instructions": sample.get("initial_instructions", []),
         "instruction_coverage": sample.get("instruction_coverage", "unavailable"),
@@ -166,7 +167,7 @@ def evidence_context(sample, findings=None):
 def validate_snapshot(snapshot, limit):
     if (
         snapshot.get("schema_version") != 1
-        or not 1 <= len(snapshot["samples"]) <= limit
+        or not 0 <= len(snapshot["samples"]) <= limit
     ):
         raise ValueError("Unsupported snapshot or sample count exceeds --limit")
     uuid.UUID(snapshot["project_id"])
@@ -327,6 +328,16 @@ def run(args):
                 )
             measurements.append(measurement)
             valid, invalid = validated_findings(result, sample)
+            if analyzer == "flow1":
+                event_ids = result["finding_event_ids"]
+                for finding in valid:
+                    index = int(finding["id"].rsplit("f", 1)[1]) - 1
+                    finding["signal_event_id"] = event_ids[index]
+                    finding["fingerprint"] = hashlib.sha256(
+                        (
+                            snapshot["flow1_signal"]["id"] + "|" + event_ids[index]
+                        ).encode()
+                    ).hexdigest()[:20]
             findings.extend(valid)
             rejected.extend(invalid)
         except (ValueError, OSError, KeyError, TypeError, StopIteration) as error:
@@ -348,6 +359,9 @@ def run(args):
                 if any(finding["case_id"] == sample["case_id"] for finding in findings)
             ],
             "source": source,
+            "existing_improvement_prs": getattr(
+                args, "existing_prs", snapshot.get("existing_improvement_prs", [])
+            ),
         }
         try:
             result, measurement = call_model(
@@ -360,6 +374,7 @@ def run(args):
                 "Each edit has path, before and after; copy before verbatim with enough context to match exactly once. Do not output a diff or line numbers. "
                 "Source is the configured revision, not proven to be the executed revision. "
                 "Never claim a patch is validated. Do not produce workflow fixes for external outages or missing credentials. "
+                "If an existing improvement PR already addresses a finding, reject that finding and cite the existing PR. "
                 "Account for every finding: include it in a proposal or explain its rejection, citing the evidence or source that makes it unsupported or inapplicable.",
                 context,
                 "coordinator",
@@ -444,7 +459,7 @@ def run(args):
             snapshot["app_url"] + f"/project/{snapshot['project_id']}/traces/{value}"
             for value in sample["trace_ids"]
         ]
-    if args.evaluate_fix or args.publish_fix:
+    if args.evaluate_fix or args.publish_fix or getattr(args, "publish_draft", False):
         try:
             if not proposals or not proposals[0]["patch"]:
                 report["fix"] = {"status": "no_supported_patch"}
@@ -550,7 +565,7 @@ def runtime_secrets(args):
             ) from None
 
 
-def main():
+def argument_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=Path)
     parser.add_argument(
@@ -589,7 +604,15 @@ def main():
     parser.add_argument("--source-config", type=Path)
     parser.add_argument("--evaluate-fix", action="store_true")
     parser.add_argument("--publish-fix", action="store_true")
+    parser.add_argument("--publish-draft", action="store_true")
+    return parser
+
+
+def main():
+    parser = argument_parser()
     args = parser.parse_args()
+    if args.publish_draft and (args.evaluate_fix or args.publish_fix):
+        parser.error("--publish-draft does not run behavioral evaluation")
     if not args.input and args.analyzer == "flow1":
         try:
             args.signal_id = str(uuid.UUID(args.signal_id))

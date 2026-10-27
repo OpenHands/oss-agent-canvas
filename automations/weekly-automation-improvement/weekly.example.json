@@ -1,0 +1,15 @@
+{
+  "project_id": "YOUR_LAMINAR_PROJECT_UUID",
+  "signal_id": "YOUR_SIGNAL_UUID",
+  "laminar_base_url": "https://laminar-api.app.all-hands.dev",
+  "app_url": "https://laminar.app.all-hands.dev",
+  "llm_base_url": "https://llm-proxy.eval.all-hands.dev",
+  "automation_api_url": "http://127.0.0.1:8000/api/automation",
+  "repository": "OpenHands/oss-agent-canvas",
+  "checkout": "/private/existing-canonical-repository",
+  "base_branch": "main",
+  "github_token_secret": "GITHUB_TOKEN",
+  "credentials_file": "/private/automation-improvement/credentials.json",
+  "state_dir": "/private/automation-improvement/state",
+  "publish_drafts": true
+}

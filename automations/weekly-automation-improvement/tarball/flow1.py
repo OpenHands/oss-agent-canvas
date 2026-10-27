@@ -74,8 +74,11 @@ def findings(snapshot, sample):
         raise ValueError(
             "Insufficient task/execution content; lifecycle spans are not a trajectory"
         )
-    expected = set(sample["trace_ids"])
-    if expected != {span["trace_id"] for span in sample["spans"]}:
+    all_traces = set(sample["trace_ids"])
+    expected = set(sample.get("flow1_required_trace_ids", sample["trace_ids"]))
+    if not expected or not expected <= all_traces:
+        raise ValueError("Invalid selected Flow-1 trace scope")
+    if all_traces != {span["trace_id"] for span in sample["spans"]}:
         raise ValueError("Conversation trace scope differs from frozen spans")
     runs = sample.get("flow1_runs", [])
     latest = {}
@@ -103,15 +106,19 @@ def findings(snapshot, sample):
             "Flow-1 run has no recorded model usage; skipped analysis is not clean"
         )
     for span in sample["spans"]:
-        if span.get("end_time") and timestamp(span["end_time"]) > timestamp(
-            latest[span["trace_id"]]["updated_at"]
+        if (
+            span["trace_id"] in expected
+            and span.get("end_time")
+            and timestamp(span["end_time"])
+            > timestamp(latest[span["trace_id"]]["updated_at"])
         ):
             raise ValueError(
                 "Trace changed after Flow-1 analysis; refresh its Signal run"
             )
     by_run = {run["run_id"]: run for run in latest.values()}
     events = sample.get("flow1_events", [])
-    result, event_ids = [], set()
+    result, event_ids, finding_event_ids = [], set(), []
+    selected_events = set(sample.get("selected_event_ids", []))
     for event in events:
         if event["run_id"] not in by_run:
             continue
@@ -125,6 +132,8 @@ def findings(snapshot, sample):
         if event["id"] in event_ids:
             raise ValueError("Duplicate Flow-1 event")
         event_ids.add(event["id"])
+        if selected_events and event["id"] not in selected_events:
+            continue
         finding = object_value(event["payload"])
         evidence = finding.get("evidence")
         if not isinstance(evidence, str):
@@ -160,13 +169,16 @@ def findings(snapshot, sample):
         if not refs:
             raise ValueError("Flow-1 finding has no valid span citations")
         result.append({**finding, "evidence": refs})
+        finding_event_ids.append(event["id"])
     for run in latest.values():
         if (
             run.get("event_id") not in (None, "", str(uuid.UUID(int=0)))
             and run["event_id"] not in event_ids
         ):
             raise ValueError("Completed Flow-1 run references an unavailable finding")
-    return {"findings": result}, {
+    if selected_events and set(finding_event_ids) != selected_events:
+        raise ValueError("Selected Flow-1 finding was superseded or is unavailable")
+    return {"findings": result, "finding_event_ids": finding_event_ids}, {
         "backend": "persisted_flow1_signals",
         "configured_model": definition["model"],
         "effective_model": None,

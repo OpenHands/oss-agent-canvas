@@ -1,3 +1,34 @@
+# Weekly MVP validation — October 27, 2026
+
+The production Signal is active at version 5, using the execution-finish trigger,
+automation filter and 5% sampling. A fresh native canary produced an automatic
+completed Flow-1 run with 8,762 input and 256 output tokens and no finding. No
+manual backfill was used for that version.
+
+The weekly entrypoint completed two native VM dry runs, including run
+`3112c80d-a4ff-4628-b90c-1181f52a36d0`. The first live weekly run, `1f239e2e-e729-4e2b-a5f8-a91f0759b8e1`, also
+completed successfully, wrote the current-week ledger and retained the enabled
+Monday 08:00 UTC schedule. One completed no-event Signal run was present; no
+eligible findings were returned, so Sol and publication were correctly skipped. Live source probes resolved both plugin
+PR reviewers and issue triage to their declared source paths on the approved
+repository's main branch. Historical executed source is not proven equal.
+
+A frozen real-data replay completed in 19.899 seconds with two findings, one
+proposal and zero errors. This development sample used the earlier detector
+version and does not demonstrate current-version accuracy or improvement.
+
+All 68 local tests pass; Ruff, compilation and Git whitespace checks pass.
+The suite covers event sampling, superseded/handled findings, ambiguous
+ownership, context traces without Signals, plugin source boundaries, exact legacy
+bundle matching, unevaluated draft publication using real temporary Git
+worktrees with simulated GitHub calls, concurrency, event-ledger recovery, dry-run
+behavior and publication limits after uncertain failures. No synthetic improvement
+PR was published. Behavioral evaluations and acceptance demonstration are deferred.
+
+The following historical notes preserve the earlier prototype's experiments.
+
+---
+
 # Local validation — October 19, 2026
 
 Private inputs, credentials, requests, responses, patches and logs remain outside

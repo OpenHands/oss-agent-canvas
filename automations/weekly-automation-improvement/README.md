@@ -1,250 +1,141 @@
 # Weekly Automation Improvement
 
-A separate, disabled-by-default automation for OSS-14275. Its scheduled entrypoint
-uses persisted Flow-1 Signals from self-hosted Laminar, samples conversations
-uniformly within that Signal-version frame, investigates the findings,
-and asks a stronger coordinator for one improvement proposal. It can evaluate
-one patch and optionally publish a draft PR. It does not change the existing
-health monitor or ingest traces.
+A standalone automation for OSS-14275: Laminar continuously analyzes a sample of
+automation traces with Flow-1; a weekly worker reads those Signals and asks
+`openai/gpt-6.1-sol` to investigate up to three findings and propose at most one
+source patch. It opens an **unevaluated draft PR** for human review. Behavioral
+evaluations, automatic merges and deployment are deferred.
 
-This is a stdlib-only prototype, reusing the HTTP/model, redaction, evidence
-mapping and replay patterns developed in #17 and the earlier Laminar replay.
-There are no agent repair loops, automatic inference retries, merges or deployments.
+## Weekly path
 
-## Configure
+1. Upstream, the dedicated Signal runs Flow-1 on 5% of matching traces when
+   `conversation.arun` finishes, filtered to traces containing
+   `automation.conversation`. The creation span itself finishes too early.
+2. Monday at 08:00 UTC, `weekly.py` reads the previous seven days of the current
+   Signal version, with a ten-minute arrival buffer. It uniformly samples up to
+   three unhandled finding events from each trace's latest completed run.
+   Failed/pending runs and completed no-event runs are counted separately.
+   Percentage sampling upstream is not an exact-size uniform conversation sample.
+3. Before inference, it freezes Signal versions, run/event IDs, usage, ownership,
+   original task messages, compact trajectory evidence and approved source.
+   Other conversation traces provide context without needing their own Signal.
+   Ambiguous ownership, stale analysis, missing citations and unavailable data
+   remain visible errors; the worker does not replace difficult selections.
+4. Sol checks task requirements, recovery, counterevidence, current source and
+   existing improvement PRs. It can reject every finding. External outages or
+   missing credentials do not justify workflow patches.
+5. One supported proposal may become a draft. The publisher checks the remote
+   base, applies exact replacements in a detached worktree, restricts changes to
+   approved regular files, and checks whitespace and changed Python syntax.
+   It does not run behavioral evaluations or claim the fix improves quality.
 
-Supply these environment variables; keep credentials outside this repository:
+The collector reads the public self-hosted Laminar SQL API. It neither ingests
+trajectories nor invokes Flow-1 itself. Flow-1's Cloud key remains in Laminar's
+LLM profile; the worker uses a SQL-capable self-hosted project key and Sol proxy
+key. Existing health monitoring remains separate.
 
-```bash
-export LMNR_BASE_URL=https://laminar-api.app.all-hands.dev
-export LMNR_PROJECT_ID=YOUR_PROJECT_UUID
-export LMNR_APP_URL=https://laminar.app.all-hands.dev
-export LLM_BASE_URL=https://llm-proxy.eval.all-hands.dev
-# Set LMNR_PROJECT_API_KEY and LITELLM_API_KEY privately.
+## Configure and run
+
+Copy [weekly.example.json](weekly.example.json) outside git. Configure the project,
+Signal, endpoints, existing canonical checkout, approved repository/base branch,
+private state directory and GitHub secret name. Keep the credentials file owner-only:
+
+```json
+{"LMNR_PROJECT_API_KEY":"...","LITELLM_API_KEY":"..."}
 ```
 
-`LITELLM_API_KEY` takes precedence over `LLM_API_KEY`, which is a fallback.
-This avoids routing the proxy request with an unrelated key inherited from the
-shared launcher. Match the chosen key to `LLM_BASE_URL`. The project key controls
-which SQL data is accessible; the project ID records provenance and builds links,
-and must match that key. Use a SQL-capable key, not an ingest-only key.
-
-For agent-server execution, missing keys can be read from the owner's configured
-`LMNR_PROJECT_API_KEY` and `LITELLM_API_KEY` secrets using the injected session key.
-Non-secret configuration still needs to be supplied to the execution environment
-or through entrypoint arguments. Completion callbacks follow the existing custom
-automation pattern. The YAML registers a disabled Monday schedule; merge does
-not demonstrate that a deployed run has these settings or credentials.
-
-## Load inputs before analysis
-
-From the repository root:
+`weekly.py` defaults to `~/.config/automation-improvement/config.json`.
+On the OSS VM, the configured existing GitHub token is read through the native
+Agent Server session; outside it, set `GH_TOKEN` privately. Git credentials use
+an ephemeral helper. No keys belong in YAML, source, logs or global agent profiles.
 
 ```bash
-python3 automations/weekly-automation-improvement/tarball/main.py \
-  --collect-only --seed 42 --output /private/improvement/input-run
+python3 automations/weekly-automation-improvement/tarball/weekly.py \
+  --config /private/weekly.json --dry-run --seed 42
 
-python3 automations/weekly-automation-improvement/tarball/main.py \
-  --input /private/improvement/input-run/input.json \
-  --output /private/improvement/review-run
+python3 automations/weekly-automation-improvement/tarball/weekly.py \
+  --config /private/weekly.json
 ```
 
-The second command needs only LLM credentials: no Laminar calls, host files,
-database mounts, ingestion, or changing live inputs. Reuse that file to iterate
-on prompts/models. Without `--input`, collection completes before inference in
-the same run. Output directories must be new; artifacts are owner-only.
+Dry runs collect and analyze but neither publish nor modify the handled-event
+ledger. They can still spend inference tokens. The YAML enables the Monday
+schedule and runs `python3 weekly.py`; the VM owner configuration must already
+exist. Native completion callbacks follow the existing automation convention.
 
-Sampling is uniform without replacement across unique session/conversation IDs
-with `automation.conversation` spans starting in a seven-day window. There is no
-status, cost or automation-family weighting. The default cutoff is ten minutes
-ago; this buffer does not prove completion. Override `--since`, `--until`,
-`--limit` and `--seed` explicitly. A generated seed, population hash/count,
-inclusion probability and selected IDs are saved. The frame covers instrumented
-conversations visible to the key, not all automation runs. Duplicate spans do
-not increase a conversation's sampling weight. Collection is sequential, not an
-atomic snapshot of a running conversation; replay freezes what was collected.
+Current plugin automations resolve to their declared GitHub repository, branch
+and `plugins/<name>` directory. Legacy bundles require a unique byte match for
+all deployed Python/text files under `automations/<name>/tarball`. Foreign repos,
+branches, ambiguous matches and excessive source are skipped with visible errors.
+This MVP supports one approved target repository. It does not prove the historic
+executed revision equals the current source; the model context and PR disclose
+that limitation. Each case includes its own resolved source scope.
 
-Collection resolves trace IDs from the selected session, includes untagged spans
-in those traces while excluding spans explicitly attributed to another session,
-and loads original SDK
-task-message inputs and existing Signal events. There are no payload reads during
-LLM replay. Accumulated LLM inputs, reasoning/provider metadata and empty/container
-wrappers are omitted from model context. Tool/default text has explicit excerpt
-limits and original lengths, with distinct SQL aliases to avoid hiding clipping.
-The coordinator gets task instructions, a compact whole-session timeline, cited
-spans, adjacent counterevidence and final visible steps. Reference integrity does not establish claim correctness.
+The durable ledger and process lock prevent overlapping batches and repeated
+weeks. Event markers in PR bodies recover published findings if local state is
+lost. The stable branch is derived from Signal/event identity, and existing PRs
+are supplied to Sol to help reject semantically duplicate work. This is not a
+complete semantic deduplicator. Publication reserves the week's one-PR slot
+before pushing: an interrupted/uncertain publication blocks further automatic
+attempts that week and requires inspection. Existing remote branches are never
+silently overwritten. A week with no findings completes without a model call.
 
-Oversized/unreadable selections remain collection errors and are never replaced
-with easier examples. Failures and rejected citations produce a partial report
-and a failed exit; no findings does not mean healthy. Raw responses and measured
-usage remain available. Redaction is best effort; inspect private artifacts before
-sharing them. Use the saved source files and snapshot hash to reproduce a run.
+## Laminar setup
 
-## Models
+[signal.example.json](signal.example.json) describes the six-field detector
+payload, execution-finish trigger, automation filter and 5% sample. It is paused
+as an installation template. Supply the workspace's Laminar Cloud Flow-1 profile
+and activate it deliberately after checking access and sampling. The configured
+production Signal is `fadaa9d7-a70a-42df-ab63-04c88f3b77ac` in project
+`e41ee96e-851b-45ad-bfe8-b986861c331d`. The October 27 configuration is active,
+version 5. Its automatic path produced a completed, nonzero-usage analysis on a
+fresh native automation run. Rotate its Cloud credential before November 15.
 
-The working proxy defaults are `--model openai/gpt-6-luna` for trajectory
-analysis and `--coordinator openai/gpt-6.1-sol` for investigating candidates and
-writing a source-grounded patch. Sol is called only when Luna finds candidates.
-Responses API uses low effort by default. `--api chat` supports compatible
-providers and records provider-default effort. Model IDs are configurable;
-the proxy returned `model_not_found` for `openai/gpt-6.1-luna` on October 19.
-The [official model catalog](https://developers.openai.com/api/docs/models)
-lists GPT-6 Luna and GPT-6.1 Sol; it has no Luna 6.1 entry.
+Reports retain native run statuses and usage; Flow-1 billed cost, effective model
+and latency are not exposed by this SQL surface. Token-rate estimates use the
+dated [pricing snapshot](tarball/flow1-pricing.json), include all observed attempts
+and exclude credits. They are not invoices. Failed/skipped runs with no usage
+make cost unknown. Sol records proxy-reported cost and request latency separately.
 
-## Flow-1 Signals → Sol
+## Frozen local iteration
 
-The disabled YAML entrypoint selects Flow-1; configure `LMNR_SIGNAL_ID` before
-enabling it. For local use, pass `--analyzer flow1 --signal-id YOUR_SIGNAL_UUID`. Laminar
-runs the detector upstream; this worker reads its **persisted** runs and events
-through the public SQL API, without copying/re-ingesting traces or calling an
-internal endpoint. The worker needs the self-hosted project key and Sol proxy key;
-the Cloud credential stays in Laminar's encrypted LLM profile.
-
-```bash
-python3 automations/weekly-automation-improvement/tarball/main.py \
-  --analyzer flow1 --signal-id YOUR_SIGNAL_UUID --collect-only --seed 42 \
-  --source-config /private/source.json --output /private/improvement/flow1-input
-
-python3 automations/weekly-automation-improvement/tarball/main.py \
-  --input /private/improvement/flow1-input/snapshot-with-source.json \
-  --source-config /private/source.json --evaluate-fix \
-  --output /private/improvement/flow1-review
-```
-
-Collection freezes the Signal definition/version, Cloud profile route, native
-run IDs/statuses/token counts, events, and conversation evidence before any Sol
-call. Replay automatically selects the frozen backend and needs no Laminar
-connection. Luna mode remains available for comparisons. Flow-1 findings go
-directly to the existing Sol coordinator, which checks task requirements,
-recovery and counterevidence before proposing at most one patch. Completed
-no-finding cases need no downstream model call.
-
-In this mode, uniform random selection is over conversations **with a run of the
-configured Signal version**, including failed/pending runs, rather than every
-instrumented conversation. There is no preference for findings. This distinction
-is recorded in the sampling frame. Native Signal percentage sampling is a
-separate upstream decision and is not an exact-size uniform conversation sample.
-Completed no-event runs remain in the sample; a missing run means the conversation
-has not been analyzed, not that it is healthy.
-A fixed random batch selected before Flow-1 still needs a supported backfill
-submission interface; this worker does not implement one or automate the browser.
-
-Every collected trace must belong exclusively to that conversation; a webhook
-trace shared by multiple conversations is rejected rather than attributing its
-findings to the wrong automation. Every trace must have a completed, current-version
-Signal run, and no collected span may end after that run. Missing coverage,
-failed/pending runs, missing task/execution content, zero recorded model usage,
-unavailable event rows and foreign/ambiguous citations fail the case and block
-publication. A completed no-event record alone is not sufficient. These checks
-cannot prove every upstream span arrived; whole-conversation quality still needs
-evaluation. Signal links are resolved to local span references without fetching
-the linked URL. Run/event IDs remain in the private report for audit.
-
-`signal.example.json` supplies the expected six scalar payload fields. It is
-**paused** and uses a reserved manual-backfill trigger that does not match normal
-automation spans. Create it through `/v1/signals` with a regular project key and
-the workspace Cloud profile ID. The public Signal service creates alert records
-but does not subscribe a project-key caller to email alerts. To test a backfill,
-activate this dedicated Signal while retaining that reserved trigger, select a
-small exact trace set in Laminar's authenticated Backfill UI, and verify saved
-runs/events in SQL. Do not use `disabled: false` with an unrestricted live trigger
-as an accidental way to backfill all traffic.
-
-After representative validation, a separate configuration change can use
-the `spanName` trigger for `conversation.arun`, filter
-`span_names includes ["automation.conversation"]`,
-and an explicit `sampleRate` (for example 5) for ongoing detection. This changes
-sampling/cost and should be measured before enabling the weekly worker. Analyze
-when execution finishes: the observed `automation.conversation` span ends at
-creation, before inference and tools, so its finish is too early. Run
-state/tokens are available through SQL, but that surface does not expose the
-effective provider model, elapsed time or billed cost; those stay **unknown** in
-the report, including when Laminar displays `$0.00`. Collection freezes the dated
-published rates from `tarball/flow1-pricing.json`; reports estimate gross cost from
-fresh input, cached input and output tokens across distinct frozen run attempts.
-The estimate excludes credits and is not a billing receipt. Older snapshots without
-rates keep their estimate unknown. Refresh the rates against their cited source
-before relying on them for a budget. Sol usage/cost is measured separately.
-Rotate the Cloud profile credential before its expiry.
-
-Production rollout and data-coverage follow-ups are tracked in
-[#50](https://github.com/OpenHands/oss-agent-canvas/issues/50). Historical trace
-indexes and Signal-event links were repaired October 26. On October 27, three
-bounded native production backfills completed with nonzero model usage: one
-finding and two no-event results. Frozen replay validated their citations and
-ownership; Sol rejected the finding as insufficient evidence for an automation
-patch. Rejections and their reasons are retained in `rejected_findings`.
-The OSS VM's shared host and Docker image were upgraded together to pinned
-1.58.2 after isolated canaries, a database backup/integrity check and a backup
-of mutable SDK state. A native dispatcher run completed with fresh inference,
-tool spans and correct automation/run/conversation attribution. The tracing key
-was absent from its tool environment. This includes
-[SDK #5557](https://github.com/OpenHands/software-agent-sdk/pull/5557).
-The stricter Signal prompt was compared on the same three traces, plus a healthy
-fresh automation and an honestly reported tool-error control. These are small
-development checks, not a detector-accuracy benchmark. The Signal retains its
-reserved manual trigger; the schedule and publication remain disabled.
-
-## One patch and configured validation
-
-Ordinary runs generate diagnostic proposals with no source patch. To permit a
-source-grounded patch, copy `source.example.json` outside git and configure the
-approved repository, its existing checkout, a full baseline SHA, authorized
-automation IDs, permitted files and validation argv arrays. Freeze source upfront:
+The weekly run directory contains `collection/input.json`, a source configuration,
+`snapshot-with-source.json`, analysis requests/responses/measurements and
+`weekly-report.json`. All artifacts and state are owner-only. Replay the frozen
+input to inspect prompts without collecting again:
 
 ```bash
 python3 automations/weekly-automation-improvement/tarball/main.py \
-  --collect-only --source-config /private/source.json \
-  --output /private/improvement/source-input
-
-python3 automations/weekly-automation-improvement/tarball/main.py \
-  --input /private/improvement/source-input/snapshot-with-source.json \
-  --source-config /private/source.json --evaluate-fix \
-  --output /private/improvement/fix-review
+  --input /private/run/snapshot-with-source.json \
+  --source-config /private/run/source-config.json \
+  --output /private/replay
 ```
 
-Sol supplies exact `path`/`before`/`after` replacements rather than diff hunk
-indexes. Each replacement must match exactly once in a permitted frozen file;
-the worker generates the unified diff. Duplicate file edits, ambiguous matches,
-unchanged replacements and oversized patches are rejected without another model
-call. This performs one patch attempt in isolated baseline/candidate git worktrees.
-Checks come from trusted configuration, never from model instructions. Include
-a regression expected to fail on the baseline and healthy-case checks expected
-to pass. Every candidate check must pass; timeouts, changed source and files
-outside the allowlist are rejected. Tests receive a small environment without
-inference/publication credentials. Keep worktrees/logs for inspection. This is
-not an isolation boundary for arbitrary hostile repositories or tests.
+Repeated LLM histories, reasoning/provider metadata and empty wrappers are
+omitted. Original instructions, tool excerpts, cited spans, adjacent
+counterevidence, compact whole-session chronology and final visible steps remain.
+Clipping is explicit. Saved provider requests allow prompt inspection. Citation
+integrity does not establish that a finding is correct; redaction is best effort.
 
-Add `--publish-fix` only for an approved target repository and configured checks.
-This checks the current remote base, matches an existing PR by stable branch,
-then commits/pushes the accepted patch and opens a **draft** PR. The body includes
-trace links, baseline revision, hypothesis, evaluation plan, actual check exit
-codes and recovery criteria. GitHub CLI authentication is required. A repeated
-signature reuses the existing PR; model-generated signatures are not guaranteed
-to deduplicate differently worded incidents. Interrupted publication is not yet
-automatically resumable.
-
-The configured revision is not proof of what executed in production. Check
-results are evidence about those configured checks, not a general task-quality
-evaluation. Human review controls merge/deployment; revision uptake and observed
-production benefit remain follow-up work.
+`main.py` also retains the earlier Luna comparison mode and opt-in
+`--evaluate-fix` / `--publish-fix` path with trusted fail-before/pass-after checks.
+Those are local research options, not requirements of the weekly MVP.
+`--publish-draft` explicitly selects unevaluated publication.
 
 ## Bounds and verification
 
-Defaults: three conversations (maximum five), one analysis call each in Luna mode
-and at most one coordinator call (Flow-1 mode reuses upstream analysis), sequential execution, 4,096 output tokens/call, 750 KB model
-request limit, 1,000 spans/conversation, 2 MB projected sample and 8 MB HTTP
-response limits. One patch attempt, up to four configured checks per revision,
-120 seconds/check. These are workload limits, not a dollar spending cap.
-
-`requests/`, `responses/` and `measurements/` retain redacted provider requests,
-responses, effective settings, token usage and proxy-reported cost. Missing cost
-stays unknown. `report.json` links findings to actual span/run/conversation IDs
-and records both configured models, errors and validation status.
+Weekly limits: three finding events, one Sol call, one patch attempt and at most
+one draft PR per ISO week; 30 source files / 250 KB, 750 KB model request and
+4,096 output tokens. Sources exceeding the aggregate budget are reported and
+skipped without replacement. Collection retains the existing 1,000-span,
+2 MB projected sample and 8 MB response bounds. These are workload limits, not a
+dollar cap. Partial analysis fails rather than publishing.
 
 ```bash
 python3 -m pytest automations/weekly-automation-improvement/tests -q
+python3 -m ruff check automations/weekly-automation-improvement
 ```
 
-See [VALIDATION.md](VALIDATION.md) for real-data replay and synthetic end-to-end
-results. No production rollout or real automation fix is claimed by these tests.
+See [VALIDATION.md](VALIDATION.md) for measured development checks and
+[#50](https://github.com/OpenHands/oss-agent-canvas/issues/50) for rollout history.
+The prototype does not establish detector accuracy, behavioral improvement,
+deployed revision uptake or post-merge benefit.

@@ -1,3 +1,4 @@
+import ast
 import difflib
 import hashlib
 import json
@@ -89,8 +90,8 @@ def load_source(config_path):
         or any(not isinstance(value, str) or not value for value in automation_ids)
     ):
         raise ValueError("Configure the automation IDs authorized for this source")
-    if not isinstance(paths, list) or not 1 <= len(paths) <= 10:
-        raise ValueError("Configure one to ten permitted source files")
+    if not isinstance(paths, list) or not 1 <= len(paths) <= 30:
+        raise ValueError("Configure one to thirty permitted source files")
     files = {}
     for path in paths:
         if (
@@ -108,8 +109,8 @@ def load_source(config_path):
         files[path] = command(
             ["git", "show", revision + ":" + path], checkout, strip=False
         )
-    if sum(len(text.encode()) for text in files.values()) > 80000:
-        raise ValueError("Configured source exceeds 80 KB")
+    if sum(len(text.encode()) for text in files.values()) > 250000:
+        raise ValueError("Configured source exceeds 250 KB")
     return {
         "repository": repo,
         "revision": revision,
@@ -180,8 +181,10 @@ def propose_fix(args, report, snapshot):
         finding["automation_id"] not in source["automation_ids"] for finding in findings
     ):
         raise ValueError("Finding automation is outside the configured source scope")
-    checks = config["checks"]
-    if (
+    unevaluated = getattr(args, "publish_draft", False)
+    publishing = args.publish_fix or unevaluated
+    checks = [] if unevaluated else config["checks"]
+    if not unevaluated and (
         not isinstance(checks, list)
         or not 2 <= len(checks) <= 4
         or not any(check.get("baseline") == "fail" for check in checks)
@@ -196,7 +199,7 @@ def propose_fix(args, report, snapshot):
         "|".join(sorted(finding["fingerprint"] for finding in findings)).encode()
     ).hexdigest()[:20]
     branch = "automation/improve-" + fingerprint
-    if args.publish_fix:
+    if publishing:
         current_base = command(
             [
                 "gh",
@@ -232,10 +235,11 @@ def propose_fix(args, report, snapshot):
     checkout = Path(config["checkout"]).expanduser().resolve()
     baseline = (args.output / "baseline").resolve()
     candidate = (args.output / "candidate").resolve()
-    command(
-        ["git", "worktree", "add", "--detach", str(baseline), source["revision"]],
-        checkout,
-    )
+    if not unevaluated:
+        command(
+            ["git", "worktree", "add", "--detach", str(baseline), source["revision"]],
+            checkout,
+        )
     command(
         ["git", "worktree", "add", "--detach", str(candidate), source["revision"]],
         checkout,
@@ -253,10 +257,21 @@ def propose_fix(args, report, snapshot):
     for name in changed:
         if (candidate / name).is_symlink() or not (candidate / name).is_file():
             raise ValueError("Patch must preserve regular source files")
+        if name.endswith(".py"):
+            try:
+                ast.parse((candidate / name).read_bytes(), filename=name)
+            except SyntaxError as error:
+                raise ValueError(
+                    "Patch produces invalid Python syntax: " + name
+                ) from error
     command(["git", "diff", "--cached", "--check"], candidate)
     expected_diff = command(["git", "diff", "HEAD", "--binary"], candidate, strip=False)
-    before = run_checks(baseline, checks, args.output, "baseline")
-    after = run_checks(candidate, checks, args.output, "candidate")
+    before = (
+        [] if unevaluated else run_checks(baseline, checks, args.output, "baseline")
+    )
+    after = (
+        [] if unevaluated else run_checks(candidate, checks, args.output, "candidate")
+    )
     if (
         command(["git", "diff", "HEAD", "--binary"], candidate, strip=False)
         != expected_diff
@@ -277,9 +292,20 @@ def propose_fix(args, report, snapshot):
         ):
             write_json(args.output / "validation.json", results)
             return results
-    results["status"] = "checks_passed_not_task_quality_proven"
+    results["status"] = (
+        "unevaluated_draft" if unevaluated else "checks_passed_not_task_quality_proven"
+    )
+    results["behavioral_evaluation"] = (
+        "not_performed" if unevaluated else "configured_checks_only"
+    )
+    results["mechanical_checks"] = [
+        "git apply --check",
+        "git diff --check",
+        "source allowlist",
+        "Python syntax for changed .py files",
+    ]
     write_json(args.output / "validation.json", results)
-    if not args.publish_fix:
+    if not publishing:
         return results
     remote = command(["git", "remote", "get-url", "origin"], checkout)
     if remote not in (
@@ -290,7 +316,6 @@ def propose_fix(args, report, snapshot):
         raise ValueError(
             "Configured checkout origin differs from the publication repository"
         )
-    command(["git", "switch", "-c", branch], candidate)
     command(["git", "add", "--", *changed], candidate)
     command(["git", "commit", "-m", proposal["title"][:120]], candidate)
     if (
@@ -303,7 +328,13 @@ def propose_fix(args, report, snapshot):
     ):
         raise ValueError("Commit differs from the validated patch")
     results["candidate_revision"] = command(["git", "rev-parse", "HEAD"], candidate)
-    command(["git", "push", "origin", branch], candidate)
+    if command(
+        ["git", "ls-remote", "--heads", "origin", "refs/heads/" + branch], candidate
+    ):
+        raise ValueError(
+            "Improvement branch already exists without a tracked PR; inspect before retrying"
+        )
+    command(["git", "push", "origin", "HEAD:refs/heads/" + branch], candidate)
     links = sorted({url for finding in findings for url in finding["trace_urls"]})
     body = (
         proposal["hypothesis"]
@@ -311,7 +342,23 @@ def propose_fix(args, report, snapshot):
         + "\n".join("- " + value for value in links)
         + f"\n\nBaseline revision: {source['revision']}. Executed automation revision has not been verified.\n\n"
         + proposal["evaluation_plan"]
-        + "\n\nExecuted configured checks:\n"
+        + "\n\n"
+        + "\n".join(
+            "<!-- automation-improvement-event: " + finding["signal_event_id"] + " -->"
+            for finding in findings
+            if finding.get("signal_event_id")
+        )
+        + (
+            "\n\n**UNEVALUATED PROPOSAL:** behavioral evaluation has not been performed. "
+            "The checks below only establish that the patch applies within the approved source scope.\n"
+            if unevaluated
+            else "\n\nExecuted configured checks:\n"
+        )
+        + (
+            "\nMechanical checks: patch application, whitespace integrity, Python syntax, and approved file scope passed.\n"
+            if unevaluated
+            else ""
+        )
         + "\n".join(
             f"- {first['name']}: baseline exit {first['exit_code']}; candidate exit {second['exit_code']}"
             for first, second in zip(before, after, strict=True)
@@ -336,7 +383,7 @@ def propose_fix(args, report, snapshot):
             branch,
             "--draft",
             "--title",
-            proposal["title"][:120],
+            (("[Unevaluated] " if unevaluated else "") + proposal["title"])[:120],
             "--body-file",
             str(body_path.resolve()),
         ],
