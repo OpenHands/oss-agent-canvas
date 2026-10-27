@@ -1,0 +1,19 @@
+agent_profile_id: null
+enabled: false
+entrypoint: python3 weekly.py --dry-run
+keep_alive: false
+model: flow1-telemetry-canary
+name: "Per-automation improvement \u2014 validation"
+observability_associations: null
+preset_metadata: null
+prompt: null
+setup_script_path: null
+state: INACTIVE
+tarball_source:
+  type: internal
+  url: null
+timeout: 1200
+trigger:
+  schedule: 0 8 * * 1
+  timezone: UTC
+  type: cron
