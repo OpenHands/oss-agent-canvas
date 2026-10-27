@@ -36,7 +36,7 @@ def load_environment(config):
     os.environ["LLM_BASE_URL"] = config["llm_base_url"]
 
 
-def existing_prs(repository):
+def existing_prs(repository, base_branch="main"):
     rows = json.loads(
         command(
             [
@@ -45,6 +45,8 @@ def existing_prs(repository):
                 "list",
                 "--repo",
                 repository,
+                "--base",
+                base_branch,
                 "--state",
                 "all",
                 "--limit",
@@ -191,7 +193,7 @@ def update_backlog(state, inventory, prs):
             definition_key(record["definition"]) == current
             and newer
             and timestamp(newer["updated_at"]) >= timestamp(record["run"]["updated_at"])
-            and newer.get("event_id") != identifier
+            and (newer.get("event_id") != identifier or newer["status"] != "COMPLETED")
         )
         if identifier in handled or superseded:
             del backlog[identifier]
@@ -208,7 +210,11 @@ def update_backlog(state, inventory, prs):
 
 def published_for(prs, automation_id, week, records):
     marker = "<!-- automation-improvement-automation: " + automation_id + " -->"
-    identifiers = {record["event"]["id"] for record in records}
+    identifiers = {
+        record["event"]["id"]
+        for record in records
+        if record["owner"]["automation_id"] == automation_id
+    }
     for pr in prs:
         if week_key(timestamp(pr["createdAt"])) != week:
             continue
@@ -341,7 +347,7 @@ def run_locked(config, state_dir, *, dry_run, limit, seed):
     )
     state.setdefault("automation_weeks", {})
     github_auth(config)
-    prs = existing_prs(config["repository"])
+    prs = existing_prs(config["repository"], config.get("base_branch", "main"))
     args = arguments(config, output / "collection", limit, seed)
     args.output.mkdir(mode=0o700)
     inventory = collect_events(Laminar(args), set(), aggregate=True)
@@ -355,6 +361,9 @@ def run_locked(config, state_dir, *, dry_run, limit, seed):
         "automations": [],
         "publication": "disabled" if dry_run else "per_automation",
     }
+    known_records = list(state.get("backlog", {}).values()) + inventory.get(
+        "events", []
+    )
     records = update_backlog(state, inventory, prs)
     if not dry_run:
         save_state(state_path, state)
@@ -370,7 +379,7 @@ def run_locked(config, state_dir, *, dry_run, limit, seed):
         directory.mkdir(mode=0o700)
         if not dry_run and (
             key in state["automation_weeks"]
-            or published_for(prs, automation_id, week, pending)
+            or published_for(prs, automation_id, week, known_records)
             or legacy
             and legacy.get("status") == "reserved"
         ):

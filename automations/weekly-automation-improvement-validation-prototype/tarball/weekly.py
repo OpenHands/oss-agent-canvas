@@ -36,7 +36,7 @@ def load_environment(config):
     os.environ["LLM_BASE_URL"] = config["llm_base_url"]
 
 
-def existing_prs(repository):
+def existing_prs(repository, base_branch="main"):
     rows = json.loads(
         command(
             [
@@ -45,6 +45,8 @@ def existing_prs(repository):
                 "list",
                 "--repo",
                 repository,
+                "--base",
+                base_branch,
                 "--state",
                 "all",
                 "--limit",
@@ -345,7 +347,7 @@ def run_locked(config, state_dir, *, dry_run, limit, seed):
     )
     state.setdefault("automation_weeks", {})
     github_auth(config)
-    prs = existing_prs(config["repository"])
+    prs = existing_prs(config["repository"], config.get("base_branch", "main"))
     args = arguments(config, output / "collection", limit, seed)
     args.output.mkdir(mode=0o700)
     inventory = collect_events(Laminar(args), set(), aggregate=True)

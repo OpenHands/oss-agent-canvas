@@ -240,6 +240,8 @@ def propose_fix(args, report, snapshot):
                     source["repository"],
                     "--head",
                     branch,
+                    "--base",
+                    config["base_branch"],
                     "--state",
                     "all",
                     "--json",
