@@ -122,6 +122,8 @@ configured Signal version**, including failed/pending runs, rather than every
 instrumented conversation. There is no preference for findings. This distinction
 is recorded in the sampling frame. Native Signal percentage sampling is a
 separate upstream decision and is not an exact-size uniform conversation sample.
+Completed no-event runs remain in the sample; a missing run means the conversation
+has not been analyzed, not that it is healthy.
 A fixed random batch selected before Flow-1 still needs a supported backfill
 submission interface; this worker does not implement one or automate the browser.
 
@@ -152,15 +154,29 @@ and an explicit `sampleRate` (for example 5) for ongoing detection. This changes
 sampling/cost and should be measured before enabling the weekly worker. Run
 state/tokens are available through SQL, but that surface does not expose the
 effective provider model, elapsed time or billed cost; those stay **unknown** in
-the report, including when Laminar displays `$0.00`. Sol usage/cost is measured
-separately. Rotate the Cloud profile credential before its expiry.
+the report, including when Laminar displays `$0.00`. Collection freezes the dated
+published rates from `tarball/flow1-pricing.json`; reports estimate gross cost from
+fresh input, cached input and output tokens across distinct frozen run attempts.
+The estimate excludes credits and is not a billing receipt. Older snapshots without
+rates keep their estimate unknown. Refresh the rates against their cited source
+before relying on them for a budget. Sol usage/cost is measured separately.
+Rotate the Cloud profile credential before its expiry.
 
 Production rollout and data-coverage follow-ups are tracked in
-[#50](https://github.com/OpenHands/oss-agent-canvas/issues/50). On October 22 the
-new dedicated Signal remained restricted to manual backfills, and this weekly
-schedule and PR publication remained disabled. Historical spans were readable,
-but their trace index entries were absent; recent sampled runs lacked execution
-content. Those data issues must be resolved before relying on production results.
+[#50](https://github.com/OpenHands/oss-agent-canvas/issues/50). Historical trace
+indexes and Signal-event links were repaired October 26. On October 27, three
+bounded native production backfills completed with nonzero model usage: one
+finding and two no-event results. Frozen replay validated their citations and
+ownership; Sol rejected the finding as insufficient evidence for an automation
+patch. Rejections and their reasons are retained in `rejected_findings`.
+Fresh execution telemetry remains gated on upgrading the OSS VM's host Agent
+Server from 1.56.0 to a release containing
+[SDK #5557](https://github.com/OpenHands/software-agent-sdk/pull/5557), which forwards
+tracing configuration into Docker conversation runtimes. An isolated matched
+1.58.2 host/image canary passed real inference, tool execution, tracing and
+credential-isolation checks; the shared service still needs that matched upgrade.
+The Signal keeps its
+reserved manual trigger; this weekly schedule and publication remain disabled.
 
 ## One patch and configured validation
 

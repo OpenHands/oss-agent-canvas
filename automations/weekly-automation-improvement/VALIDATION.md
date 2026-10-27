@@ -145,3 +145,69 @@ Private inputs, native run receipts and model artifacts are outside git at
 `~/experiments/laminar-flow1-integration-20261022`. No production database/cache
 mutation, broad historical backfill, live detector trigger or schedule enablement
 was performed. Deployment blockers remain in issue #50.
+
+## October 27: native production Flow-1 and source-grounded Sol replay
+
+Historical indexes and Signal-event links were repaired October 26. Three
+conversations were selected uniformly without replacement from 150 instrumented
+conversations starting October 13, using seed 1027. All three had execution
+content and exclusive trace ownership. Each exact trace was submitted once
+through the authenticated Backfill UI to the dedicated Cloud-backed Signal,
+version 2. Its reserved trigger and all other Signals stayed unchanged.
+
+| Case | Native result | Input tokens (including cache) | Cached input | Output | Estimated gross USD |
+| --- | --- | ---: | ---: | ---: | ---: |
+| c1 | Completed, one finding | 73,952 | 40,384 | 4,612 | 0.003466 |
+| c2 | Completed, no event | 245,394 | 189,440 | 8,582 | 0.007267 |
+| c3 | Completed, no event | 103,070 | 62,784 | 3,681 | 0.003746 |
+
+The estimate totals **$0.014479**, using the October 27
+[published rates](https://laminar.sh/pricing): $0.05/M fresh input, $0.01/M cached
+input and $0.30/M output. It is not a billing receipt and excludes account credits.
+The self-hosted run surface does not expose effective model, inference duration
+or billed cost. Those fields remain unknown rather than accepting its `$0.00`.
+
+The worker then collected and froze all three conversations in the current
+Signal-version frame, including both no-event runs. Public SQL collection and
+credential-free Laminar replay passed ownership, version, coverage, nonzero-usage
+and citation checks. The approved source was pinned to
+`208ff807ccdcba0532648b84f2064a3c9a663e51`, with two reviewer source files and the
+reviewer automation ID explicitly allowed. The executed source revision was not
+established. This is a smoke test, not a detector-accuracy benchmark.
+
+The final replay made one Sol 6.1 call in 6.601 seconds total, costing
+**$0.0973445** as reported by the proxy. It rejected the candidate: interpreter
+and collection failures did not establish that the review ultimately stopped,
+the proposed fixture change was outside the review-only task and source allowlist,
+and later recovery was unresolved in the supplied evidence. The reason is saved
+in `rejected_findings`. No patch, improvement PR, merge or deployment was produced.
+An earlier replay before rejection reporting cost $0.095637; these are two
+iterations over the same saved inputs, not two independent detection experiments.
+
+The Signal prompt was shortened to one issue, consistent with its scalar event
+schema. Random sampling remains over all conversations with a current-version
+Signal run; there is no finding-only filter or replacement of failed cases.
+
+Fresh-data investigation confirmed that the OSS VM's host Agent Server 1.56.0
+does not pass tracing configuration to Docker conversations. A live container
+had no `LMNR_*` or `OTEL_*` settings despite a configured host. The fix is already
+merged in [SDK #5557](https://github.com/OpenHands/software-agent-sdk/pull/5557)
+and included in 1.58.x. A host-only isolated canary restored LLM/tool spans, but
+its cached `main-python` image was also 1.56.0 and failed the credential-isolation
+check. Both host and conversation image therefore need a matched, pinned upgrade;
+the shared service has not been changed on this evidence alone.
+
+A second isolated canary matched host and conversation runtime at **1.58.2**,
+using the released image pinned to
+`ghcr.io/openhands/agent-server@sha256:a297711073c7d9c00350d3e78b82d2240bcd0e07e9bf379981c39a3deb120cd6`.
+The verify-agent-server harness passed health, readiness, REST authentication
+and WebSocket authentication checks. A real Luna conversation executed
+`python3 -c "import os; assert 'LMNR_PROJECT_API_KEY' not in os.environ; print(6*7)"`
+with exit code 0 and output `42`. Its LLM and tool spans arrived in the production
+Laminar project under the canary's session ID. Only the new canary service and
+its containers were restarted. This proves the matched-version repair, not that
+the shared OSS service has been upgraded or fresh automation attribution verified.
+
+Private receipts, snapshots, prompts, responses and canary evidence are under
+`~/experiments/laminar-self-improvement-20261027`. The weekly schedule and PR
+publication remain disabled. Local regression suite: **37 tests passed**.

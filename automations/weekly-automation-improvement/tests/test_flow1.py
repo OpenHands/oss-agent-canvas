@@ -5,7 +5,7 @@ import uuid
 import pytest
 
 from test_automation import app, arguments, candidate, snapshot
-from flow1 import findings
+from flow1 import estimated_cost, findings
 
 
 SIGNAL = str(uuid.UUID(int=10))
@@ -96,7 +96,15 @@ def test_flow1_finding_goes_directly_to_sol_with_evidence(tmp_path, monkeypatch)
 
     def model(args, model, policy, context, name, schema):
         calls.append((model, name, context))
-        return {"proposals": []}, {"model": model}
+        return {
+            "proposals": [],
+            "rejections": [
+                {
+                    "finding_id": context["findings"][0]["id"],
+                    "reason": "The observed failure does not establish a source defect.",
+                }
+            ],
+        }, {"model": model}
 
     monkeypatch.setattr(app, "call_model", model)
     args = arguments(tmp_path / "review", input=path)
@@ -105,6 +113,59 @@ def test_flow1_finding_goes_directly_to_sol_with_evidence(tmp_path, monkeypatch)
     assert calls[0][2]["findings"][0]["evidence"] == ["s1"]
     assert "FAILED" in json.dumps(calls[0][2]["cases"])
     assert "payload" not in calls[0][2]["cases"][0]["prior_signals_unverified"][0]
+    assert json.loads((args.output / "report.json").read_text())["rejected_findings"][
+        0
+    ]["reason"]
+
+
+def test_cost_estimate_counts_fresh_cached_output_and_distinct_attempts():
+    pricing = {
+        "input_usd_per_million": 0.05,
+        "cached_input_usd_per_million": 0.01,
+        "output_usd_per_million": 0.3,
+    }
+    run = {
+        "run_id": "a",
+        "updated_at": "2026-10-22T00:00:00Z",
+        "input_tokens": 1000000,
+        "cache_read_tokens": 200000,
+        "output_tokens": 100000,
+    }
+    older = run | {"input_tokens": 500000, "updated_at": "2026-10-21T00:00:00Z"}
+    retry = run | {"run_id": "b"}
+    assert estimated_cost([run, older, retry], pricing) == pytest.approx(0.144)
+    assert estimated_cost([run], None) is None
+    assert estimated_cost([run | {"cache_read_tokens": 2000000}], pricing) is None
+    assert (
+        estimated_cost(
+            [run | {"input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0}],
+            pricing,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "rejections",
+    [
+        [],
+        [{"finding_id": "foreign", "reason": "No defect"}],
+        [{"finding_id": "c1f1", "reason": ""}],
+    ],
+)
+def test_coordinator_cannot_silently_drop_a_finding(tmp_path, monkeypatch, rejections):
+    path = tmp_path / "frozen.json"
+    path.write_text(json.dumps(frozen()))
+    monkeypatch.setattr(
+        app,
+        "call_model",
+        lambda *args: ({"proposals": [], "rejections": rejections}, {}),
+    )
+    args = arguments(tmp_path / "review", input=path)
+    with pytest.raises(ValueError, match="Partial analysis"):
+        app.run(args)
+    report = json.loads((args.output / "report.json").read_text())
+    assert report["errors"][0]["stage"] == "coordinator"
 
 
 @pytest.mark.parametrize("status", ["FAILED", "PENDING", "PROCESSING"])

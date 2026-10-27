@@ -20,6 +20,32 @@ def signal_definition(value, project_id):
     return value
 
 
+def estimated_cost(runs, pricing):
+    if not pricing:
+        return None
+    latest = {
+        run["run_id"]: run
+        for run in sorted(runs, key=lambda run: timestamp(run["updated_at"]))
+    }
+    total = 0.0
+    for run in latest.values():
+        input_tokens = int(run.get("input_tokens", 0))
+        cached_tokens = int(run.get("cache_read_tokens", 0))
+        output_tokens = int(run.get("output_tokens", 0))
+        if (
+            min(input_tokens, cached_tokens, output_tokens) < 0
+            or cached_tokens > input_tokens
+            or input_tokens + output_tokens == 0
+        ):
+            return None
+        total += (
+            (input_tokens - cached_tokens) * pricing["input_usd_per_million"]
+            + cached_tokens * pricing["cached_input_usd_per_million"]
+            + output_tokens * pricing["output_usd_per_million"]
+        ) / 1_000_000
+    return total
+
+
 def findings(snapshot, sample):
     definition = signal_definition(snapshot["flow1_signal"], snapshot["project_id"])
     profile = snapshot["flow1_profile"]
@@ -150,6 +176,9 @@ def findings(snapshot, sample):
         "runs": list(latest.values()),
         "event_ids": sorted(event_ids),
         "reported_cost_usd": None,
+        "estimated_cost_usd": estimated_cost(runs, snapshot.get("flow1_pricing")),
+        "pricing": snapshot.get("flow1_pricing"),
+        "estimated_cost_scope": "all frozen runs of this Signal version, before credits; not a billing receipt",
         "seconds": None,
         "coverage": "all_collected_traces; model judgment is not task-quality proof",
     }

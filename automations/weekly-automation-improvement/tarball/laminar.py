@@ -9,6 +9,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from pathlib import Path
 
 from common import encode, redact, timestamp, write_json
 
@@ -175,6 +176,9 @@ class Laminar:
             snapshot["analysis_backend"] = "flow1"
             snapshot["flow1_signal"] = definition
             snapshot["flow1_profile"] = profile
+            snapshot["flow1_pricing"] = json.loads(
+                Path(__file__).with_name("flow1-pricing.json").read_text()
+            )
             snapshot["selection"]["frame"] += (
                 "; restricted to conversations with a run of this Signal version, "
                 "including pending/failed runs, without weighting by findings"
