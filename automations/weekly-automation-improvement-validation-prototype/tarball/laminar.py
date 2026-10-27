@@ -66,10 +66,11 @@ class Laminar:
             raise ValueError("Remote Laminar requires HTTPS")
         self.measurements = []
 
-    def request(self, url, body=None, timeout=30):
+    def request(self, url, body=None, timeout=30, method=None):
         request = urllib.request.Request(
             url,
             data=encode(body).encode() if body is not None else None,
+            method=method,
             headers={
                 "Authorization": "Bearer " + self.key,
                 "Content-Type": "application/json",
