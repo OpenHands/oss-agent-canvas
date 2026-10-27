@@ -1,0 +1,20 @@
+agent_profile_id: null
+enabled: false
+entrypoint: python3 launch.py --input /var/lib/agent-canvas/flow1-self-improvement-20261027/validation-input-v2.json
+  --evaluate-fix --output /var/lib/agent-canvas/flow1-self-improvement-20261027/native-worker-v2
+keep_alive: false
+model: flow1-telemetry-canary
+name: "Weekly Automation Improvement \u2014 validation prototype"
+observability_associations: null
+preset_metadata: null
+prompt: null
+setup_script_path: null
+state: INACTIVE
+tarball_source:
+  type: internal
+  url: null
+timeout: 300
+trigger:
+  schedule: 0 8 * * 1
+  timezone: UTC
+  type: cron
