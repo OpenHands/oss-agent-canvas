@@ -1,10 +1,9 @@
 agent_profile_id: null
 enabled: false
-entrypoint: python3 launch.py --input /var/lib/agent-canvas/flow1-self-improvement-20261027/native-v4-input/snapshot-with-source.json
-  --output /var/lib/agent-canvas/flow1-self-improvement-20261027/native-worker-v4-edits
+entrypoint: python3 launch.py --analyzer flow1
 keep_alive: false
 model: flow1-telemetry-canary
-name: "Weekly Automation Improvement \u2014 validation prototype"
+name: "Weekly Automation Improvement \u2014 prototype (manual)"
 observability_associations: null
 preset_metadata: null
 prompt: null
