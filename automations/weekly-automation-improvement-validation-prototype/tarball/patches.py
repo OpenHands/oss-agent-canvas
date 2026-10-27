@@ -35,7 +35,8 @@ def patch_from_edits(source, edits):
         ):
             raise ValueError("Invalid, duplicate or out-of-scope source edit")
         original = source["files"][path]
-        if original.count(before) != 1:
+        position = original.find(before)
+        if position < 0 or position != original.rfind(before):
             raise ValueError("Source edit must match exactly one location")
         updated = original.replace(before, after, 1)
         pieces.append(f"diff --git a/{path} b/{path}\n")
@@ -182,11 +183,12 @@ def propose_fix(args, report, snapshot):
     checks = config["checks"]
     if (
         not isinstance(checks, list)
-        or not 1 <= len(checks) <= 4
+        or not 2 <= len(checks) <= 4
         or not any(check.get("baseline") == "fail" for check in checks)
+        or not any(check.get("baseline") == "pass" for check in checks)
     ):
         raise ValueError(
-            "Configure at most four checks, including a baseline-failing regression"
+            "Configure two to four checks, including a baseline-failing regression and a passing control"
         )
     if any(check.get("baseline") not in ("pass", "fail") for check in checks):
         raise ValueError("Every check needs an expected baseline outcome")
