@@ -38,7 +38,11 @@ fi
 echo "[setup] Creating isolated virtual environment"
 # Pin >=3.12 so uv doesn't default to an older system Python (e.g. macOS
 # CommandLineTools 3.9), which can't satisfy openhands-sdk's requires-python.
-uv venv .venv --python '>=3.12' --quiet
+# --allow-existing: plugin runs execute inside the SHA-pinned plugin cache,
+# which persists across runs, so .venv already exists on every run after the
+# first. Without it uv prompts (and aborts non-interactively) instead of
+# reusing the environment, failing every subsequent run at the same ref.
+uv venv .venv --python '>=3.12' --quiet --allow-existing
 
 echo "[setup] Installing OpenHands SDK from PyPI (version: $SDK_VERSION)"
 uv pip install --quiet \
