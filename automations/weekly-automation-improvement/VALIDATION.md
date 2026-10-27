@@ -33,12 +33,15 @@ It collected and triaged the real findings, then correctly blocked repair of the
 old, disabled automation because its deployed legacy bundle had no unique source
 match. That limitation remains visible; no arbitrary current plugin was substituted.
 Active plugin source resolution was verified during the earlier rollout.
+The first live grouped run `d83913a8-95f1-4201-9762-8f582eb0ea77` completed,
+persisted the pending backlog and that automation's completed weekly slot, and
+reported the same source mismatch without publishing.
 Final native dry-run `5c2137f0-1850-4796-bb25-9f06cdcfd066` rechecked the updated
 worker. Sampling was then disabled explicitly (`sampleRate: null`); live readback
 verified active Signal version 7 with the trigger, filter, instruction and LLM
 profile preserved.
 
-All **84 tests pass**; Ruff, compilation and whitespace checks pass.
+All **86 tests pass**; Ruff, compilation and whitespace checks pass.
 The tests cover two independent automation PR slots, retained unselected backlog,
 failed publication isolation/reservation, GitHub marker recovery, dry-run state
 isolation, unique-conversation counts, clustering/signature fallback, validated

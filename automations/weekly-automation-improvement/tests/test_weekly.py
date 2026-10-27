@@ -629,3 +629,38 @@ def test_check_draft_applies_and_checks_patch_without_network(
     assert result["status"] == "mechanical_checks_passed"
     assert result["behavioral_evaluation"] == "not_performed"
     assert (checkout / "value.py").read_text() == "VALUE = 3\n"
+
+
+def test_legacy_event_markers_recover_automation_limit_for_other_pending_events(
+    configured_source, tmp_path, monkeypatch
+):
+    records = [record(1), record(2), record(3, automation=2)]
+    config, calls = prepare_grouped(configured_source, tmp_path, monkeypatch, records)
+    monkeypatch.setattr(
+        weekly,
+        "existing_prs",
+        lambda r: [
+            {
+                "body": "<!-- automation-improvement-event: "
+                + records[0]["event"]["id"]
+                + " -->",
+                "createdAt": weekly.dt.datetime.now(weekly.dt.UTC).isoformat(),
+            }
+        ],
+    )
+    result = weekly.run(config)
+    assert (
+        result["automations"][0]["status"]
+        == "automation_week_already_completed_or_reserved"
+    )
+    assert all(call[1] == records[2]["owner"]["automation_id"] for call in calls)
+
+
+def test_failed_reanalysis_does_not_reuse_older_finding():
+    old = record()
+    identifier = old["event"]["id"]
+    state = {"events": {}, "backlog": {identifier: old}}
+    current = inventory([])
+    current["latest_runs"] = [old["run"] | {"status": "FAILED"}]
+    assert weekly.update_backlog(state, current, []) == []
+    assert not state["backlog"]
