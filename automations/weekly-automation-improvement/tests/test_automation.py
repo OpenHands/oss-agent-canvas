@@ -1,5 +1,6 @@
 import copy
 import importlib.util
+import io
 import json
 import random
 import sys
@@ -49,6 +50,45 @@ def arguments(tmp_path, **overrides):
         publish_fix=False,
     )
     return SimpleNamespace(**(values | overrides))
+
+
+@pytest.mark.parametrize("proxy_key", ["dedicated-proxy-key", None])
+def test_model_credentials_with_inherited_host_key(tmp_path, monkeypatch, proxy_key):
+    common = importlib.import_module("common")
+    monkeypatch.setenv("LLM_API_KEY", "inherited-host-key")
+    monkeypatch.setenv("LLM_BASE_URL", "https://proxy.example.test")
+    if proxy_key:
+        monkeypatch.setenv("LITELLM_API_KEY", proxy_key)
+    else:
+        monkeypatch.delenv("LITELLM_API_KEY", raising=False)
+    expected = proxy_key or "inherited-host-key"
+
+    def respond(request, timeout):
+        assert request.full_url == "https://proxy.example.test/v1/responses"
+        assert request.get_header("Authorization") == "Bearer " + expected
+        response = io.BytesIO(
+            json.dumps(
+                {
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "name": "report",
+                            "arguments": '{"findings":[]}',
+                        }
+                    ]
+                }
+            ).encode()
+        )
+        response.headers = {}
+        return response
+
+    monkeypatch.setattr(common.urllib.request, "urlopen", respond)
+    result, _ = common.call_model(
+        arguments(tmp_path), "small", "Inspect", {}, "credentials", app.ANALYSIS
+    )
+    assert result == {"findings": []}
+    artifacts = "".join(path.read_text() for path in tmp_path.rglob("*.json"))
+    assert expected not in artifacts
 
 
 def sample():
@@ -269,6 +309,9 @@ def source(tmp_path):
     command(["git", "config", "user.name", "Test"], checkout)
     (checkout / "value.py").write_text("VALUE = 3\n")
     (checkout / "check.py").write_text("from value import VALUE\nassert VALUE == 4\n")
+    (checkout / "healthy.py").write_text(
+        "from value import VALUE\nassert isinstance(VALUE, int) and 0 < VALUE < 5\n"
+    )
     command(["git", "add", "."], checkout)
     command(["git", "commit", "-qm", "baseline"], checkout)
     config = {
@@ -283,7 +326,12 @@ def source(tmp_path):
                 "name": "regression",
                 "argv": [sys.executable, "check.py"],
                 "baseline": "fail",
-            }
+            },
+            {
+                "name": "healthy control",
+                "argv": [sys.executable, "healthy.py"],
+                "baseline": "pass",
+            },
         ],
     }
     path = tmp_path / "source.json"
@@ -316,6 +364,91 @@ def fix_report(patch):
 PATCH = "diff --git a/value.py b/value.py\n--- a/value.py\n+++ b/value.py\n@@ -1 +1 @@\n-VALUE = 3\n+VALUE = 4\n"
 
 
+@pytest.mark.parametrize("original", ["VALUE = 3\n", "VALUE = 3"])
+def test_exact_edits_generate_applicable_diff(tmp_path, original):
+    command(["git", "init", "-q"], tmp_path)
+    file = tmp_path / "value.py"
+    file.write_text(original)
+    patch = patch_module.patch_from_edits(
+        {"files": {"value.py": original}},
+        [{"path": "value.py", "before": "VALUE = 3", "after": "VALUE = 4"}],
+    )
+    path = tmp_path / "candidate.patch"
+    path.write_text(patch)
+    command(["git", "apply", "--check", str(path)], tmp_path)
+    command(["git", "apply", str(path)], tmp_path)
+    assert file.read_text() == original.replace("3", "4")
+
+
+@pytest.mark.parametrize(
+    "edits",
+    [
+        [{"path": "value.py", "before": "missing", "after": "new"}],
+        [{"path": "value.py", "before": "repeat", "after": "new"}],
+        [{"path": "other.py", "before": "repeat", "after": "new"}],
+        [{"path": "../value.py", "before": "repeat", "after": "new"}],
+        [{"path": "value.py", "before": "", "after": "new"}],
+        [{"path": "value.py", "before": "repeat", "after": "repeat"}],
+        [{"path": "value.py", "before": "repeat\nrepeat\n", "after": "new"}] * 2,
+    ],
+)
+def test_unsafe_or_ambiguous_edits_are_rejected(edits):
+    with pytest.raises(ValueError):
+        patch_module.patch_from_edits(
+            {"files": {"value.py": "repeat\nrepeat\n"}}, edits
+        )
+
+
+def test_overlapping_source_matches_are_ambiguous():
+    with pytest.raises(ValueError, match="exactly one location"):
+        patch_module.patch_from_edits(
+            {"files": {"value.py": "aaa"}},
+            [{"path": "value.py", "before": "aa", "after": "b"}],
+        )
+
+
+def test_coordinator_edits_reach_regression_checks(source, tmp_path, monkeypatch):
+    checkout, config_path, _ = source
+    value = snapshot()
+    value["source"] = load_source(config_path)
+    path = tmp_path / "snapshot.json"
+    path.write_text(encode(value))
+    args = arguments(
+        tmp_path / "review", input=path, source_config=config_path, evaluate_fix=True
+    )
+
+    def model(args, model, policy, context, name, schema):
+        if name == "analysis-c1":
+            return {"findings": [candidate()]}, {}
+        return {
+            "proposals": [
+                {
+                    "finding_ids": ["c1f1"],
+                    "title": "Correct the value",
+                    "hypothesis": "Use the required value",
+                    "evaluation_plan": "Run the regression",
+                    "edits": [
+                        {
+                            "path": "value.py",
+                            "before": "VALUE = 3",
+                            "after": "VALUE = 4",
+                        }
+                    ],
+                }
+            ],
+            "rejections": [],
+        }, {}
+
+    monkeypatch.setattr(app, "call_model", model)
+    app.run(args)
+    report = json.loads((args.output / "report.json").read_text())
+    assert report["errors"] == []
+    assert report["fix"]["baseline"][0]["exit_code"] != 0
+    assert report["fix"]["candidate"][0]["exit_code"] == 0
+    assert report["publication"] == "not_published"
+    assert (checkout / "value.py").read_text() == "VALUE = 3\n"
+
+
 def test_fix_validation_uses_isolated_worktrees_and_keeps_baseline_unchanged(
     source, tmp_path
 ):
@@ -326,12 +459,29 @@ def test_fix_validation_uses_isolated_worktrees_and_keeps_baseline_unchanged(
     assert result["status"] == "checks_passed_not_task_quality_proven"
     assert result["baseline"][0]["exit_code"] != 0
     assert result["candidate"][0]["exit_code"] == 0
+    assert result["baseline"][1]["exit_code"] == 0
+    assert result["candidate"][1]["exit_code"] == 0
     assert (checkout / "value.py").read_text() == "VALUE = 3\n"
     assert "pr_url" not in result
     assert (
         json.loads((args.output / "validation.json").read_text())["status"]
         == result["status"]
     )
+
+
+@pytest.mark.parametrize("keep", ["pass", "fail"])
+def test_publication_requires_regression_and_healthy_control(source, tmp_path, keep):
+    _, path, config = source
+    config["checks"] = [
+        check for check in config["checks"] if check["baseline"] == keep
+    ]
+    path.write_text(encode(config))
+    args = arguments(tmp_path / "review", source_config=path, publish_fix=True)
+    with pytest.raises(
+        ValueError, match="baseline-failing regression and a passing control"
+    ):
+        propose_fix(args, fix_report(PATCH), {"source": load_source(path)})
+    assert not args.output.exists()
 
 
 def test_patch_outside_configured_allowlist_never_runs_checks(

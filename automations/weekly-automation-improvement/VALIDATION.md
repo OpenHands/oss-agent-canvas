@@ -88,7 +88,7 @@ citations in 14.452 seconds including checks, at $0.0044774 proxy-reported cost.
 Laminar credentials were absent, requests/responses and usage were retained,
 and no PR was published. These remain synthetic development controls.
 
-## Tests and remaining integration
+## October 19 integration status (historical)
 
 Sixteen targeted tests cover random conversation sampling, retained failed
 selections, SQL excerpt lengths, behavior-preserving message projection,
@@ -211,3 +211,91 @@ the shared OSS service has been upgraded or fresh automation attribution verifie
 Private receipts, snapshots, prompts, responses and canary evidence are under
 `~/experiments/laminar-self-improvement-20261027`. The weekly schedule and PR
 publication remain disabled. Local regression suite: **37 tests passed**.
+
+## October 27: shared restart and calibrated native execution
+
+The shared OSS launcher was upgraded to Agent Server/SDK/tools/workspace 1.58.2
+and the pinned 1.58.2 Docker image above. A separate canary first passed using
+the exact unconstrained launcher dependency resolution. No automation jobs were
+active at cutover. Before installing the version settings, the service was stopped,
+the 1.3 GB SQLite database was backed up and passed `quick_check`, and mutable SDK
+metadata/settings were archived. Root-only recovery files are retained at
+`/var/backups/agent-canvas-flow1-20261027/restart-20261027T101802Z` on the VM.
+
+Health, readiness, REST and WebSocket authentication checks passed. A native
+manual-only automation, run `77221c10-7ec1-4377-9b41-715e2f6ec304`, completed and
+sent its completion callback. Its conversation
+`1b1018d8-8800-4b8e-a03d-b36d9ab5a538` has LLM/tool spans in trace
+`d4ea01c9-6191-569d-22e8-89961d02df93`, correctly attributed to that automation
+and run. The terminal assertion confirmed that the tracing credential was absent
+from the tool environment. Its proxy-reported inference cost was $0.001820375.
+Sampled catalog errors came from a pre-existing zero-byte metadata file, byte-identical
+to the pre-upgrade backup; no historical metadata was deleted to make startup pass.
+
+Two prompt revisions reused the same three historical conversations; none were
+replaced based on findings. Version 3 produced two candidates: the unsupported
+terminal-failure claim and recovered command-shape friction. Sol rejected both.
+Version 4 excludes recovered friction and explicitly distinguishes reviewed-software
+errors from automation defects. It produced:
+
+- c1: a supported violation of the review's explicit no-file-modification rule,
+  with a confirmed temporary repository test file. Later cleanup does not erase
+  the original boundary violation; final task failure is not established.
+- c2: no event.
+- c3: a questionable locale comparison in a published review. Sol rejected it
+  because the worker's comparison excerpt is clipped and no material effect on
+  the review verdict is shown.
+
+Version 4's three native runs cost an estimated **$0.0198341 gross**. A fresh
+healthy automation control produced no event ($0.00027948 estimated); its worker
+replay made no Sol call. A separate diagnostic control with an honestly reported
+assertion failure also produced no event. That is an error-reporting control,
+not a positive defect example. Native Signal receipts are reused during replay;
+replaying them does not cause another Flow-1 charge. These are development cases,
+not independent held-out accuracy measurements.
+
+The real worker was uploaded and manually dispatched through the automation
+service. Its first attempt exposed an inherited-key conflict: `LLM_API_KEY`
+belonged to a different route and overrode the configured proxy key. It failed
+closed with HTTP 401 and a FAILED callback. The corrected worker prefers
+`LITELLM_API_KEY`; run `20546b69-a714-4f38-bdaa-013ab19ad7b6` then completed,
+rejecting the old unsupported candidate. Credentials stay in an owner-only VM
+configuration file loaded by a thin deployment launcher, outside the tarball and git;
+shared global custom secrets were not changed.
+
+The first version-4 replay proposed a relevant prompt change but emitted invalid
+diff hunk markers. The coordinator contract now requests exact text replacements.
+The worker requires each replacement to match once in an allowed frozen file and
+generates the unified diff itself, without a repair/model retry loop.
+
+Final native run `3102b5e9-f7ac-491b-b6ae-0dffa22f2db2` completed in **16.479s**
+of analysis wall time. Its single Sol call used 52,833 input / 684 output tokens,
+with **$0.138857** proxy-reported cost. It proposed one 1,385-byte patch to keep
+review-test adaptations outside the repository, and explicitly rejected c3.
+The generated patch applied to the pinned baseline, passed Python parsing and
+`git diff --check`, and stayed within the source allowlist. Its behavioral benefit
+has **not** been evaluated. An explicit publication attempt with the real proposal
+and missing regression checks stopped at the expected validation gate before any
+GitHub publication operation.
+
+The disabled manual prototype is automation
+`81aa02f5-da15-4b9c-9c07-9a903cc4f7fc` on the OSS VM. Its reusable entrypoint
+reads directly from Laminar, collects inputs before analysis and creates a new
+private output directory per run. A separate frozen replay retains the source
+snapshot and proposed patch for iteration. The shared default model/profile was
+restored after test setup; isolated canary processes and their SSH forward were stopped.
+Run `26de8107-c7eb-4cab-b239-f257cf0990da` also completed the reusable live-collection
+entrypoint: it read the current Signal-version frame directly from Laminar,
+froze the one recent analyzed conversation, made no Sol call and sent a successful
+completion callback. This is separate from the historical frozen-input replays.
+
+The regression suite now has **52 passing tests**, including credential precedence,
+exact-edit ambiguity/scope rejection, applicable diffs with and without a final
+newline, and the full coordinator-edit → baseline-fail/candidate-pass path.
+Publication requires both a failing regression and a passing control on the
+baseline, with all checks passing on the candidate; either category missing is rejected.
+Those synthetic checks validate mechanics, not the quality of the real prompt fix.
+Live Signal triggering, the weekly schedule and improvement PR publication remain
+off. Before enabling them, validate `conversation.arun` finish triggering on a
+bounded sample, configure source/revision attribution and run the proposed
+read-only-review behavioral regression plus a normal-review control.

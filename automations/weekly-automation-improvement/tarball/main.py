@@ -10,7 +10,7 @@ from pathlib import Path
 from common import bounded, call_model, encode, read_json, redact, write_json
 from flow1 import findings as flow1_findings
 from laminar import Laminar
-from patches import load_source, propose_fix
+from patches import load_source, patch_from_edits, propose_fix
 
 
 def object_schema(properties):
@@ -56,7 +56,10 @@ PROPOSAL = object_schema(
         "title": TEXT,
         "hypothesis": TEXT,
         "evaluation_plan": TEXT,
-        "patch": TEXT,
+        "edits": {
+            "type": "array",
+            "items": object_schema({"path": TEXT, "before": TEXT, "after": TEXT}),
+        },
     }
 )
 COORDINATION = object_schema(
@@ -352,8 +355,10 @@ def run(args):
                 args.coordinator,
                 POLICY
                 + "\nAct as the stronger coordinator: verify candidates against evidence and recovery. Return at most one concrete proposal or none. "
-                "Reference finding_ids. Include a falsifiable evaluation plan. If source is absent, patch MUST be empty and the proposal diagnostic only. "
-                "Source applies only to its configured automation_ids. With applicable source, propose one minimal unified git diff touching only supplied files. Source is the configured revision, not proven to be the executed revision. "
+                "Reference finding_ids. Include a falsifiable evaluation plan. If source is absent, edits MUST be empty and the proposal diagnostic only. "
+                "Source applies only to its configured automation_ids. With applicable source, supply at most four exact text replacements, at most one per supplied file. "
+                "Each edit has path, before and after; copy before verbatim with enough context to match exactly once. Do not output a diff or line numbers. "
+                "Source is the configured revision, not proven to be the executed revision. "
                 "Never claim a patch is validated. Do not produce workflow fixes for external outages or missing credentials. "
                 "Account for every finding: include it in a proposal or explain its rejection, citing the evidence or source that makes it unsupported or inapplicable.",
                 context,
@@ -375,11 +380,10 @@ def run(args):
                     raise ValueError("Coordinator cites invalid findings or fields")
                 if any(
                     not isinstance(proposal[field], str) or len(proposal[field]) > 20000
-                    for field in ("title", "hypothesis", "evaluation_plan", "patch")
+                    for field in ("title", "hypothesis", "evaluation_plan")
                 ):
                     raise ValueError("Invalid coordinator text or oversized patch")
-                if not source and proposal["patch"]:
-                    raise ValueError("Coordinator produced a patch without source")
+                proposal["patch"] = patch_from_edits(source, proposal["edits"])
             accepted = {
                 identifier
                 for proposal in proposals

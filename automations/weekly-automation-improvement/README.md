@@ -23,7 +23,9 @@ export LLM_BASE_URL=https://llm-proxy.eval.all-hands.dev
 # Set LMNR_PROJECT_API_KEY and LITELLM_API_KEY privately.
 ```
 
-`LLM_API_KEY` is an alternative to `LITELLM_API_KEY`. The project key controls
+`LITELLM_API_KEY` takes precedence over `LLM_API_KEY`, which is a fallback.
+This avoids routing the proxy request with an unrelated key inherited from the
+shared launcher. Match the chosen key to `LLM_BASE_URL`. The project key controls
 which SQL data is accessible; the project ID records provenance and builds links,
 and must match that key. Use a SQL-capable key, not an ingest-only key.
 
@@ -149,9 +151,12 @@ runs/events in SQL. Do not use `disabled: false` with an unrestricted live trigg
 as an accidental way to backfill all traffic.
 
 After representative validation, a separate configuration change can use
-`rootSpanFinished`, filter `span_names includes ["automation.conversation"]`,
+the `spanName` trigger for `conversation.arun`, filter
+`span_names includes ["automation.conversation"]`,
 and an explicit `sampleRate` (for example 5) for ongoing detection. This changes
-sampling/cost and should be measured before enabling the weekly worker. Run
+sampling/cost and should be measured before enabling the weekly worker. Analyze
+when execution finishes: the observed `automation.conversation` span ends at
+creation, before inference and tools, so its finish is too early. Run
 state/tokens are available through SQL, but that surface does not expose the
 effective provider model, elapsed time or billed cost; those stay **unknown** in
 the report, including when Laminar displays `$0.00`. Collection freezes the dated
@@ -169,14 +174,16 @@ bounded native production backfills completed with nonzero model usage: one
 finding and two no-event results. Frozen replay validated their citations and
 ownership; Sol rejected the finding as insufficient evidence for an automation
 patch. Rejections and their reasons are retained in `rejected_findings`.
-Fresh execution telemetry remains gated on upgrading the OSS VM's host Agent
-Server from 1.56.0 to a release containing
-[SDK #5557](https://github.com/OpenHands/software-agent-sdk/pull/5557), which forwards
-tracing configuration into Docker conversation runtimes. An isolated matched
-1.58.2 host/image canary passed real inference, tool execution, tracing and
-credential-isolation checks; the shared service still needs that matched upgrade.
-The Signal keeps its
-reserved manual trigger; this weekly schedule and publication remain disabled.
+The OSS VM's shared host and Docker image were upgraded together to pinned
+1.58.2 after isolated canaries, a database backup/integrity check and a backup
+of mutable SDK state. A native dispatcher run completed with fresh inference,
+tool spans and correct automation/run/conversation attribution. The tracing key
+was absent from its tool environment. This includes
+[SDK #5557](https://github.com/OpenHands/software-agent-sdk/pull/5557).
+The stricter Signal prompt was compared on the same three traces, plus a healthy
+fresh automation and an honestly reported tool-error control. These are small
+development checks, not a detector-accuracy benchmark. The Signal retains its
+reserved manual trigger; the schedule and publication remain disabled.
 
 ## One patch and configured validation
 
@@ -196,7 +203,11 @@ python3 automations/weekly-automation-improvement/tarball/main.py \
   --output /private/improvement/fix-review
 ```
 
-This performs one patch attempt in isolated baseline/candidate git worktrees.
+Sol supplies exact `path`/`before`/`after` replacements rather than diff hunk
+indexes. Each replacement must match exactly once in a permitted frozen file;
+the worker generates the unified diff. Duplicate file edits, ambiguous matches,
+unchanged replacements and oversized patches are rejected without another model
+call. This performs one patch attempt in isolated baseline/candidate git worktrees.
 Checks come from trusted configuration, never from model instructions. Include
 a regression expected to fail on the baseline and healthy-case checks expected
 to pass. Every candidate check must pass; timeouts, changed source and files

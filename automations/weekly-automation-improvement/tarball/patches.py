@@ -1,3 +1,4 @@
+import difflib
 import hashlib
 import json
 import os
@@ -6,6 +7,55 @@ import subprocess
 from pathlib import Path
 
 from common import read_json, redact, write_json
+
+
+def patch_from_edits(source, edits):
+    if not isinstance(edits, list) or len(edits) > 4:
+        raise ValueError("Expected at most four exact source edits")
+    if not edits:
+        return ""
+    if not source:
+        raise ValueError("Source edits require frozen source")
+    pieces, changed = [], set()
+    for edit in edits:
+        if not isinstance(edit, dict) or set(edit) != {"path", "before", "after"}:
+            raise ValueError("Invalid source edit fields")
+        path, before, after = (edit[key] for key in ("path", "before", "after"))
+        if (
+            not all(isinstance(value, str) for value in (path, before, after))
+            or path not in source["files"]
+            or not re.fullmatch(r"[\w./-]+", path)
+            or Path(path).is_absolute()
+            or ".." in Path(path).parts
+            or path.startswith("-")
+            or path in changed
+            or not before
+            or before == after
+            or max(len(before), len(after)) > 20000
+        ):
+            raise ValueError("Invalid, duplicate or out-of-scope source edit")
+        original = source["files"][path]
+        position = original.find(before)
+        if position < 0 or position != original.rfind(before):
+            raise ValueError("Source edit must match exactly one location")
+        updated = original.replace(before, after, 1)
+        pieces.append(f"diff --git a/{path} b/{path}\n")
+        for line in difflib.unified_diff(
+            original.splitlines(keepends=True),
+            updated.splitlines(keepends=True),
+            fromfile="a/" + path,
+            tofile="b/" + path,
+        ):
+            pieces.append(
+                line
+                if line.endswith("\n")
+                else line + "\n\\ No newline at end of file\n"
+            )
+        changed.add(path)
+    patch = "".join(pieces)
+    if len(patch.encode()) > 20000:
+        raise ValueError("Generated patch exceeds its byte budget")
+    return patch
 
 
 def command(argv, cwd=None, strip=True, **kwargs):
@@ -133,11 +183,12 @@ def propose_fix(args, report, snapshot):
     checks = config["checks"]
     if (
         not isinstance(checks, list)
-        or not 1 <= len(checks) <= 4
+        or not 2 <= len(checks) <= 4
         or not any(check.get("baseline") == "fail" for check in checks)
+        or not any(check.get("baseline") == "pass" for check in checks)
     ):
         raise ValueError(
-            "Configure at most four checks, including a baseline-failing regression"
+            "Configure two to four checks, including a baseline-failing regression and a passing control"
         )
     if any(check.get("baseline") not in ("pass", "fail") for check in checks):
         raise ValueError("Every check needs an expected baseline outcome")
