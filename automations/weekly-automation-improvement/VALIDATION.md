@@ -1,3 +1,52 @@
+# Per-automation aggregation prototype — October 27, 2026
+
+The weekly path now collects all compatible finding events, maintains a pending
+backlog and gives each automation one Luna triage pass and at most one Sol repair
+attempt/draft PR per week. Pending unselected events survive across weeks. Model
+and publication failures are isolated per automation; reservations and PR markers
+prevent another publication for that automation/week.
+
+A read-only production collection returned two findings for one historical PR
+reviewer, with no attribution errors. Six compatible Signal attempts included one
+failure, three completed no-event analyses and two completed finding analyses.
+Signal versions 4–6 shared the detector instruction/schema/route despite sampling
+and trigger changes. Native Signal history uses `llmModel` and
+`structuredOutputSchema`; the collector normalizes these before checking compatibility.
+
+On frozen input, the initial Luna pass selected a weak review-wording complaint
+and missed an explicit no-file-modification violation labeled recovered. A prompt
+revision clarified that cleanup does not undo a prohibition violation. Repeating
+on identical data then prioritized that violation first, retaining the weaker
+lead with uncertainty. The revised call took 4.585 seconds, 1,396 input / 207
+output tokens, and cost $0.000274725 as reported by the proxy.
+
+Sol received both representative trajectories plus the aggregation and previously
+approved frozen source. It proposed one repair and rejected the weaker locale
+complaint because the comparison evidence was clipped. The call took 21.846
+seconds, 53,482 input / 614 output tokens, and cost $0.1397795 at the proxy.
+Patch application, source scope, whitespace and changed Python syntax passed in a
+detached worktree using `--check-draft`. No PR was pushed; no behavioral evaluation
+or deployed benefit is established by this development replay.
+
+Native dry-run `fce7cc47-28c8-4e58-bdc1-27c2ecee2f4d` completed on the OSS VM.
+It collected and triaged the real findings, then correctly blocked repair of the
+old, disabled automation because its deployed legacy bundle had no unique source
+match. That limitation remains visible; no arbitrary current plugin was substituted.
+Active plugin source resolution was verified during the earlier rollout.
+Final native dry-run `5c2137f0-1850-4796-bb25-9f06cdcfd066` rechecked the updated
+worker. Sampling was then disabled explicitly (`sampleRate: null`); live readback
+verified active Signal version 7 with the trigger, filter, instruction and LLM
+profile preserved.
+
+All **84 tests pass**; Ruff, compilation and whitespace checks pass.
+The tests cover two independent automation PR slots, retained unselected backlog,
+failed publication isolation/reservation, GitHub marker recovery, dry-run state
+isolation, unique-conversation counts, clustering/signature fallback, validated
+Luna citations, sampling-only cohort compatibility, frozen older definitions, and
+mechanical validation without publication. Historical checks follow below.
+
+---
+
 # Weekly MVP validation — October 27, 2026
 
 Sampling was subsequently increased from 5% to 50% with the configurable

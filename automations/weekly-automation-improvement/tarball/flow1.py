@@ -47,7 +47,11 @@ def estimated_cost(runs, pricing):
 
 
 def findings(snapshot, sample):
-    definition = signal_definition(snapshot["flow1_signal"], snapshot["project_id"])
+    definition = signal_definition(
+        sample.get("flow1_signal", snapshot["flow1_signal"]), snapshot["project_id"]
+    )
+    if definition["id"] != snapshot["flow1_signal"]["id"]:
+        raise ValueError("Representative definition belongs to another Signal")
     profile = snapshot["flow1_profile"]
     if (
         profile["id"] != definition["llmProfileId"]
@@ -192,5 +196,10 @@ def findings(snapshot, sample):
         "pricing": snapshot.get("flow1_pricing"),
         "estimated_cost_scope": "all frozen runs of this Signal version, before credits; not a billing receipt",
         "seconds": None,
-        "coverage": "all_collected_traces; model judgment is not task-quality proof",
+        "coverage": (
+            "selected_finding_traces; other conversation traces are context only"
+            if "flow1_required_trace_ids" in sample
+            else "all_collected_traces"
+        )
+        + "; model judgment is not task-quality proof",
     }

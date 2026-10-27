@@ -11,5 +11,7 @@
   "github_token_secret": "GITHUB_TOKEN",
   "credentials_file": "/private/automation-improvement/credentials.json",
   "state_dir": "/private/automation-improvement/state",
-  "publish_drafts": true
+  "publish_drafts": true,
+  "triage_model": "openai/gpt-6-luna",
+  "repair_model": "openai/gpt-6.1-sol"
 }

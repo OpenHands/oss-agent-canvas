@@ -359,6 +359,7 @@ def run(args):
                 if any(finding["case_id"] == sample["case_id"] for finding in findings)
             ],
             "source": source,
+            "automation_aggregation": snapshot.get("aggregation"),
             "existing_improvement_prs": getattr(
                 args, "existing_prs", snapshot.get("existing_improvement_prs", [])
             ),
@@ -375,6 +376,8 @@ def run(args):
                 "Source is the configured revision, not proven to be the executed revision. "
                 "Never claim a patch is validated. Do not produce workflow fixes for external outages or missing credentials. "
                 "If an existing improvement PR already addresses a finding, reject that finding and cite the existing PR. "
+                "Aggregated Signal summaries and Luna rankings are unverified leads. Use their recurrence counts as context, not proof of root cause. "
+                "Inspect representative trace evidence and current source before proposing one coherent repair. "
                 "Account for every finding: include it in a proposal or explain its rejection, citing the evidence or source that makes it unsupported or inapplicable.",
                 context,
                 "coordinator",
@@ -442,6 +445,7 @@ def run(args):
         else "model_judgments_not_independently_validated",
         "publication": "disabled",
         "source_revision": source["revision"] if source else None,
+        "aggregation": snapshot.get("aggregation"),
     }
     for finding in findings:
         sample = next(
@@ -459,7 +463,12 @@ def run(args):
             snapshot["app_url"] + f"/project/{snapshot['project_id']}/traces/{value}"
             for value in sample["trace_ids"]
         ]
-    if args.evaluate_fix or args.publish_fix or getattr(args, "publish_draft", False):
+    if (
+        args.evaluate_fix
+        or args.publish_fix
+        or getattr(args, "publish_draft", False)
+        or getattr(args, "check_draft", False)
+    ):
         try:
             if not proposals or not proposals[0]["patch"]:
                 report["fix"] = {"status": "no_supported_patch"}
@@ -605,13 +614,16 @@ def argument_parser():
     parser.add_argument("--evaluate-fix", action="store_true")
     parser.add_argument("--publish-fix", action="store_true")
     parser.add_argument("--publish-draft", action="store_true")
+    parser.add_argument("--check-draft", action="store_true")
     return parser
 
 
 def main():
     parser = argument_parser()
     args = parser.parse_args()
-    if args.publish_draft and (args.evaluate_fix or args.publish_fix):
+    if (args.publish_draft or args.check_draft) and (
+        args.evaluate_fix or args.publish_fix
+    ):
         parser.error("--publish-draft does not run behavioral evaluation")
     if not args.input and args.analyzer == "flow1":
         try:
