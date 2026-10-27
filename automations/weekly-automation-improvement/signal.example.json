@@ -64,5 +64,5 @@
   "model": "flow-1",
   "disabled": true,
   "llmProfileId": "REPLACE_WITH_CLOUD_FLOW1_PROFILE_UUID",
-  "sampleRate": 5
+  "sampleRate": 50
 }

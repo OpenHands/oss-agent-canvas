@@ -478,3 +478,36 @@ def test_repository_index_includes_plugins_without_symlinks(tmp_path):
     command(["git", "commit", "-qm", "plugin"], tmp_path)
     index = sources.repository_index(tmp_path, "HEAD")
     assert set(index["plugins/reviewer"]) == {"scripts/worker.py"}
+
+
+@pytest.mark.parametrize("previous,patch_count", [(5, 1), (50, 0)])
+def test_configure_signal_rate_only_and_idempotency(previous, patch_count):
+    from configure_signal import configure_rate
+
+    definition = frozen()["flow1_signal"] | {"sampleRate": previous, "disabled": False}
+
+    class Client:
+        base = "https://example.test"
+        patches = []
+
+        def request(self, url, body=None, method=None):
+            assert url == self.base + "/v1/signals/" + SIGNAL
+            if body is not None:
+                assert method == "PATCH" and body == {"sampleRate": 50}
+                self.patches.append(body)
+                definition.update(body)
+                definition["version"] += 1
+            return copy.deepcopy(definition)
+
+    client = Client()
+    result = configure_rate(client, definition["projectId"], SIGNAL, 50)
+    assert result["sample_rate"] == 50 and result["disabled"] is False
+    assert len(client.patches) == patch_count
+
+
+def test_configure_signal_rejects_invalid_percentage_without_network():
+    from configure_signal import configure_rate
+
+    for rate in (-1, 101, 0.5, True):
+        with pytest.raises(ValueError, match="integer percentage"):
+            configure_rate(None, "", SIGNAL, rate)

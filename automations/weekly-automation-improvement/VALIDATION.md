@@ -1,5 +1,11 @@
 # Weekly MVP validation — October 27, 2026
 
+Sampling was subsequently increased from 5% to 50% with the configurable
+`--sample-rate` setup command. Public API readback verified active version 6
+and unchanged trigger, filter, prompt and profile. All 71 tests pass, including
+percentage validation, percentage-only updates and same-value idempotency.
+The original 5% rollout validation below is retained as historical evidence.
+
 The production Signal is active at version 5, using the execution-finish trigger,
 automation filter and 5% sampling. A fresh native canary produced an automatic
 completed Flow-1 run with 8,762 input and 256 output tokens and no finding. No

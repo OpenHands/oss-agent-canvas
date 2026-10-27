@@ -8,7 +8,7 @@ evaluations, automatic merges and deployment are deferred.
 
 ## Weekly path
 
-1. Upstream, the dedicated Signal runs Flow-1 on 5% of matching traces when
+1. Upstream, the dedicated Signal runs Flow-1 on 50% of matching traces when
    `conversation.arun` finishes, filtered to traces containing
    `automation.conversation`. The creation span itself finishes too early.
 2. Monday at 08:00 UTC, `weekly.py` reads the previous seven days of the current
@@ -82,13 +82,28 @@ silently overwritten. A week with no findings completes without a model call.
 ## Laminar setup
 
 [signal.example.json](signal.example.json) describes the six-field detector
-payload, execution-finish trigger, automation filter and 5% sample. It is paused
+payload, execution-finish trigger, automation filter and 50% sample. It is paused
 as an installation template. Supply the workspace's Laminar Cloud Flow-1 profile
 and activate it deliberately after checking access and sampling. The configured
 production Signal is `fadaa9d7-a70a-42df-ab63-04c88f3b77ac` in project
 `e41ee96e-851b-45ad-bfe8-b986861c331d`. The October 27 configuration is active,
-version 5. Its automatic path produced a completed, nonzero-usage analysis on a
-fresh native automation run. Rotate its Cloud credential before November 15.
+version 6 after increasing `sampleRate` from 5 to 50. The original 5% automatic
+path produced a completed, nonzero-usage analysis on a fresh native automation run. Rotate its Cloud credential before November 15.
+
+`sampleRate` is the upstream percentage parameter (0–100). Change it explicitly
+with the setup command; the weekly reader does not overwrite the Signal:
+
+```bash
+python3 automations/weekly-automation-improvement/tarball/configure_signal.py \
+  --config /private/weekly.json --sample-rate 50
+```
+
+This patches only the percentage and reads back the Signal to verify its trigger,
+filter, prompt, profile and enabled state remain unchanged. Reapplying the same
+value avoids creating another version. It affects future sampled analyses and
+performs no historical backfill. At the previously measured traffic and token
+usage, 50% sampling is estimated at roughly $9–18/month in Flow-1 inference,
+excluding subscriptions and downstream Sol. This is an estimate, not a cost cap.
 
 Reports retain native run statuses and usage; Flow-1 billed cost, effective model
 and latency are not exposed by this SQL surface. Token-rate estimates use the
