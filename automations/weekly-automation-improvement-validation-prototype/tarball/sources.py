@@ -65,7 +65,9 @@ def github_auth(config):
 def repository_index(checkout, revision):
     directories = {}
     listing = command(
-        ["git", "ls-tree", "-rz", revision, "--", "automations/"], checkout, strip=False
+        ["git", "ls-tree", "-rz", revision, "--", "automations/", "plugins/"],
+        checkout,
+        strip=False,
     )
     for entry in listing.split("\0"):
         if not entry:
@@ -73,7 +75,9 @@ def repository_index(checkout, revision):
         header, path = entry.split("\t", 1)
         mode, _, digest = header.split()
         parts = PurePosixPath(path).parts
-        if mode not in ("100644", "100755") or len(parts) < 4 or parts[2] != "tarball":
+        if mode not in ("100644", "100755") or len(parts) < 3:
+            continue
+        if parts[0] == "automations" and (len(parts) < 4 or parts[2] != "tarball"):
             continue
         if PurePosixPath(path).suffix not in (
             ".py",
@@ -86,7 +90,7 @@ def repository_index(checkout, revision):
         ):
             continue
         directory = "/".join(parts[:2])
-        relative = "/".join(parts[3:])
+        relative = "/".join(parts[3:] if parts[0] == "automations" else parts[2:])
         directories.setdefault(directory, {})[relative] = (path, digest)
     return directories
 
@@ -95,6 +99,26 @@ def resolve_source(config, sample, index):
     identifier = str(uuid.UUID(sample["automation_id"]))
     base = config["automation_api_url"]
     metadata = json.loads(native_request(base, "/v1/" + identifier))
+    if metadata.get("plugin_spec"):
+        plugin = metadata["plugin_spec"]["plugin"]
+        directory = plugin.get("repo_path", "")
+        if (
+            plugin.get("source") != "github:" + config["repository"]
+            or plugin.get("ref", "main") != config.get("base_branch", "main")
+            or len(PurePosixPath(directory).parts) != 2
+            or not directory.startswith("plugins/")
+            or directory not in index
+        ):
+            raise ValueError(
+                "Plugin source is outside the approved repository, branch or path"
+            )
+        return {
+            "directory": directory,
+            "files": sorted(path for path, _ in index[directory].values()),
+            "automation_name": metadata["name"],
+            "provenance": "declared_plugin_source; historical executed revision not verified",
+            "plugin": plugin,
+        }
     raw = native_request(base, "/v1/" + identifier + "/tarball")
     bundle = {}
     with tarfile.open(fileobj=io.BytesIO(raw), mode="r:*") as archive:

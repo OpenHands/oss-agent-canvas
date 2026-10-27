@@ -77,8 +77,11 @@ def source_config(config, snapshot, output):
         raise ValueError("Source origin differs from the approved repository")
     branch = config.get("base_branch", "main")
     command(["git", "check-ref-format", "--branch", branch], checkout)
-    command(["git", "fetch", "origin", branch], checkout)
-    revision = command(["git", "rev-parse", "FETCH_HEAD"], checkout)
+    reference = "refs/automation-improvement/base"
+    command(
+        ["git", "fetch", "origin", "+refs/heads/" + branch + ":" + reference], checkout
+    )
+    revision = command(["git", "rev-parse", reference], checkout)
     index = repository_index(checkout, revision)
     files, identifiers, samples, errors = set(), set(), [], []
     for sample in snapshot["samples"]:
@@ -92,7 +95,21 @@ def source_config(config, snapshot, output):
             continue
         try:
             resolved = resolve_source(config, sample, index)
-            files.update(resolved["files"])
+            proposed = files | set(resolved["files"])
+            if (
+                len(proposed) > 30
+                or sum(
+                    int(
+                        command(
+                            ["git", "cat-file", "-s", revision + ":" + path], checkout
+                        )
+                    )
+                    for path in proposed
+                )
+                > 250000
+            ):
+                raise ValueError("Selected source exceeds the 30-file/250 KB budget")
+            files = proposed
             identifiers.add(sample["automation_id"])
             sample["source_resolution"] = resolved
             samples.append(sample)
@@ -126,6 +143,8 @@ def source_config(config, snapshot, output):
 
 
 def run(config, *, dry_run=False, limit=3, seed=None):
+    if not 1 <= limit <= 3:
+        raise ValueError("Weekly runs may investigate one to three findings")
     load_environment(config)
     state_dir = Path(config["state_dir"]).expanduser()
     state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -184,7 +203,9 @@ def run_locked(config, state_dir, *, dry_run, limit, seed):
     args.output.mkdir(mode=0o700)
     snapshot = collect_events(Laminar(args), handled)
     summary = {
-        "status": "no_unhandled_findings",
+        "status": "findings_unavailable"
+        if snapshot["selection"]["selected_event_ids"]
+        else "no_unhandled_findings",
         "week": week,
         "output": str(output),
         "selection": snapshot["selection"],
@@ -230,6 +251,12 @@ def run_locked(config, state_dir, *, dry_run, limit, seed):
                     findings=len(report["findings"]),
                     proposals=len(report["proposals"]),
                     rejections=report["rejected_findings"],
+                    coordinator_measurements=[
+                        measurement
+                        for measurement in report["measurements"]
+                        if measurement.get("backend") != "persisted_flow1_signals"
+                    ],
+                    behavioral_evaluation="not_performed",
                 )
                 if report["proposals"]:
                     proposal = report["proposals"][0]
