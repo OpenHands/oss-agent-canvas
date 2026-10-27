@@ -117,7 +117,7 @@ def call_model(args, model, instruction, context, name, schema):
         raise ValueError(
             "Model input exceeds its byte budget; reduce the sample or evidence budget"
         )
-    key = os.environ.get("LLM_API_KEY") or os.environ.get("LITELLM_API_KEY")
+    key = os.environ.get("LITELLM_API_KEY") or os.environ.get("LLM_API_KEY")
     if not key:
         raise ValueError("LLM_API_KEY or LITELLM_API_KEY is required for --analyze")
     base = os.environ.get("LLM_BASE_URL") or os.environ.get("BASE_URL")
