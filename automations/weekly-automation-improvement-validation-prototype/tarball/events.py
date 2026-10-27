@@ -9,10 +9,10 @@ from pathlib import Path
 
 from common import encode, redact, timestamp, write_json
 from flow1 import estimated_cost, signal_definition
-from laminar import META, SESSION
+from laminar import META, SESSION, object_value
 
 
-def collect_events(client, handled):
+def collect_events(client, handled, *, aggregate=False):
     args = client.args
     until = timestamp(
         args.until or (dt.datetime.now(dt.UTC) - dt.timedelta(minutes=10)).isoformat()
@@ -28,8 +28,27 @@ def collect_events(client, handled):
         client.base + "/v1/llm-profiles/" + definition["llmProfileId"]
     )
     profile = {key: profile[key] for key in ("id", "provider", "config", "models")}
+    definitions = {str(definition["version"]): definition}
+    if aggregate:
+        from triage import definition_key
+
+        history = client.request(
+            client.base + "/v1/signals/" + identifier + "/versions"
+        )
+        for entry in history["versions"]:
+            fields = dict(entry["definition"])
+            if "llmModel" in fields:
+                fields["model"] = fields.pop("llmModel")
+            if "structuredOutputSchema" in fields:
+                fields["structuredOutput"] = fields.pop("structuredOutputSchema")
+            older = definition | fields | {"version": entry["version"]}
+            if definition_key(older) == definition_key(definition):
+                definitions[str(older["version"])] = signal_definition(
+                    older, args.project_id
+                )
+    versions = ",".join(str(int(version)) for version in definitions)
     scope = (
-        f"signal_id='{identifier}' AND signal_version={definition['version']} "
+        f"signal_id='{identifier}' AND signal_version IN ({versions}) "
         f"AND updated_at >= '{since.strftime('%Y-%m-%d %H:%M:%S')}' "
         f"AND updated_at < '{until.strftime('%Y-%m-%d %H:%M:%S')}'"
     )
@@ -54,8 +73,12 @@ def collect_events(client, handled):
         and run["event_id"] not in handled
     }
     seed = args.seed if args.seed is not None else secrets.randbits(64)
-    selected = random.Random(seed).sample(
-        sorted(candidates), min(args.limit, len(candidates))
+    selected = (
+        sorted(candidates)
+        if aggregate
+        else random.Random(seed).sample(
+            sorted(candidates), min(args.limit, len(candidates))
+        )
     )
     pricing = json.loads(Path(__file__).with_name("flow1-pricing.json").read_text())
     snapshot = {
@@ -65,23 +88,28 @@ def collect_events(client, handled):
         "api_origin": client.base,
         "analysis_backend": "flow1",
         "flow1_signal": definition,
+        "flow1_definitions": definitions,
         "flow1_profile": profile,
         "flow1_pricing": pricing,
         "window": {"since": since.isoformat(), "until": until.isoformat()},
         "selection": {
-            "method": "uniform_random_without_replacement",
+            "method": "all_unhandled_events"
+            if aggregate
+            else "uniform_random_without_replacement",
             "unit": "unhandled_signal_event",
             "seed": seed,
             "population_size": len(candidates),
             "sample_size": len(selected),
             "selected_event_ids": selected,
-            "inclusion_probability": min(args.limit, len(candidates)) / len(candidates)
+            "inclusion_probability": len(selected) / len(candidates)
             if candidates
             else 0,
             "population_sha256": hashlib.sha256(
                 encode(sorted(candidates)).encode()
             ).hexdigest(),
-            "frame": "Latest completed finding events of this Signal version; upstream trace sampling is separate",
+            "frame": "Latest completed finding events of compatible Signal versions; upstream trace sampling is separate"
+            if aggregate
+            else "Latest completed finding events of this Signal version; upstream trace sampling is separate",
         },
         "signal_run_summary": {
             "attempts": len(attempts),
@@ -107,6 +135,16 @@ def collect_events(client, handled):
         "samples": [],
         "collection_errors": [],
     }
+    if aggregate:
+        snapshot["latest_runs"] = list(latest.values())
+        snapshot["events"] = collect_cards(client, snapshot, candidates)
+        snapshot["collection_measurements"] = client.measurements
+        snapshot = redact(snapshot)
+        snapshot["selection"]["population_sha256"] = hashlib.sha256(
+            encode(sorted(candidates)).encode()
+        ).hexdigest()
+        write_json(args.output / "input.json", snapshot)
+        return snapshot
     grouped = {}
     for event_id in selected:
         run = candidates[event_id]
@@ -149,3 +187,111 @@ def collect_events(client, handled):
     ).hexdigest()
     write_json(args.output / "input.json", snapshot)
     return snapshot
+
+
+def collect_cards(client, snapshot, candidates):
+    records = []
+    identifiers = sorted(candidates)
+    for offset in range(0, len(identifiers), 100):
+        batch = identifiers[offset : offset + 100]
+        traces = sorted({str(uuid.UUID(candidates[key]["trace_id"])) for key in batch})
+        trace_ids = ",".join("'" + key + "'" for key in traces)
+        event_ids = ",".join("'" + key + "'" for key in batch)
+        owners = client.query(
+            f"SELECT DISTINCT trace_id,JSONExtractString(attributes,'{SESSION}') AS conversation_id,"
+            f"JSONExtractString(attributes,'{META}automation.id') AS automation_id,"
+            f"JSONExtractString(attributes,'{META}automation.run_id') AS run_id,"
+            f"JSONExtractString(attributes,'{META}automation.name') AS automation_name "
+            f"FROM spans WHERE trace_id IN ({trace_ids}) AND name='automation.conversation' LIMIT {len(batch) * 3 + 1}"
+        )
+        events = client.query(
+            "SELECT id,signal_id,signal_version,run_id,trace_id,payload,severity,timestamp,leaf_clusters "
+            f"FROM signal_events WHERE signal_id='{snapshot['flow1_signal']['id']}' "
+            f"AND id IN ({event_ids}) LIMIT {len(batch) + 1}"
+        )
+        if len(owners) > len(batch) * 3 or len(events) > len(batch):
+            snapshot["collection_errors"].extend(
+                {
+                    "event_id": key,
+                    "error": "Ownership/event lookup exceeded its row budget",
+                }
+                for key in batch
+            )
+            continue
+        by_id = {}
+        for event in events:
+            by_id.setdefault(event["id"], []).append(event)
+        for event_id in batch:
+            run = candidates[event_id]
+            matches = [
+                owner for owner in owners if owner["trace_id"] == run["trace_id"]
+            ]
+            try:
+                if len(matches) != 1 or len(by_id.get(event_id, [])) != 1:
+                    raise ValueError(
+                        "Missing or ambiguous event/conversation ownership"
+                    )
+                owner, event = matches[0], by_id[event_id][0]
+                for key in ("conversation_id", "automation_id", "run_id"):
+                    uuid.UUID(owner[key])
+                if any(
+                    event[key] != run[key]
+                    for key in ("signal_id", "signal_version", "run_id", "trace_id")
+                ):
+                    raise ValueError("Finding differs from its completed Signal run")
+                payload = object_value(event["payload"])
+                if not payload or not isinstance(payload.get("summary"), str):
+                    raise ValueError("Finding has no structured summary")
+                records.append(
+                    {
+                        "event": event,
+                        "owner": owner,
+                        "run": run,
+                        "definition": snapshot["flow1_definitions"][
+                            str(event["signal_version"])
+                        ],
+                    }
+                )
+            except (ValueError, KeyError, TypeError) as error:
+                snapshot["collection_errors"].append(
+                    {"event_id": event_id, "error": str(error)}
+                )
+    return records
+
+
+def hydrate_events(client, inventory, records):
+    grouped = {}
+    for record in records:
+        owner, event = record["owner"], record["event"]
+        conversation = owner["conversation_id"]
+        if conversation in grouped:
+            raise ValueError("Select at most one representative per conversation")
+        grouped[conversation] = {
+            **owner,
+            "selected_event_ids": [event["id"]],
+            "flow1_required_trace_ids": [event["trace_id"]],
+            "flow1_signal": record["definition"],
+        }
+    samples = []
+    for index, owner in enumerate(grouped.values(), 1):
+        sample = {**owner, "case_id": f"c{index}", "spans": [], "signals": []}
+        samples.append(sample)
+        try:
+            client.load_sample(sample)
+            client.load_flow1(sample, sample["flow1_signal"])
+        except (ValueError, KeyError, OSError) as error:
+            sample["collection_error"] = str(error)
+    return {
+        key: value
+        for key, value in inventory.items()
+        if key not in ("events", "latest_runs")
+    } | {
+        "samples": samples,
+        "selection": inventory["selection"]
+        | {
+            "method": "luna_ranked_representatives_per_automation",
+            "selected_event_ids": [record["event"]["id"] for record in records],
+            "sample_size": len(records),
+            "inclusion_probability": None,
+        },
+    }

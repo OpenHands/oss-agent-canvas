@@ -181,8 +181,10 @@ def propose_fix(args, report, snapshot):
         finding["automation_id"] not in source["automation_ids"] for finding in findings
     ):
         raise ValueError("Finding automation is outside the configured source scope")
-    unevaluated = getattr(args, "publish_draft", False)
-    publishing = args.publish_fix or unevaluated
+    unevaluated = getattr(args, "publish_draft", False) or getattr(
+        args, "check_draft", False
+    )
+    publishing = args.publish_fix or getattr(args, "publish_draft", False)
     checks = [] if unevaluated else config["checks"]
     if not unevaluated and (
         not isinstance(checks, list)
@@ -198,6 +200,21 @@ def propose_fix(args, report, snapshot):
     fingerprint = hashlib.sha256(
         "|".join(sorted(finding["fingerprint"] for finding in findings)).encode()
     ).hexdigest()[:20]
+    publication_automation = getattr(args, "publication_automation_id", None)
+    publication_week = getattr(args, "publication_week", None)
+    if publication_automation or publication_week:
+        if (
+            not publication_automation
+            or not re.fullmatch(r"[0-9]{4}-W[0-9]{2}", publication_week or "")
+            or {finding["automation_id"] for finding in findings}
+            != {publication_automation}
+        ):
+            raise ValueError(
+                "Weekly publication must be scoped to exactly one automation"
+            )
+        fingerprint = hashlib.sha256(
+            (publication_automation + "|" + publication_week).encode()
+        ).hexdigest()[:20]
     branch = "automation/improve-" + fingerprint
     if publishing:
         current_base = command(
@@ -295,6 +312,8 @@ def propose_fix(args, report, snapshot):
     results["status"] = (
         "unevaluated_draft" if unevaluated else "checks_passed_not_task_quality_proven"
     )
+    if unevaluated and not publishing:
+        results["status"] = "mechanical_checks_passed"
     results["behavioral_evaluation"] = (
         "not_performed" if unevaluated else "configured_checks_only"
     )
@@ -342,12 +361,6 @@ def propose_fix(args, report, snapshot):
         + "\n".join("- " + value for value in links)
         + f"\n\nBaseline revision: {source['revision']}. Executed automation revision has not been verified.\n\n"
         + proposal["evaluation_plan"]
-        + "\n\n"
-        + "\n".join(
-            "<!-- automation-improvement-event: " + finding["signal_event_id"] + " -->"
-            for finding in findings
-            if finding.get("signal_event_id")
-        )
         + (
             "\n\n**UNEVALUATED PROPOSAL:** behavioral evaluation has not been performed. "
             "The checks below only establish that the patch applies within the approved source scope.\n"
@@ -367,6 +380,24 @@ def propose_fix(args, report, snapshot):
         "Recovery: retain or restore the baseline revision through the normal reviewed release process.\n\n"
         "Created by OpenHands on behalf of the user."
     )
+    markers = [
+        "<!-- automation-improvement-event: " + finding["signal_event_id"] + " -->"
+        for finding in findings
+        if finding.get("signal_event_id")
+    ]
+    if publication_automation:
+        markers.extend(
+            [
+                "<!-- automation-improvement-automation: "
+                + publication_automation
+                + " -->",
+                "<!-- automation-improvement-week: " + publication_week + " -->",
+            ]
+        )
+    if report.get("aggregation"):
+        aggregation = report["aggregation"]
+        body += f"\n\nAutomation backlog reviewed: {aggregation['total_events']} findings across {aggregation['affected_conversations']} distinct conversations. These counts are not validated failure rates.\n"
+    body = "\n".join(markers) + "\n\n" + body
     body_path = args.output / "pr-body.md"
     body_path.write_text(redact(body))
     body_path.chmod(0o600)

@@ -10,8 +10,12 @@ from weekly import load_environment
 
 
 def configure_rate(client, project_id, signal_id, sample_rate):
-    if type(sample_rate) is not int or not 0 <= sample_rate <= 100:
-        raise ValueError("Sample rate must be an integer percentage from 0 to 100")
+    if sample_rate is not None and (
+        type(sample_rate) is not int or not 1 <= sample_rate <= 95
+    ):
+        raise ValueError(
+            "Sample rate must be an integer percentage from 1 to 95, or None for all traces"
+        )
     identifier = str(uuid.UUID(signal_id))
     url = client.base + "/v1/signals/" + identifier
     before = signal_definition(client.request(url), project_id)
@@ -54,7 +58,9 @@ def main():
         type=Path,
         default=Path.home() / ".config/automation-improvement/config.json",
     )
-    parser.add_argument("--sample-rate", type=int, required=True, metavar="PERCENT")
+    sampling = parser.add_mutually_exclusive_group(required=True)
+    sampling.add_argument("--sample-rate", type=int, metavar="PERCENT")
+    sampling.add_argument("--no-sampling", action="store_true")
     args = parser.parse_args()
     config = read_json(args.config)
     load_environment(config)

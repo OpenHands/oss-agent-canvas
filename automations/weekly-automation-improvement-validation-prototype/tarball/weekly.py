@@ -10,10 +10,11 @@ from pathlib import Path
 
 import main as analysis
 from common import encode, read_json, redact, timestamp, write_json
-from events import collect_events
+from events import collect_events, hydrate_events
 from laminar import Laminar
 from patches import command, load_source, propose_fix
 from sources import github_auth, repository_index, resolve_source
+from triage import definition_key, triage
 
 
 def save_state(path, state):
@@ -144,7 +145,7 @@ def source_config(config, snapshot, output):
 
 def run(config, *, dry_run=False, limit=3, seed=None):
     if not 1 <= limit <= 3:
-        raise ValueError("Weekly runs may investigate one to three findings")
+        raise ValueError("Select one to three representatives per automation")
     load_environment(config)
     state_dir = Path(config["state_dir"]).expanduser()
     state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -159,6 +160,170 @@ def run(config, *, dry_run=False, limit=3, seed=None):
         os.close(lock)
 
 
+def arguments(config, output, limit, seed=None):
+    args = analysis.argument_parser().parse_args([])
+    args.project_id = str(uuid.UUID(config["project_id"]))
+    args.signal_id = str(uuid.UUID(config["signal_id"]))
+    args.app_url = config.get("app_url", "https://laminar.app.all-hands.dev")
+    args.analyzer = "flow1"
+    args.model = config.get("triage_model", "openai/gpt-6-luna")
+    args.coordinator = config.get("repair_model", "openai/gpt-6.1-sol")
+    args.limit, args.seed = limit, seed
+    args.population_limit = 10000
+    args.output = output
+    return args
+
+
+def update_backlog(state, inventory, prs):
+    handled = set(state["events"])
+    for pr in prs:
+        handled.update(
+            re.findall(
+                r"<!-- automation-improvement-event: ([0-9a-f-]{36}) -->", pr["body"]
+            )
+        )
+    backlog = state.setdefault("backlog", {})
+    latest = {row["trace_id"]: row for row in inventory.get("latest_runs", [])}
+    current = definition_key(inventory["flow1_signal"])
+    for identifier, record in list(backlog.items()):
+        newer = latest.get(record["event"]["trace_id"])
+        superseded = (
+            definition_key(record["definition"]) == current
+            and newer
+            and timestamp(newer["updated_at"]) >= timestamp(record["run"]["updated_at"])
+            and newer.get("event_id") != identifier
+        )
+        if identifier in handled or superseded:
+            del backlog[identifier]
+    for record in inventory.get("events", []):
+        identifier = record["event"]["id"]
+        if identifier not in handled:
+            backlog[identifier] = record
+    return [
+        record
+        for record in backlog.values()
+        if definition_key(record["definition"]) == current
+    ]
+
+
+def published_for(prs, automation_id, week, records):
+    marker = "<!-- automation-improvement-automation: " + automation_id + " -->"
+    identifiers = {record["event"]["id"] for record in records}
+    for pr in prs:
+        if week_key(timestamp(pr["createdAt"])) != week:
+            continue
+        events = set(
+            re.findall(
+                r"<!-- automation-improvement-event: ([0-9a-f-]{36}) -->", pr["body"]
+            )
+        )
+        if marker in pr["body"] or events.intersection(identifiers):
+            return True
+    return False
+
+
+def investigate(
+    config,
+    inventory,
+    records,
+    prs,
+    output,
+    state,
+    state_path,
+    week,
+    dry_run,
+    limit,
+    seed,
+):
+    automation_id = records[0]["owner"]["automation_id"]
+    args = arguments(config, output / "triage", limit, seed)
+    args.output.mkdir(mode=0o700)
+    chosen, aggregation = triage(args, records, prs)
+    result = {
+        "automation_id": automation_id,
+        "automation_name": records[0]["owner"]["automation_name"],
+        "status": "no_promising_findings",
+        "aggregation": aggregation,
+        "publication": "disabled" if dry_run else "none",
+    }
+    if not chosen:
+        return result
+    snapshot = hydrate_events(Laminar(args), inventory, chosen)
+    path, samples, errors = source_config(config, snapshot, output)
+    result["source_errors"] = errors
+    if not samples:
+        result["status"] = "no_approved_source_match"
+        return result
+    snapshot["samples"] = [
+        sample | {"case_id": f"c{index}"} for index, sample in enumerate(samples, 1)
+    ]
+    snapshot["source"] = load_source(path)
+    if set(snapshot["source"]["automation_ids"]) != {automation_id}:
+        raise ValueError("Repair source must be scoped to exactly this automation")
+    snapshot["aggregation"] = aggregation
+    snapshot["existing_improvement_prs"] = prs
+    frozen = output / "snapshot-with-source.json"
+    write_json(frozen, snapshot)
+    args.input, args.source_config = frozen, path
+    args.output = output / "analysis"
+    analysis.run(args)
+    report = read_json(args.output / "report.json")
+    by_id = {finding["id"]: finding for finding in report["findings"]}
+    updates = {}
+    for rejection in report["rejected_findings"]:
+        event_id = by_id[rejection["finding_id"]]["signal_event_id"]
+        updates[event_id] = {
+            "status": "rejected",
+            "reason": rejection["reason"],
+            "week": week,
+        }
+    result.update(
+        status="analyzed",
+        findings=len(report["findings"]),
+        proposals=len(report["proposals"]),
+        rejections=report["rejected_findings"],
+        behavioral_evaluation="not_performed",
+        coordinator_measurements=[
+            item
+            for item in report["measurements"]
+            if item.get("backend") != "persisted_flow1_signals"
+        ],
+    )
+    if report["proposals"]:
+        proposal = report["proposals"][0]
+        if proposal["patch"] and config.get("publish_drafts", False) and not dry_run:
+            key = week + "/" + automation_id
+            state["automation_weeks"][key] = {
+                "status": "reserved",
+                "report": str(args.output / "report.json"),
+            }
+            save_state(state_path, state)
+            args.publish_draft = True
+            args.publication_automation_id, args.publication_week = automation_id, week
+            publication = propose_fix(args, report, snapshot)
+            result["publication"] = publication
+            for finding_id in proposal["finding_ids"]:
+                updates[by_id[finding_id]["signal_event_id"]] = {
+                    "status": "draft_pr",
+                    "pr_url": publication["pr_url"],
+                    "week": week,
+                }
+        elif proposal["patch"]:
+            args.check_draft = True
+            result["patch_check"] = propose_fix(args, report, snapshot)
+        else:
+            for finding_id in proposal["finding_ids"]:
+                updates[by_id[finding_id]["signal_event_id"]] = {
+                    "status": "diagnostic_only",
+                    "week": week,
+                }
+    if not dry_run:
+        state["events"].update(updates)
+        for event_id in updates:
+            state["backlog"].pop(event_id, None)
+    return result
+
+
 def run_locked(config, state_dir, *, dry_run, limit, seed):
     now = dt.datetime.now(dt.UTC)
     week = week_key(now)
@@ -170,136 +335,88 @@ def run_locked(config, state_dir, *, dry_run, limit, seed):
     output.mkdir(parents=True, mode=0o700)
     state_path = state_dir / "state.json"
     state = (
-        read_json(state_path)
+        read_json(state_path, 32_000_000)
         if state_path.exists()
         else {"events": {}, "publications": {}}
     )
-    if not dry_run and week in state.get("completed_weeks", {}):
-        summary = {
-            "status": "weekly_batch_already_completed",
-            "week": week,
-            "previous": state["completed_weeks"][week],
-            "output": str(output),
-        }
-        write_json(output / "weekly-report.json", summary)
-        return summary
+    state.setdefault("automation_weeks", {})
     github_auth(config)
     prs = existing_prs(config["repository"])
-    handled = set(state["events"])
-    for pr in prs:
-        handled.update(
-            re.findall(
-                r"<!-- automation-improvement-event: ([0-9a-f-]{36}) -->", pr["body"]
-            )
-        )
-    args = analysis.argument_parser().parse_args([])
-    args.project_id = str(uuid.UUID(config["project_id"]))
-    args.signal_id = str(uuid.UUID(config["signal_id"]))
-    args.app_url = config.get("app_url", "https://laminar.app.all-hands.dev")
-    args.analyzer = "flow1"
-    args.limit, args.seed = limit, seed
-    args.population_limit = 10000
-    args.output = output / "collection"
+    args = arguments(config, output / "collection", limit, seed)
     args.output.mkdir(mode=0o700)
-    snapshot = collect_events(Laminar(args), handled)
+    inventory = collect_events(Laminar(args), set(), aggregate=True)
     summary = {
-        "status": "findings_unavailable"
-        if snapshot["selection"]["selected_event_ids"]
-        else "no_unhandled_findings",
+        "status": "no_unhandled_findings",
         "week": week,
         "output": str(output),
-        "selection": snapshot["selection"],
-        "signal_runs": snapshot["signal_run_summary"],
-        "collection_errors": snapshot["collection_errors"],
-        "publication": "disabled" if dry_run else "none",
+        "selection": inventory["selection"],
+        "signal_runs": inventory["signal_run_summary"],
+        "collection_errors": inventory["collection_errors"],
+        "automations": [],
+        "publication": "disabled" if dry_run else "per_automation",
     }
-    try:
-        already_published = week in state["publications"] or any(
-            week_key(timestamp(pr["createdAt"])) == week for pr in prs
-        )
-        if already_published and not dry_run:
-            summary["status"] = "weekly_pr_limit_reached"
-        elif snapshot["samples"]:
-            path, samples, errors = source_config(config, snapshot, output)
-            summary["source_errors"] = errors
-            if not samples:
-                summary["status"] = "no_approved_source_match"
-            else:
-                snapshot["samples"] = [
-                    sample | {"case_id": f"c{index}"}
-                    for index, sample in enumerate(samples, 1)
-                ]
-                snapshot["source"] = load_source(path)
-                snapshot["existing_improvement_prs"] = prs
-                frozen = output / "snapshot-with-source.json"
-                write_json(frozen, snapshot)
-                args.input, args.source_config = frozen, path
-                args.output = output / "analysis"
-                analysis.run(args)
-                report = read_json(args.output / "report.json")
-                by_id = {finding["id"]: finding for finding in report["findings"]}
-                updates = {}
-                for rejection in report["rejected_findings"]:
-                    event_id = by_id[rejection["finding_id"]]["signal_event_id"]
-                    updates[event_id] = {
-                        "status": "rejected",
-                        "reason": rejection["reason"],
-                        "at": now.isoformat(),
-                    }
-                summary.update(
-                    status="analyzed",
-                    findings=len(report["findings"]),
-                    proposals=len(report["proposals"]),
-                    rejections=report["rejected_findings"],
-                    coordinator_measurements=[
-                        measurement
-                        for measurement in report["measurements"]
-                        if measurement.get("backend") != "persisted_flow1_signals"
-                    ],
-                    behavioral_evaluation="not_performed",
+    records = update_backlog(state, inventory, prs)
+    if not dry_run:
+        save_state(state_path, state)
+    grouped = {}
+    for record in records:
+        grouped.setdefault(record["owner"]["automation_id"], []).append(record)
+    summary["pending_events"] = len(state["backlog"])
+    summary["incompatible_pending_events"] = len(state["backlog"]) - len(records)
+    legacy = state.get("publications", {}).get(week)
+    for automation_id, pending in sorted(grouped.items()):
+        key = week + "/" + automation_id
+        directory = output / automation_id
+        directory.mkdir(mode=0o700)
+        if not dry_run and (
+            key in state["automation_weeks"]
+            or published_for(prs, automation_id, week, pending)
+            or legacy
+            and legacy.get("status") == "reserved"
+        ):
+            result = {
+                "automation_id": automation_id,
+                "status": "automation_week_already_completed_or_reserved",
+            }
+        else:
+            try:
+                result = investigate(
+                    config,
+                    inventory,
+                    pending,
+                    prs,
+                    directory,
+                    state,
+                    state_path,
+                    week,
+                    dry_run,
+                    limit,
+                    seed,
                 )
-                if report["proposals"]:
-                    proposal = report["proposals"][0]
-                    if (
-                        proposal["patch"]
-                        and config.get("publish_drafts", False)
-                        and not dry_run
-                    ):
-                        state["publications"][week] = {
-                            "status": "reserved",
-                            "report": str(args.output / "report.json"),
-                        }
-                        save_state(state_path, state)
-                        args.publish_draft = True
-                        result = propose_fix(args, report, snapshot)
-                        summary["publication"] = result
-                        state["publications"][week] = result
-                        for finding_id in proposal["finding_ids"]:
-                            updates[by_id[finding_id]["signal_event_id"]] = {
-                                "status": "draft_pr",
-                                "pr_url": result["pr_url"],
-                                "at": now.isoformat(),
-                            }
-                    elif not proposal["patch"]:
-                        for finding_id in proposal["finding_ids"]:
-                            updates[by_id[finding_id]["signal_event_id"]] = {
-                                "status": "diagnostic_only",
-                                "at": now.isoformat(),
-                            }
                 if not dry_run:
-                    state["events"].update(updates)
+                    state["automation_weeks"][key] = {
+                        "status": "completed",
+                        "report": str(directory / "automation-report.json"),
+                        "publication": result["publication"],
+                    }
                     save_state(state_path, state)
-        if not dry_run:
-            state.setdefault("completed_weeks", {})[week] = str(
-                output / "weekly-report.json"
-            )
-            save_state(state_path, state)
-        write_json(output / "weekly-report.json", redact(summary))
-        return summary
-    except Exception as error:
-        summary.update(status="failed", error=str(error)[:1000])
-        write_json(output / "weekly-report.json", redact(summary))
-        raise
+            except Exception as error:
+                result = {
+                    "automation_id": automation_id,
+                    "status": "failed",
+                    "error": str(error)[:1000],
+                }
+        write_json(directory / "automation-report.json", redact(result))
+        summary["automations"].append(result)
+    if grouped:
+        summary["status"] = (
+            "partial_failure"
+            if any(item["status"] == "failed" for item in summary["automations"])
+            else "completed"
+        )
+    summary["pending_events"] = len(state["backlog"])
+    write_json(output / "weekly-report.json", redact(summary))
+    return summary
 
 
 def main():
@@ -310,7 +427,12 @@ def main():
         default=Path.home() / ".config/automation-improvement/config.json",
     )
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--limit", type=analysis.bounded(1, 3), default=3)
+    parser.add_argument(
+        "--limit",
+        type=analysis.bounded(1, 3),
+        default=3,
+        help="Representative conversations per automation",
+    )
     parser.add_argument("--seed", type=int)
     args = parser.parse_args()
     try:
@@ -321,6 +443,10 @@ def main():
             seed=args.seed,
         )
         print(encode(redact(result)))
+        if result["status"] == "partial_failure":
+            raise ValueError(
+                "One or more automation investigations failed; inspect weekly-report.json"
+            )
     except Exception:
         analysis.callback("FAILED")
         raise
