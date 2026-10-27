@@ -1,0 +1,34 @@
+agent_profile_id: null
+enabled: false
+entrypoint: .venv/bin/python main.py
+keep_alive: null
+model: flow1-telemetry-canary
+name: Flow-1 telemetry validation 2026-10-27
+observability_associations: null
+preset_metadata:
+  preset_type: prompt
+  prompt: 'Validation task. Use the terminal once to execute exactly: python3 -c "import
+    os; assert ''LMNR_PROJECT_API_KEY'' not in os.environ; print(6*7)". Report the
+    tool result, then finish. Do not read any other files, modify files, contact services,
+    or use other tools.'
+prompt: 'Validation task. Use the terminal once to execute exactly: python3 -c "import
+  os; assert ''LMNR_PROJECT_API_KEY'' not in os.environ; print(6*7)". Report the tool
+  result, then finish. Do not read any other files, modify files, contact services,
+  or use other tools.'
+setup_script_path: setup.sh
+state: INACTIVE
+tarball_executables:
+- setup.sh
+tarball_source:
+  type: internal
+  url: null
+timeout: 180
+trigger:
+  destination: dispatch_run
+  filter: null
+  'on': manual.only
+  source: flow1-validation
+  subject_key_expr: null
+  turn_text_expr: null
+  type: event
+  wake_agent: true

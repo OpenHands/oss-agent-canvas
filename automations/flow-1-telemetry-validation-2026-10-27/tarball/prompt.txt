@@ -1,0 +1,1 @@
+Validation task. Use the terminal once to execute exactly: python3 -c "import os; assert 'LMNR_PROJECT_API_KEY' not in os.environ; print(6*7)". Report the tool result, then finish. Do not read any other files, modify files, contact services, or use other tools.
