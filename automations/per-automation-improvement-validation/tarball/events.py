@@ -41,12 +41,11 @@ def collect_events(client, handled, *, aggregate=False):
                 fields["model"] = fields.pop("llmModel")
             if "structuredOutputSchema" in fields:
                 fields["structuredOutput"] = fields.pop("structuredOutputSchema")
-            older = signal_definition(
-                definition | fields | {"version": entry["version"]},
-                args.project_id,
-            )
+            older = definition | fields | {"version": entry["version"]}
             if definition_key(older) == definition_key(definition):
-                definitions[str(older["version"])] = older
+                definitions[str(older["version"])] = signal_definition(
+                    older, args.project_id
+                )
     versions = ",".join(str(int(version)) for version in definitions)
     scope = (
         f"signal_id='{identifier}' AND signal_version IN ({versions}) "
@@ -108,7 +107,9 @@ def collect_events(client, handled, *, aggregate=False):
             "population_sha256": hashlib.sha256(
                 encode(sorted(candidates)).encode()
             ).hexdigest(),
-            "frame": "Latest completed finding events of this Signal version; upstream trace sampling is separate",
+            "frame": "Latest completed finding events of compatible Signal versions; upstream trace sampling is separate"
+            if aggregate
+            else "Latest completed finding events of this Signal version; upstream trace sampling is separate",
         },
         "signal_run_summary": {
             "attempts": len(attempts),
@@ -208,6 +209,15 @@ def collect_cards(client, snapshot, candidates):
             f"FROM signal_events WHERE signal_id='{snapshot['flow1_signal']['id']}' "
             f"AND id IN ({event_ids}) LIMIT {len(batch) + 1}"
         )
+        if len(owners) > len(batch) * 3 or len(events) > len(batch):
+            snapshot["collection_errors"].extend(
+                {
+                    "event_id": key,
+                    "error": "Ownership/event lookup exceeded its row budget",
+                }
+                for key in batch
+            )
+            continue
         by_id = {}
         for event in events:
             by_id.setdefault(event["id"], []).append(event)

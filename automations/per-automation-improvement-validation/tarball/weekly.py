@@ -308,7 +308,10 @@ def investigate(
                     "pr_url": publication["pr_url"],
                     "week": week,
                 }
-        elif not proposal["patch"]:
+        elif proposal["patch"]:
+            args.check_draft = True
+            result["patch_check"] = propose_fix(args, report, snapshot)
+        else:
             for finding_id in proposal["finding_ids"]:
                 updates[by_id[finding_id]["signal_event_id"]] = {
                     "status": "diagnostic_only",

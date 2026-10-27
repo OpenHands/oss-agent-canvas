@@ -463,7 +463,12 @@ def run(args):
             snapshot["app_url"] + f"/project/{snapshot['project_id']}/traces/{value}"
             for value in sample["trace_ids"]
         ]
-    if args.evaluate_fix or args.publish_fix or getattr(args, "publish_draft", False):
+    if (
+        args.evaluate_fix
+        or args.publish_fix
+        or getattr(args, "publish_draft", False)
+        or getattr(args, "check_draft", False)
+    ):
         try:
             if not proposals or not proposals[0]["patch"]:
                 report["fix"] = {"status": "no_supported_patch"}
@@ -609,13 +614,16 @@ def argument_parser():
     parser.add_argument("--evaluate-fix", action="store_true")
     parser.add_argument("--publish-fix", action="store_true")
     parser.add_argument("--publish-draft", action="store_true")
+    parser.add_argument("--check-draft", action="store_true")
     return parser
 
 
 def main():
     parser = argument_parser()
     args = parser.parse_args()
-    if args.publish_draft and (args.evaluate_fix or args.publish_fix):
+    if (args.publish_draft or args.check_draft) and (
+        args.evaluate_fix or args.publish_fix
+    ):
         parser.error("--publish-draft does not run behavioral evaluation")
     if not args.input and args.analyzer == "flow1":
         try:

@@ -47,6 +47,7 @@ def group_findings(records):
         event = record["event"]
         payload = object_value(event["payload"])
         clusters = event.get("leaf_clusters") or []
+        signature = str(payload.get("signature") or "").strip().lower() or event["id"]
         key = (
             "cluster:" + str(sorted(clusters)[0])
             if clusters
@@ -54,7 +55,7 @@ def group_findings(records):
             + encode(
                 [
                     str(payload.get("cause", "unknown")),
-                    str(payload.get("signature", event["id"])).strip().lower(),
+                    signature,
                 ]
             )
         )
@@ -100,6 +101,7 @@ def group_findings(records):
         cards.append(
             {
                 "group_id": identifier,
+                "summary": examples[0]["finding"]["summary"],
                 "grouping": "laminar_leaf_cluster"
                 if key.startswith("cluster:")
                 else "exact_signature",
@@ -158,6 +160,8 @@ def triage(args, records, prs):
         "You are selecting leads for Sol, not validating fixes. Counts are computed facts; summaries, severity and causes are unverified model judgments. "
         "Prefer material unresolved workflow defects, repeated costly friction, and severe supported single incidents. "
         "Account for recovery, clipped evidence, external/provider causes and existing PRs; avoid treating those as automation code defects. "
+        "A later cleanup does not undo an explicit prohibition or permission violation; a recovered label may refer only to cleanup. "
+        "Prefer concrete instruction violations to speculative low-impact wording issues, and do not trust the supplied severity label as ground truth. "
         "Select up to three coherent priority problems, merging obvious duplicate groups with group_ids. Explain expected impact and uncertainty in reason. "
         f"Choose at most {args.limit} representative_event_ids from the provided examples, with distinct conversation IDs and at least one per priority. "
         "Choose informative varied evidence rather than simply the most severe label. Do not infer all examples share a root cause from cluster membership. "

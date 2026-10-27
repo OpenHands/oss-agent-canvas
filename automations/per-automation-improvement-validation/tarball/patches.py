@@ -181,8 +181,10 @@ def propose_fix(args, report, snapshot):
         finding["automation_id"] not in source["automation_ids"] for finding in findings
     ):
         raise ValueError("Finding automation is outside the configured source scope")
-    unevaluated = getattr(args, "publish_draft", False)
-    publishing = args.publish_fix or unevaluated
+    unevaluated = getattr(args, "publish_draft", False) or getattr(
+        args, "check_draft", False
+    )
+    publishing = args.publish_fix or getattr(args, "publish_draft", False)
     checks = [] if unevaluated else config["checks"]
     if not unevaluated and (
         not isinstance(checks, list)
@@ -310,6 +312,8 @@ def propose_fix(args, report, snapshot):
     results["status"] = (
         "unevaluated_draft" if unevaluated else "checks_passed_not_task_quality_proven"
     )
+    if unevaluated and not publishing:
+        results["status"] = "mechanical_checks_passed"
     results["behavioral_evaluation"] = (
         "not_performed" if unevaluated else "configured_checks_only"
     )
