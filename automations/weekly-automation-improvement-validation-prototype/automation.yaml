@@ -1,9 +1,9 @@
 agent_profile_id: null
 enabled: false
-entrypoint: python3 launch.py --analyzer flow1
+entrypoint: python3 weekly.py --dry-run
 keep_alive: false
 model: flow1-telemetry-canary
-name: "Weekly Automation Improvement \u2014 prototype (manual)"
+name: Weekly Automation Improvement
 observability_associations: null
 preset_metadata: null
 prompt: null
@@ -12,7 +12,7 @@ state: INACTIVE
 tarball_source:
   type: internal
   url: null
-timeout: 300
+timeout: 1200
 trigger:
   schedule: 0 8 * * 1
   timezone: UTC

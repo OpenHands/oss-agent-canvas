@@ -299,12 +299,16 @@ class Laminar:
             sample["signal_coverage"] = "unavailable"
 
     def load_flow1(self, sample, definition):
-        ids = ",".join(
+        ownership_ids = ",".join(
             "'" + str(uuid.UUID(value)) + "'" for value in sample["trace_ids"]
         )
         sample["flow1_trace_sessions"] = self.query(
             f"SELECT trace_id,groupUniqArray(JSONExtractString(attributes, '{SESSION}')) AS conversation_ids "
-            f"FROM spans WHERE trace_id IN ({ids}) AND JSONExtractString(attributes, '{SESSION}') != '' GROUP BY trace_id"
+            f"FROM spans WHERE trace_id IN ({ownership_ids}) AND JSONExtractString(attributes, '{SESSION}') != '' GROUP BY trace_id"
+        )
+        ids = ",".join(
+            "'" + str(uuid.UUID(value)) + "'"
+            for value in sample.get("flow1_required_trace_ids", sample["trace_ids"])
         )
         scope = (
             f"signal_id='{definition['id']}' AND signal_version={definition['version']} "
