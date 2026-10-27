@@ -1,3 +1,4 @@
+import ast
 import difflib
 import hashlib
 import json
@@ -256,6 +257,13 @@ def propose_fix(args, report, snapshot):
     for name in changed:
         if (candidate / name).is_symlink() or not (candidate / name).is_file():
             raise ValueError("Patch must preserve regular source files")
+        if name.endswith(".py"):
+            try:
+                ast.parse((candidate / name).read_bytes(), filename=name)
+            except SyntaxError as error:
+                raise ValueError(
+                    "Patch produces invalid Python syntax: " + name
+                ) from error
     command(["git", "diff", "--cached", "--check"], candidate)
     expected_diff = command(["git", "diff", "HEAD", "--binary"], candidate, strip=False)
     before = (
@@ -294,6 +302,7 @@ def propose_fix(args, report, snapshot):
         "git apply --check",
         "git diff --check",
         "source allowlist",
+        "Python syntax for changed .py files",
     ]
     write_json(args.output / "validation.json", results)
     if not publishing:
@@ -346,7 +355,7 @@ def propose_fix(args, report, snapshot):
             else "\n\nExecuted configured checks:\n"
         )
         + (
-            "\nMechanical checks: patch application, whitespace integrity, and approved file scope passed.\n"
+            "\nMechanical checks: patch application, whitespace integrity, Python syntax, and approved file scope passed.\n"
             if unevaluated
             else ""
         )

@@ -10,6 +10,7 @@ import urllib.request
 import uuid
 from pathlib import PurePosixPath
 
+from common import redact
 from patches import command
 
 
@@ -118,6 +119,8 @@ def resolve_source(config, sample, index):
             "automation_name": metadata["name"],
             "provenance": "declared_plugin_source; historical executed revision not verified",
             "plugin": plugin,
+            "configuration": redact(metadata["plugin_spec"].get("config", {})),
+            "entrypoint": metadata.get("entrypoint"),
         }
     raw = native_request(base, "/v1/" + identifier + "/tarball")
     bundle = {}

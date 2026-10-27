@@ -1,6 +1,6 @@
 agent_profile_id: null
-enabled: false
-entrypoint: python3 weekly.py --dry-run
+enabled: true
+entrypoint: python3 weekly.py
 keep_alive: false
 model: flow1-telemetry-canary
 name: Weekly Automation Improvement
@@ -8,7 +8,7 @@ observability_associations: null
 preset_metadata: null
 prompt: null
 setup_script_path: null
-state: INACTIVE
+state: ACTIVE
 tarball_source:
   type: internal
   url: null

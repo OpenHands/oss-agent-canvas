@@ -130,6 +130,7 @@ def evidence_context(sample, findings=None):
     return {
         "case_id": sample["case_id"],
         "automation_id": sample["automation_id"],
+        "source_resolution": sample.get("source_resolution"),
         "automation_name": sample["automation_name"],
         "initial_instructions": sample.get("initial_instructions", []),
         "instruction_coverage": sample.get("instruction_coverage", "unavailable"),
