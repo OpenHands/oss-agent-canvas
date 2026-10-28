@@ -252,13 +252,17 @@ class PullRequestReviewer(GitHubRepository):
         sha = pr["head"]["sha"]
         token = self.token_name
         workspace = (
-            "The workspace contains an empty Git repository. Before fetching, run "
-            f"`GH_TOKEN=${{{token}}} gh auth setup-git` so Git uses the "
-            "profile-scoped credential without storing it in the remote URL. Set "
-            f"the plain HTTPS origin to `https://github.com/{self.repository}.git`, "
-            f"fetch PR #{number}, and check out exact head `{sha}` in detached-HEAD "
-            "mode. Set `GIT_TERMINAL_PROMPT=0` on Git network commands so a missing "
-            "permission fails immediately instead of waiting for input."
+            "Run this bootstrap exactly, keeping scratch files under /tmp:\n"
+            "```bash\npython3 - <<'PY'\n"
+            "import os\nfrom urllib.request import Request, ProxyHandler, build_opener\n"
+            "request = Request(os.environ['REVIEW_GATEWAY_URL'] + '/client.py', "
+            "headers={'Authorization': 'Bearer ' + os.environ['REVIEW_GATEWAY_TOKEN']})\n"
+            "with build_opener(ProxyHandler({})).open(request, timeout=15) as response:\n"
+            "    data = response.read()\n"
+            "open('/tmp/review_client.py', 'wb').write(data)\nPY\n"
+            "python3 /tmp/review_client.py checkout /workspace\n```\n"
+            "Work in /workspace, which now contains the exact requested head. "
+            "Do not clone or fetch. Keep /workspace empty until checkout completes."
         )
         if label:
             trigger_description = None
@@ -279,69 +283,9 @@ class PullRequestReviewer(GitHubRepository):
             workspace_instructions=workspace,
             github_token_secret=token,
             trigger_description=trigger_description,
+            proposal_only=True,
         )
-        if label:
-            moved_head_instruction = (
-                f"leave `{label}` in place so the new head is reviewed"
-            )
-            trigger_completion = (
-                f"Leave the `{label}` label in place after GitHub accepts the review. "
-                "The deterministic scanner removes it"
-            )
-        elif delivery_key is not None:
-            # A scheduled scan reviews a new head again on its own, so there is
-            # no request to preserve and no label to leave behind.
-            moved_head_instruction = (
-                "publish no review; a later scheduled scan reviews the new head"
-            )
-            trigger_completion = (
-                "Do not change review requests after GitHub accepts the review. "
-                "The deterministic scan records the completed review"
-            )
-        else:
-            moved_head_instruction = (
-                "publish no review; the new head requires another reviewer request"
-            )
-            trigger_completion = (
-                "Do not change review requests after GitHub accepts the review. "
-                "The deterministic event handler completes the request"
-            )
-        author = ((pr.get("user") or {}).get("login") or "").lower()
-        self_review_note = (
-            "\n- This pull request is authored by the configured reviewer account, "
-            "so GitHub ignores a review request from it. Publish the clean review "
-            "with `event: COMMENT` and keep the approved verdict instead of "
-            "attempting `event: APPROVE`."
-            if author == self.trigger_reviewer
-            else ""
-        )
-        return (
-            prompt + "\n\nAcceptance reporting:\n"
-            "- Inspect the current GitHub Actions results for the exact head and run "
-            "the repository's appropriate focused tests in the workspace. Do not "
-            "modify tracked files.\n"
-            "- Before publishing anything, read the PR's existing reviews and "
-            "comments on GitHub. If this account has already published a review on "
-            f"`{sha}` and no one else has commented since that review, do NOT "
-            "publish a second review and do NOT start another review pass: another "
-            "review of identical code is a duplicate. Report the earlier verdict as "
-            "still current and stop. Review the head again only when the head has "
-            "moved, or when a comment from someone other than this account was "
-            "posted after the earlier review.\n"
-            "- If a review by this account is currently underway for this head, wait "
-            "for it instead of starting a second one.\n"
-            f"- Re-read {self.repository} PR #{number} immediately before reporting. "
-            "Confirm its current body, labels, review threads, and the head's check "
-            "results, and re-read every linked issue's current body and labels: an "
-            "issue's readiness or priority may have changed since an earlier turn. "
-            f"If the head is no longer `{sha}`, {moved_head_instruction}.\n"
-            f"- {trigger_completion} after completing any configured "
-            "human-review handoff. Never paste JSON artifacts or full command logs "
-            "into comments.\n"
-            "- Once GitHub accepts the native review, stop immediately. Do not "
-            "continue inspecting the repository, run more commands, or publish a "
-            f"second result.{self_review_note}"
-        )
+        return prompt
 
     def _linked_issue_allows_handoff(self, pr):
         """Require a successfully fetched closing issue labeled medium or high."""
@@ -1141,13 +1085,19 @@ class PullRequestReviewer(GitHubRepository):
         }
         if pr.get("html_url"):
             metadata["github.pr_url"] = pr["html_url"]
-        result = self.dispatcher.deliver(
-            subject=f"{repository_id}:pr:{pr['number']}",
-            delivery=delivery_key or f"{trigger['id']}:{sha}",
-            prompt=self._prompt(pr, trigger, trigger_label, delivery_key),
-            head=sha,
-            metadata=metadata,
+        from controlled_review import run_review
+
+        result = run_review(
+            self,
+            pr,
+            delivery_key or f"{trigger['id']}:{sha}",
+            self._prompt(pr, trigger, trigger_label, delivery_key),
+            metadata,
         )
+        if result.get("publication", {}).get("status") in (
+            "published", "already_published", "already_reviewed"
+        ):
+            self._finish_completed_review(pr, trigger, trigger_label)
         print(
             json.dumps(
                 {
@@ -1156,6 +1106,7 @@ class PullRequestReviewer(GitHubRepository):
                     "head_sha": sha,
                     "disposition": result["disposition"],
                     "conversation_id": result["conversation_id"],
+                    "publication": result.get("publication"),
                 }
             ),
             flush=True,
