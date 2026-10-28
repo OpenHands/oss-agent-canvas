@@ -38,7 +38,11 @@ def _reviewer_states(reviews, head_sha=None):
             continue
         if state == "DISMISSED":
             standing.pop(login, None)
-        elif state in _DECISIVE_REVIEW_STATES:
+        # Comment-only feedback completes this head, but must not replace a
+        # decisive verdict used to preserve approvals across later heads.
+        elif state in _DECISIVE_REVIEW_STATES or (
+            head_sha is not None and state == "COMMENTED" and login not in standing
+        ):
             standing[login] = state
     return standing
 
