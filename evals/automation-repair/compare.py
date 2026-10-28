@@ -490,18 +490,23 @@ def compare(rows, cases, expected_repeats=1):
         row["score"]["passed"] for row in rows if row["variant"] == "candidate"
     )
     controls = any(case["kind"] == "control" for case in cases)
+    control_ids = {case["id"] for case in cases if case["kind"] == "control"}
+    controls_passed = controls and all(
+        row["score"]["passed"] for row in rows if row["case_id"] in control_ids
+    )
     status = (
         "inconclusive"
         if errors or not controls or not complete
         else "regressed"
         if regressions
         else "improvement_on_development_cases"
-        if improvement and all_candidate_pass
+        if improvement and all_candidate_pass and controls_passed
         else "inconclusive"
     )
     return {
         "status": status,
         "complete": complete,
+        "controls_passed": controls_passed,
         "cases": results,
         "runs": rows,
         "behavioral_benefit_proven": False,

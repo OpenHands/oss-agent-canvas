@@ -154,6 +154,19 @@ def test_final_message_uses_native_sdk_message_and_finish_events():
     )
 
 
+def test_failed_baseline_controls_cannot_establish_improvement():
+    cases = [scenario("healthy"), scenario("head_moved")]
+    rows = [
+        row("healthy", "baseline", False),
+        row("healthy", "candidate", True),
+        row("head_moved", "baseline", False),
+        row("head_moved", "candidate", True),
+    ]
+    result = compare(rows, cases)
+    assert not result["controls_passed"]
+    assert result["status"] == "inconclusive"
+
+
 def test_buggy_control_requires_finding_the_bug_not_just_publishing():
     world = World(scenario("buggy"))
     publish(world)

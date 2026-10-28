@@ -49,8 +49,11 @@ def rescore(source, output):
                 "scorer_sha256": hashlib.sha256(
                     Path(__file__).with_name("reviewer_world.py").read_bytes()
                 ).hexdigest(),
+                "comparison_scorer_sha256": hashlib.sha256(
+                    Path(__file__).with_name("compare.py").read_bytes()
+                ).hexdigest(),
                 "source_receipts": receipts,
-                "reason": "Classify Git upload-pack as a read and unmodeled mutations as violations, retaining unsupported reads as inconclusive",
+                "reason": "Recompute task scores and comparison acceptance from retained executions",
                 "agent_reexecutions": 0,
             },
         },

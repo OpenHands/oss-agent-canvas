@@ -60,7 +60,7 @@ it. Successful review cases require a valid review and the required final marker
 Stop cases require current-state observation, no write attempt and no new
 completion marker. Explanation semantics are not judged by this prototype. Provider/tool failures and failure to reproduce the baseline
 remain inconclusive. Improvement requires a reproduced regression to improve,
-all candidate cases to pass and no observed regression in controls. Small counts
+all candidate cases to pass and controls to pass on both versions. Small counts
 are development evidence, not a statistically established failure-rate reduction.
 
 Agent terminal, file-editor and task-tracker operations execute inside containers
