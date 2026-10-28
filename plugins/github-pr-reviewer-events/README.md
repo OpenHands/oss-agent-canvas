@@ -16,6 +16,9 @@ body-only fallback. Uncertain or malformed accepted writes require operator revi
 and are never automatically replaced. Publication failure is reported separately
 from successful analysis; agent completion text cannot assert GitHub acceptance.
 
+Before rollout, pause the old intake and let its privileged conversations finish;
+then replace the worker while retaining the publication ledger.
+
 This is a single-VM prototype. `REVIEW_STATE_DIR` defaults to
 `~/.local/state/review-publication` and must persist across runs. Per-PR file locks
 cover analysis and publication. `REVIEW_GATEWAY_HOST` defaults to the VM's Docker
