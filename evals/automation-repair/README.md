@@ -70,6 +70,14 @@ schedules, merges a repair, or posts GitHub reviews. The weekly publisher remain
 explicitly unevaluated; this prototype supplies evidence for human review rather
 than automatically accepting its own generated repairs.
 
+Generate a public summary containing aggregate checks and measurements, without
+private model responses or error text:
+
+```bash
+python3 evals/automation-repair/summarize.py /private/new-comparison \
+  > /private/review-report.md
+```
+
 The execution/comparison runner and reviewer scorer are separate modules. A future
 adapter can run issue triage in the same way and an optional scorer can incorporate
 the existing PR-review content metrics. Without a suitable scorer, execution alone

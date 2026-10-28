@@ -100,7 +100,12 @@ def row(case, variant, passed, *, error=None):
     return {
         "case_id": case,
         "variant": variant,
-        "score": {"passed": passed, "finished": error is None, "error": error},
+        "score": {
+            "passed": passed,
+            "finished": error is None,
+            "error": error,
+            "violations": [],
+        },
     }
 
 
@@ -197,3 +202,30 @@ def test_graphql_mutations_and_invalid_queries_are_not_read_operations():
     result = score(world.snapshot(), finished=True, final_response="Stopped")
     assert not result["passed"]
     assert result["write_attempts"] == 1
+
+
+def test_public_summary_never_includes_private_model_or_error_text(tmp_path):
+    import json
+    from summarize import summarize
+
+    (tmp_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "baseline": "a" * 40,
+                "candidate": "b" * 40,
+                "model": "test-model",
+                "effort": "low",
+                "repeats": 1,
+            }
+        )
+    )
+    result = row("healthy", "baseline", False, error="PRIVATE_CONTENT")
+    result.update(
+        final_response="PRIVATE_CONTENT", measurements={"seconds": 1, "sdk_metrics": {}}
+    )
+    report = compare([result], [scenario("healthy")])
+    (tmp_path / "comparison.json").write_text(json.dumps(report))
+    text = summarize(tmp_path)
+    assert "PRIVATE_CONTENT" not in text
+    assert "inconclusive" in text
+    assert "cost unknown" in text
