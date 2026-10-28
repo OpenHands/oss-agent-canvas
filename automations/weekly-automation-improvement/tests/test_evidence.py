@@ -23,6 +23,7 @@ def request(tmp_path, **overrides):
         "(o/'evidence.json').write_text(json.dumps(v))\n"
     )
     value = {
+        "repository": "example/repo",
         "baseline": "a" * 40,
         "candidate": "b" * 40,
         "pr_url": "https://github.com/example/repo/pull/1",
@@ -33,19 +34,19 @@ def request(tmp_path, **overrides):
     return path, value
 
 
-def github(request, edits, *, head=None, state="OPEN"):
+def github(request, edits, *, head=None, state="open"):
     def command(argv):
-        if argv[:3] == ["gh", "pr", "view"]:
+        if argv[:3] == ["gh", "api", "repos/example/repo/pulls/1"]:
             return json.dumps(
                 {
-                    "headRefOid": head or request["candidate"],
+                    "head": {"sha": head or request["candidate"]},
                     "body": "Maintainer notes\n"
                     + evidence.section("Pending")
                     + "\nTail",
                     "state": state,
                 }
             )
-        assert argv[:3] == ["gh", "pr", "edit"]
+        assert argv[:4] == ["gh", "api", "--method", "PATCH"]
         edits.append(argv)
         return ""
 
@@ -63,6 +64,8 @@ def test_real_runner_then_pr_update_and_resume_without_new_execution(
     assert result["published"]
     assert result["status"] == "improvement_on_development_cases"
     body = (tmp_path / "pr-body-with-evidence.md").read_text()
+    payload = json.loads((tmp_path / "pr-evidence-update.json").read_text())
+    assert payload == {"body": body}
     assert "Maintainer notes" in body and body.endswith("\nTail")
     assert "Before / After Evidence" in body and "Observed comparison" in body
     monkeypatch.setattr(
@@ -72,13 +75,20 @@ def test_real_runner_then_pr_update_and_resume_without_new_execution(
     assert len(edits) == 2
 
 
-@pytest.mark.parametrize("state,head", [("CLOSED", None), ("OPEN", "c" * 40)])
+@pytest.mark.parametrize("state,head", [("closed", None), ("open", "c" * 40)])
 def test_changed_or_closed_pr_never_receives_stale_evidence(tmp_path, state, head):
     path, value = request(tmp_path)
     edits = []
     result = evidence.run(path, github(value, edits, state=state, head=head))
     assert result["status"] == "stale_pr"
     assert edits == []
+
+
+def test_comparison_cannot_update_another_repository(tmp_path, monkeypatch):
+    path, value = request(tmp_path, repository="other/repo")
+    monkeypatch.setattr(evidence, "execute", lambda *a: pytest.fail("Do not execute"))
+    with pytest.raises(ValueError, match="source repository"):
+        evidence.run(path, github(value, []))
 
 
 @pytest.mark.parametrize("tamper", ["candidate", "request_sha256", "status"])

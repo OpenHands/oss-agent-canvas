@@ -3,6 +3,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import signal
 import subprocess
 from pathlib import Path
@@ -74,6 +75,12 @@ def validate_receipt(receipt, request):
 
 def run_locked(request_path, command):
     request = read_json(request_path)
+    match = re.fullmatch(
+        r"https://github.com/([\w.-]+/[\w.-]+)/pull/([1-9][0-9]*)", request["pr_url"]
+    )
+    if not match or match[1] != request["repository"]:
+        raise ValueError("Comparison PR must belong to the source repository")
+    endpoint = f"repos/{match[1]}/pulls/{match[2]}"
     root = request_path.parent
     output = root / "comparison"
     receipt_path = output / "evidence.json"
@@ -124,18 +131,17 @@ def run_locked(request_path, command):
         }
         if not failure_path.exists():
             write_json(failure_path, receipt)
-    current = json.loads(
-        command(
-            ["gh", "pr", "view", request["pr_url"], "--json", "headRefOid,body,state"]
-        )
-    )
-    if current["headRefOid"] != request["candidate"] or current["state"] != "OPEN":
+    current = json.loads(command(["gh", "api", endpoint]))
+    if current["head"]["sha"] != request["candidate"] or current["state"] != "open":
         return {"status": "stale_pr", "comparison_status": receipt["status"]}
     body = replace_section(current["body"], redact(receipt["markdown"]))
     body_path = root / "pr-body-with-evidence.md"
     body_path.write_text(body)
     body_path.chmod(0o600)
-    command(["gh", "pr", "edit", request["pr_url"], "--body-file", str(body_path)])
+    payload_path = root / "pr-evidence-update.json"
+    payload_path.write_text(json.dumps({"body": body}))
+    payload_path.chmod(0o600)
+    command(["gh", "api", "--method", "PATCH", endpoint, "--input", str(payload_path)])
     return {
         "status": receipt["status"],
         "published": True,
