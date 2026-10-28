@@ -27,8 +27,7 @@ automatic merges and deployments are deferred.
    several leaf memberships, use its first sorted leaf once. Count distinct
    conversations so repeated events do not inflate affected-run counts. Cards have
    up to three distinct-conversation examples, outcome/cause counts and recency.
-5. Make one `openai/gpt-6-luna` call per automation to select up to three repair
-   topics. Clusters are semantic hints: Luna may merge duplicate groups or split
+5. Use `openai/gpt-6-luna` to select focused repair topics in batches. Clusters are semantic hints: Luna may merge duplicate groups or split
    a mixed group using different representative events. Each topic gets a title,
    stable key, reason and up to three representative conversations. A single
    event cannot be assigned to two topics, while different events from one
@@ -51,9 +50,12 @@ automatic merges and deployments are deferred.
    failure/report/publication state, so one
    failed or uncertain publication does not block the automation's other topics.
 
-The prototype uses one Luna call and up to three Sol calls per automation in each
-weekly execution. There is no custom embedding service, new clustering
-infrastructure, repair loop or generalized evaluation framework.
+The worker continues to new batches until Luna finds no further actionable
+issues, all available representatives have been considered, or the run reaches a
+resource threshold. There is no total topic or PR-count quota. Each topic gets
+at most one Sol call per investigation; failures are not retried in the same run.
+There is no custom embedding service, new clustering infrastructure, repair loop
+or generalized evaluation framework.
 
 ## Configure and run
 
@@ -61,9 +63,9 @@ Copy [weekly.example.json](weekly.example.json) outside git. Configure the proje
 Signal, endpoints, existing canonical checkout, approved repository/base branch,
 private state directory and GitHub secret name. Create the repository label `automation-improvement`
 (already installed in `OpenHands/oss-agent-canvas`). `triage_model` and `repair_model`
-are configurable. `max_topics_per_automation` sets the weekly investigation budget
-(default three, supported range one to three). Additional topics remain pending.
-Keep the credentials file owner-only:
+are configurable. `triage_batch_size` controls topics returned per Luna call
+(default three), not a total PR limit. The obsolete `max_topics_per_automation`
+setting no longer limits output. Keep the credentials file owner-only:
 
 ```json
 {"LMNR_PROJECT_API_KEY":"...","LITELLM_API_KEY":"..."}
@@ -100,8 +102,9 @@ historical executed source equals current source; context and PRs disclose this.
 
 A process lock prevents overlap. `backlog` stores pending event records, `events`
 stores assessed event IDs with their topic IDs, and `topic_weeks` stores completed
-or reserved topic investigations. Each automation has a configurable weekly topic
-budget; there is no single-PR slot for the whole automation.
+or reserved topic investigations. Repeated batches can produce any number of
+independently useful PRs; the ledger deduplicates topics rather than imposing a
+weekly count quota.
 
 Before publication, reserve only that topic's slot atomically. An uncertain result
 blocks that topic rather than its siblings. Branch names derive from automation
@@ -154,8 +157,8 @@ The workload limits below are not a dollar cap.
 ## Frozen local iteration and bounds
 
 The batch directory contains `collection/input.json` with the complete lightweight
-inventory. Each automation has `triage/triage-input.json` plus saved Luna requests,
-responses and measurements. Its `topics/TOPIC_ID/` directories each contain a
+inventory. Each automation has `triage/pass-NNN/triage-input.json` plus saved Luna
+requests, reference maps, responses and measurements. Its `topics/TOPIC_ID/` directories each contain a
 frozen `snapshot-with-source.json`, source config, Sol request/response, analysis,
 mechanical-validation artifacts and `topic-report.json`. `automation-report.json`
 collects the topic outcomes.
@@ -178,16 +181,24 @@ chronology and final visible steps remain, with explicit clipping. The earlier
 Luna trajectory-analysis mode and optional configured behavioral-check path remain
 available through `main.py`; the weekly path reuses persisted Flow-1 findings.
 
-Bounds: 10,000 Signal run rows per seven-day collection window; one Luna call and
-up to three Sol calls per automation in a weekly execution; up to three topic
-investigations per automation/week, each with three representative conversations;
-30 source files / 250 KB; 20,000 characters per native Flow-1 finding text field;
-750 KB per model request; 4,096 output tokens. Oversized
-requests fail visibly with pending data retained. Each conversation retains the
-existing 1,000-span, 2 MB projected-sample and 8 MB HTTP-response limits. There is
-no silent replacement sampling or inference retry. More automation groups mean
-more model calls; the former one-PR-per-automation limit has been replaced
-with a bounded topic budget.
+## Resource thresholds and request bounds
+
+`max_inference_cost_usd` (default $1) and `max_run_seconds` (default 900) apply to
+the whole invocation. They are checked before new model calls and topic work.
+A completed request and its publication can finish, so one request can exceed the
+spending threshold. This is not a strict provider billing cap. Proxy-reported
+costs are recorded; an unknown/invalid cost stops further inference. Timeouts and
+failed requests are not silently retried. Deferred topics stay in the backlog,
+and reports distinguish budget exhaustion from "no actionable findings".
+
+Technical bounds remain: 10,000 Signal run rows per seven-day collection window;
+representative conversations per topic set by `--limit 1..3`; 30 source files /
+250 KB; 20,000 characters per native Flow-1 finding text field; 750 KB per model
+request; 4,096 output tokens; one focused proposal and at most four exact source
+edits per repair. Each conversation retains the existing 1,000-span, 2 MB
+projected-sample and 8 MB HTTP-response limits. Oversized requests fail visibly
+with pending data retained. These bounds constrain individual requests/patches,
+not how many useful topics the run may publish.
 
 ```bash
 python3 -m pytest automations/weekly-automation-improvement/tests -q

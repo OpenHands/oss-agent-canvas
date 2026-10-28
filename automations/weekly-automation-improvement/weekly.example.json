@@ -14,5 +14,7 @@
   "publish_drafts": true,
   "triage_model": "openai/gpt-6-luna",
   "repair_model": "openai/gpt-6.1-sol",
-  "max_topics_per_automation": 3
+  "triage_batch_size": 3,
+  "max_inference_cost_usd": 1.0,
+  "max_run_seconds": 900
 }

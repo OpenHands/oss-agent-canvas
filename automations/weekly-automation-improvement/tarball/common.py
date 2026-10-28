@@ -95,6 +95,9 @@ def timestamp(value):
 
 
 def call_model(args, model, instruction, context, name, schema):
+    budget = getattr(args, "budget", None)
+    if budget:
+        budget.check()
     body = {"model": model}
     messages = [
         {"role": "system", "content": instruction},
@@ -146,6 +149,8 @@ def call_model(args, model, instruction, context, name, schema):
             raw = response.read(2_000_001)
             headers = {key.lower(): value for key, value in response.headers.items()}
     except urllib.error.HTTPError as error:
+        if budget:
+            budget.record((error.headers or {}).get("x-litellm-response-cost"))
         write_json(
             args.output / "responses" / (name + "-error.json"),
             {"http_status": error.code, "seconds": time.monotonic() - started},
@@ -153,6 +158,12 @@ def call_model(args, model, instruction, context, name, schema):
         raise ValueError(
             f"Model endpoint returned HTTP {error.code}; no automatic retry"
         ) from None
+    except OSError:
+        if budget:
+            budget.record(None)
+        raise
+    if budget:
+        budget.record(headers.get("x-litellm-response-cost"))
     if len(raw) > 2_000_000:
         raise ValueError("Model response exceeds its byte budget")
     response = json.loads(raw)

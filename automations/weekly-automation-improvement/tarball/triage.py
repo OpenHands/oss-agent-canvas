@@ -9,7 +9,6 @@ TRIAGE = object_schema(
     {
         "topics": {
             "type": "array",
-            "maxItems": 3,
             "items": object_schema(
                 {
                     "key": {
@@ -201,7 +200,9 @@ def triage(args, records, prs, completed_topics=()):
         ),
         "groups": compact_cards,
         "existing_improvement_prs": prs,
-        "completed_or_reserved_topics_this_week": list(completed_topics),
+        "completed_or_reserved_topics_this_week": [
+            {key: topic[key] for key in ("key", "title")} for topic in completed_topics
+        ],
     }
     write_json(args.output / "triage-input.json", context)
     properties = TRIAGE["properties"]["topics"]["items"]["properties"]

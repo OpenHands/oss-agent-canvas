@@ -729,8 +729,8 @@ def test_collection_errors_are_not_reported_as_no_findings(
     assert calls == []
 
 
-def distinct_records():
-    records = [record(1), record(2), record(3)]
+def distinct_records(count=3):
+    records = [record(i) for i in range(1, count + 1)]
     for i, item in enumerate(records):
         payload = json.loads(item["event"]["payload"])
         payload["signature"] = "independent issue " + str(i)
@@ -751,13 +751,12 @@ def test_one_automation_creates_separate_topic_repairs_and_reservations(
     assert len([c for c in calls if c[0] == "sol"]) == 3
     state = json.loads((Path(config["state_dir"]) / "state.json").read_text())
     assert len(state["topic_weeks"]) == 3 and not state["backlog"]
-    before = list(calls)
     monkeypatch.setattr(
         weekly, "collect_events", lambda *a, **k: inventory(records + [record(4)])
     )
     again = weekly.run(config)
-    assert again["automations"][0]["status"] == "weekly_topic_budget_exhausted"
-    assert calls == before
+    assert again["automations"][0]["status"] == "completed"
+    assert len([call for call in calls if call[0] == "publish"]) == 4
 
 
 def test_failed_topic_does_not_block_other_topics_in_same_automation(
@@ -793,15 +792,18 @@ def test_failed_topic_does_not_block_other_topics_in_same_automation(
     assert len(count) == 3
 
 
-def test_invalid_topic_budget_fails_before_collection(tmp_path, monkeypatch):
+def test_invalid_resource_budget_fails_before_collection(tmp_path, monkeypatch):
     monkeypatch.setattr(
         weekly,
         "load_environment",
         lambda c: pytest.fail("Invalid budget must fail before access"),
     )
-    for value in (0, 4, True, "3"):
-        with pytest.raises(ValueError, match="max_topics_per_automation"):
-            weekly.run(configuration(tmp_path) | {"max_topics_per_automation": value})
+    for name in ("max_run_seconds", "max_inference_cost_usd"):
+        for value in (0, -1, True, "3", float("inf")):
+            with pytest.raises(ValueError, match=name):
+                weekly.run(configuration(tmp_path) | {name: value})
+    with pytest.raises(ValueError, match="triage_batch_size"):
+        weekly.run(configuration(tmp_path) | {"triage_batch_size": 0})
 
 
 def test_completed_legacy_automation_does_not_block_new_topic(
@@ -1062,3 +1064,40 @@ def test_reusing_existing_pr_applies_model_agnostic_label(
             "automation-improvement",
         ]
     ]
+
+
+def test_more_than_three_topics_publish_across_batches(
+    configured_source, tmp_path, monkeypatch
+):
+    config, calls = prepare_grouped(
+        configured_source, tmp_path, monkeypatch, distinct_records(7)
+    )
+    config.update(triage_batch_size=2, max_topics_per_automation=1)
+    result = weekly.run(config)
+    topics = result["automations"][0]["topics"]
+    assert len(topics) == 7
+    assert len({t["publication"]["pr_url"] for t in topics}) == 7
+    assert len([c for c in calls if c[0] == "luna"]) == 4
+    assert len([c for c in calls if c[0] == "publish"]) == 7
+
+
+def test_budget_defers_unstarted_topics_and_preserves_backlog(
+    configured_source, tmp_path, monkeypatch
+):
+    config, calls = prepare_grouped(
+        configured_source, tmp_path, monkeypatch, distinct_records()
+    )
+    original = weekly.propose_fix
+
+    def publish(args, report, snapshot):
+        result = original(args, report, snapshot)
+        args.budget.record(2)
+        return result
+
+    monkeypatch.setattr(weekly, "propose_fix", publish)
+    result = weekly.run(config | {"max_inference_cost_usd": 1})
+    assert result["status"] == "budget_exhausted"
+    assert result["budget"]["stop_reason"] == "inference_cost_threshold"
+    assert len([c for c in calls if c[0] == "publish"]) == 1
+    state = json.loads((Path(config["state_dir"]) / "state.json").read_text())
+    assert len(state["backlog"]) == 2 and len(state["topic_weeks"]) == 1

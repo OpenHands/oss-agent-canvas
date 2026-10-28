@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 
 import main as analysis
+from budget import BudgetExhausted, RunBudget
 from common import encode, read_json, redact, timestamp, write_json
 from events import collect_events, hydrate_events
 from laminar import Laminar
@@ -148,9 +149,10 @@ def source_config(config, snapshot, output):
 def run(config, *, dry_run=False, limit=3, seed=None):
     if not 1 <= limit <= 3:
         raise ValueError("Select one to three representatives per topic")
-    maximum = config.get("max_topics_per_automation", 3)
-    if type(maximum) is not int or not 1 <= maximum <= 3:
-        raise ValueError("max_topics_per_automation must be between one and three")
+    batch_size = config.get("triage_batch_size", 3)
+    if type(batch_size) is not int or batch_size < 1:
+        raise ValueError("triage_batch_size must be a positive integer")
+    budget = RunBudget(config)
     load_environment(config)
     state_dir = Path(config["state_dir"]).expanduser()
     state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -160,7 +162,9 @@ def run(config, *, dry_run=False, limit=3, seed=None):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return {"status": "skipped_overlap"}
-        return run_locked(config, state_dir, dry_run=dry_run, limit=limit, seed=seed)
+        return run_locked(
+            config, state_dir, dry_run=dry_run, limit=limit, seed=seed, budget=budget
+        )
     finally:
         os.close(lock)
 
@@ -275,9 +279,11 @@ def investigate_topic(
     seed,
     topic,
     aggregation,
+    budget=None,
 ):
     automation_id = records[0]["owner"]["automation_id"]
     args = arguments(config, output / "analysis", limit, seed)
+    args.budget = budget
     result = {
         "automation_id": automation_id,
         "topic": topic,
@@ -385,26 +391,21 @@ def investigate(
     dry_run,
     limit,
     seed,
+    budget=None,
 ):
     automation_id = records[0]["owner"]["automation_id"]
-    maximum = config.get("max_topics_per_automation", 3)
     prefix = week + "/" + automation_id + "/"
     completed = [
         value["topic"]
         for key, value in state["topic_weeks"].items()
         if key.startswith(prefix)
     ]
-    remaining = maximum if dry_run else maximum - len(completed)
     result = {
         "automation_id": automation_id,
         "automation_name": records[0]["owner"]["automation_name"],
         "topics": [],
+        "triage_passes": [],
     }
-    if remaining <= 0:
-        return result | {"status": "weekly_topic_budget_exhausted"}
-    args = arguments(config, output / "triage", limit, seed)
-    args.max_topics = remaining
-    args.output.mkdir(mode=0o700)
     scoped_prs = [
         pr
         for pr in prs
@@ -412,104 +413,156 @@ def investigate(
         or "<!-- automation-improvement-automation: " + automation_id + " -->"
         in pr["body"]
     ]
-    topics, aggregation = triage(args, records, scoped_prs, completed)
-    result["aggregation"] = aggregation
     by_id = {record["event"]["id"]: record for record in records}
-    for topic in topics:
-        key = prefix + topic["id"]
-        directory = output / "topics" / topic["id"]
-        directory.mkdir(parents=True, mode=0o700)
-        tracked = published_for(scoped_prs, automation_id, week, topic)
-        if not dry_run and (key in state["topic_weeks"] or tracked):
-            outcome = {
-                "topic": topic,
-                "status": "topic_already_completed_or_tracked",
-                "pr_url": tracked["url"]
-                if tracked
-                else state["topic_weeks"][key].get("pr_url"),
-            }
-        else:
-            context = {
-                **aggregation,
-                "groups": [
-                    card
-                    for card in aggregation["groups"]
-                    if card["group_id"] in topic["group_ids"]
-                ],
-                "luna_triage": {"topics": [topic], "no_action_reason": ""},
-            }
-            try:
-                outcome = investigate_topic(
-                    config,
-                    inventory,
-                    [by_id[event_id] for event_id in topic["representative_event_ids"]],
-                    scoped_prs,
-                    directory,
-                    state,
-                    state_path,
-                    week,
-                    dry_run,
-                    limit,
-                    seed,
-                    topic,
-                    context,
-                )
-                if not dry_run:
-                    state["topic_weeks"][key] = {
-                        "status": "completed",
-                        "topic": topic,
-                        "report": str(directory / "topic-report.json"),
-                        "publication": outcome["publication"],
-                        "pr_url": outcome["publication"].get("pr_url")
-                        if isinstance(outcome["publication"], dict)
-                        else None,
-                    }
-                    save_state(state_path, state)
-                if isinstance(outcome.get("publication"), dict) and outcome[
-                    "publication"
-                ].get("pr_url"):
-                    report = read_json(directory / "analysis/report.json")
-                    proposal = report["proposals"][0]
-                    scoped_prs.append(
-                        {
-                            "url": outcome["publication"]["pr_url"],
-                            "title": proposal["title"],
-                            "body": "\n".join(
-                                (
-                                    "<!-- automation-improvement-automation: "
-                                    + automation_id
-                                    + " -->",
-                                    "<!-- automation-improvement-topic: "
-                                    + topic["id"]
-                                    + " -->",
-                                    "<!-- automation-improvement-topic-key: "
-                                    + topic["key"]
-                                    + " -->",
-                                    proposal["hypothesis"],
-                                )
-                            ),
-                            "state": "OPEN",
-                            "createdAt": dt.datetime.now(dt.UTC).isoformat(),
-                        }
-                    )
-            except Exception as error:
+    pending = list(records)
+    seen, attempted, exhausted = set(), set(), False
+    while pending:
+        try:
+            if budget:
+                budget.check()
+            args = arguments(
+                config,
+                output / "triage" / f"pass-{len(result['triage_passes']) + 1:03d}",
+                limit,
+                seed,
+            )
+            args.budget = budget
+            args.max_topics = config.get("triage_batch_size", 3)
+            args.output.mkdir(parents=True, mode=0o700)
+            topics, aggregation = triage(args, pending, scoped_prs, completed)
+        except BudgetExhausted as error:
+            result["stop_reason"] = str(error)
+            exhausted = True
+            break
+        result["triage_passes"].append(aggregation)
+        if not topics:
+            result["no_action_reason"] = aggregation.get("luna_triage", {}).get(
+                "no_action_reason", "No further promising topics"
+            )
+            break
+        for topic in topics:
+            attempted.update(topic["representative_event_ids"])
+            if topic["id"] in seen:
+                continue
+            seen.add(topic["id"])
+            completed.append(topic)
+            key = prefix + topic["id"]
+            directory = output / "topics" / topic["id"]
+            directory.mkdir(parents=True, mode=0o700)
+            tracked = published_for(scoped_prs, automation_id, week, topic)
+            if not dry_run and (key in state["topic_weeks"] or tracked):
                 outcome = {
                     "topic": topic,
-                    "status": "failed",
-                    "error": str(error)[:1000],
+                    "status": "topic_already_completed_or_tracked",
+                    "pr_url": tracked["url"]
+                    if tracked
+                    else state["topic_weeks"][key].get("pr_url"),
                 }
-        write_json(directory / "topic-report.json", redact(outcome))
-        result["topics"].append(outcome)
+            else:
+                context = {
+                    **aggregation,
+                    "groups": [
+                        card
+                        for card in aggregation["groups"]
+                        if card["group_id"] in topic["group_ids"]
+                    ],
+                    "luna_triage": {"topics": [topic], "no_action_reason": ""},
+                }
+                try:
+                    if budget:
+                        budget.check()
+                    outcome = investigate_topic(
+                        config,
+                        inventory,
+                        [
+                            by_id[event_id]
+                            for event_id in topic["representative_event_ids"]
+                        ],
+                        scoped_prs,
+                        directory,
+                        state,
+                        state_path,
+                        week,
+                        dry_run,
+                        limit,
+                        seed,
+                        topic,
+                        context,
+                        budget,
+                    )
+                    if not dry_run:
+                        state["topic_weeks"][key] = {
+                            "status": "completed",
+                            "topic": topic,
+                            "report": str(directory / "topic-report.json"),
+                            "publication": outcome["publication"],
+                            "pr_url": outcome["publication"].get("pr_url")
+                            if isinstance(outcome["publication"], dict)
+                            else None,
+                        }
+                        save_state(state_path, state)
+                    if isinstance(outcome.get("publication"), dict) and outcome[
+                        "publication"
+                    ].get("pr_url"):
+                        report = read_json(directory / "analysis/report.json")
+                        proposal = report["proposals"][0]
+                        scoped_prs.append(
+                            {
+                                "url": outcome["publication"]["pr_url"],
+                                "title": proposal["title"],
+                                "body": "\n".join(
+                                    (
+                                        "<!-- automation-improvement-automation: "
+                                        + automation_id
+                                        + " -->",
+                                        "<!-- automation-improvement-topic: "
+                                        + topic["id"]
+                                        + " -->",
+                                        "<!-- automation-improvement-topic-key: "
+                                        + topic["key"]
+                                        + " -->",
+                                        proposal["hypothesis"],
+                                    )
+                                ),
+                                "state": "OPEN",
+                                "createdAt": dt.datetime.now(dt.UTC).isoformat(),
+                            }
+                        )
+                except BudgetExhausted as error:
+                    outcome = {
+                        "topic": topic,
+                        "status": "deferred_budget",
+                        "reason": str(error),
+                    }
+                    exhausted = True
+                except Exception as error:
+                    outcome = {
+                        "topic": topic,
+                        "status": "failed",
+                        "error": str(error)[:1000],
+                    }
+            write_json(directory / "topic-report.json", redact(outcome))
+            result["topics"].append(outcome)
+            if exhausted:
+                break
+        if exhausted:
+            break
+        pending = [
+            record for record in records if record["event"]["id"] not in attempted
+        ]
     return result | {
+        "budget_exhausted": exhausted,
         "status": "partial_failure"
         if any(item["status"] == "failed" for item in result["topics"])
+        else "budget_exhausted"
+        if exhausted
         else "completed"
-        if topics
-        else "no_promising_findings"
+        if result["topics"]
+        else "no_promising_findings",
     }
 
 
-def run_locked(config, state_dir, *, dry_run, limit, seed):
+def run_locked(config, state_dir, *, dry_run, limit, seed, budget=None):
     now = dt.datetime.now(dt.UTC)
     week = week_key(now)
     output = (
@@ -577,7 +630,14 @@ def run_locked(config, state_dir, *, dry_run, limit, seed):
                     dry_run,
                     limit,
                     seed,
+                    budget,
                 )
+            except BudgetExhausted as error:
+                result = {
+                    "automation_id": automation_id,
+                    "status": "budget_exhausted",
+                    "reason": str(error),
+                }
             except Exception as error:
                 result = {
                     "automation_id": automation_id,
@@ -599,6 +659,12 @@ def run_locked(config, state_dir, *, dry_run, limit, seed):
         summary["status"] = (
             "completed_with_collection_errors" if grouped else "collection_incomplete"
         )
+    if summary["status"] != "partial_failure" and any(
+        item["status"] == "budget_exhausted" or item.get("budget_exhausted")
+        for item in summary["automations"]
+    ):
+        summary["status"] = "budget_exhausted"
+    summary["budget"] = budget.snapshot() if budget else None
     summary["pending_events"] = len(state["backlog"])
     write_json(output / "weekly-report.json", redact(summary))
     return summary
