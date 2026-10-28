@@ -116,3 +116,6 @@ The rescored manifest records the scorer hash, original evidence hashes and zero
 agent reexecutions; `changes.json` retains every before/after score. This command
 corrects classification only and does not add missing API responses or reinterpret
 provider/runtime failures as passes. Reports must identify both scoring versions.
+
+Recorded results: [initial prompt-only comparison](VALIDATION.md) and
+[controlled publication with native VM checks](VALIDATION_CONTROLLED_PUBLICATION.md).
