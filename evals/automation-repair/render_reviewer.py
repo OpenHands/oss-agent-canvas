@@ -12,7 +12,15 @@ def render(source, case):
     builder = worker.workflow._build_review_prompt
 
     def build(*args, **kwargs):
-        kwargs["workspace_instructions"] = (
+        bootstrap = (
+            "Download /client.py from os.environ['REVIEW_GATEWAY_URL'] with urllib.request "
+            "using build_opener(ProxyHandler({})) to connect directly, "
+            "and Authorization 'Bearer ' + os.environ['REVIEW_GATEWAY_TOKEN']; save it as "
+            "/tmp/review_client.py without printing credentials. "
+            if kwargs.get("proposal_only")
+            else ""
+        )
+        kwargs["workspace_instructions"] = bootstrap + (
             "The workspace is already the repository root at the exact Head SHA above, "
             "with the PR base and head available locally. Do not clone, fetch, check out, "
             "or delete the repository."

@@ -339,3 +339,42 @@ def test_resume_reuses_completed_trials_without_model_or_container_calls(
         ]
         == 0
     )
+
+
+def test_pr_issue_and_invalid_commit_urls_have_realistic_responses():
+    world = World(scenario("healthy"))
+    assert world.request("GET", ROOT + "/issues/7")[1]["pull_request"]
+    assert world.request("GET", ROOT + "/pulls/7/commits/" + SHA)[0] == 404
+    assert not world.coverage_errors
+
+
+def test_buggy_contents_agrees_with_the_checkout():
+    import base64
+
+    world = World(scenario("buggy"))
+    content = world.request("GET", ROOT + "/contents/arithmetic.py")[1]["content"]
+    assert b"a * b" in base64.b64decode(content)
+
+
+def test_git_http_supports_fetch_and_rejects_push(tmp_path):
+    from compare import fixture
+    from git_http import GitHTTP
+
+    source = tmp_path / "source"
+    revisions = fixture(source)
+    world = World(
+        scenario("healthy")
+        | {"requested_sha": revisions["head"], "base_sha": revisions["base"]}
+    )
+    backend = GitHTTP(source, tmp_path / "exports", world)
+    status, headers, body = backend.request(
+        "GET", "/fixture/review.git/info/refs?service=git-upload-pack", b"", {}
+    )
+    assert status == 200
+    assert headers["Content-Type"] == "application/x-git-upload-pack-advertisement"
+    assert revisions["head"].encode() in body
+    assert (
+        backend.request("POST", "/fixture/review.git/git-receive-pack", b"", {})[0]
+        == 403
+    )
+    assert all(request["read_only"] for request in world.requests)

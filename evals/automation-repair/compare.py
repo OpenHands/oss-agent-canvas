@@ -146,6 +146,7 @@ class Sandbox:
                 "subjectAltName=DNS:api.github.com,DNS:github.com",
             ]
         )
+        self.controlled = (automation_source / "controlled_review.py").exists()
         self.created = False
         try:
             command(
@@ -171,9 +172,13 @@ class Sandbox:
                     "--add-host",
                     "github.com:127.0.0.1",
                     "--env",
-                    "GITHUB_TOKEN=replay-only-not-a-credential",
+                    "REVIEW_GATEWAY_TOKEN=replay-only-not-a-credential"
+                    if self.controlled
+                    else "GITHUB_TOKEN=replay-only-not-a-credential",
                     "--env",
-                    "GH_TOKEN=replay-only-not-a-credential",
+                    "REVIEW_GATEWAY_URL=https://api.github.com"
+                    if self.controlled
+                    else "GH_TOKEN=replay-only-not-a-credential",
                     "--env",
                     "GH_PROMPT_DISABLED=1",
                     "--env",
@@ -212,6 +217,7 @@ class Sandbox:
                 ROOT / "render_reviewer.py",
                 ROOT / "container_server.py",
                 ROOT / "reviewer_world.py",
+                ROOT / "git_http.py",
                 directory / "case.json",
                 directory / "token",
                 directory / "key.pem",
@@ -641,9 +647,38 @@ def run_comparison(args):
                             },
                         )
                         new_executions += 1
-                        finished, response, error, measurements = run_agent(
-                            args, sandbox, prompt, output
+                        precheck = (
+                            sandbox.call("/precheck", {})
+                            if sandbox.controlled
+                            else None
                         )
+                        if precheck:
+                            finished, response, error = True, "", None
+                            measurements = {
+                                "seconds": 0,
+                                "sdk_metrics": {},
+                                "execution_status": "controller_precheck",
+                                "agent_executed": False,
+                            }
+                            write(output / "events.json", [])
+                            write(output / "measurements.json", measurements)
+                        else:
+                            finished, response, error, measurements = run_agent(
+                                args, sandbox, prompt, output
+                            )
+                            measurements["agent_executed"] = True
+                        publication = None
+                        agent_response = response
+                        if sandbox.controlled:
+                            publication = precheck or sandbox.call(
+                                "/publish", {"finished": finished}
+                            )
+                            response = (
+                                publication.get("final_response")
+                                or publication.get("reason")
+                                or publication.get("status", "No publication")
+                            )
+                            write(output / "publication.json", publication)
                         state = sandbox.call("/snapshot", {})
                         write(output / "world.json", state)
                         verdict = score(
@@ -659,6 +694,8 @@ def run_comparison(args):
                             "score": verdict,
                             "measurements": measurements,
                             "final_response": response,
+                            "agent_final_response": agent_response,
+                            "publication": publication,
                         }
                         rows.append(row)
                         write(output / "result.json", row)

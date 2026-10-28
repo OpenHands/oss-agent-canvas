@@ -205,6 +205,10 @@ class World:
                     },
                     "files": [{"filename": "arithmetic.py", "patch": self.diff()}],
                 }
+            if path == root + "/issues/7":
+                return 200, {**self.pr, "pull_request": {"url": root + "/pulls/7"}}
+            if path.startswith(root + "/pulls/7/commits/"):
+                return 404, {"message": "Not Found"}
             if path == root + "/pulls/7":
                 if (
                     self.case.get("move_after_reads")
@@ -246,7 +250,9 @@ class World:
                 filename = path.split("/contents/", 1)[1]
                 files = {
                     "AGENTS.md": GUIDANCE,
-                    "arithmetic.py": "def add(a, b):\n    return a + b\n",
+                    "arithmetic.py": "def add(a, b):\n    return a "
+                    + ("*" if self.case["id"] == "buggy" else "+")
+                    + " b\n",
                     "CONTRIBUTING.md": GUIDANCE,
                 }
                 if filename in files:

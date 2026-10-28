@@ -1,6 +1,9 @@
 import argparse
 import hmac
 import json
+import io
+import sys
+from urllib.error import HTTPError
 import ssl
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -8,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from reviewer_world import World
+from git_http import GitHTTP
 
 
 def serve(args):
@@ -16,7 +20,60 @@ def serve(args):
     from openhands.tools.terminal import TerminalTool
 
     world = World(json.loads(Path(args.case).read_text()))
-    lock = threading.Lock()
+    lock = threading.RLock()
+    source = Path("/tmp/replay/automation-source")
+    controlled = (source / "controlled_review.py").exists()
+    gateway_requests = []
+    git = GitHTTP("/tmp/workspace/repo", "/tmp/git-fixture", world)
+    if controlled:
+        sys.path.insert(0, str(source))
+        from review_gateway import ReviewGateway
+        from review_publication import ReviewPublisher
+
+        def api(method, path, body=None):
+            status, result = world.request(method, path, body)
+            if status >= 400:
+                raise HTTPError(
+                    path,
+                    status,
+                    "Fixture rejection",
+                    {},
+                    io.BytesIO(json.dumps(result).encode()),
+                )
+            return result
+
+        def archive():
+            import subprocess
+
+            return subprocess.check_output(
+                [
+                    "git",
+                    "-C",
+                    "/tmp/workspace/repo",
+                    "archive",
+                    "--format=tar.gz",
+                    "--prefix=source/",
+                    world.requested_sha,
+                ]
+            )
+
+        gateway = ReviewGateway(
+            "fixture/review",
+            7,
+            world.requested_sha,
+            "replay-only-not-a-credential",
+            lambda path: api("GET", path),
+            archive,
+        )
+        publisher = ReviewPublisher(
+            api,
+            "fixture/review",
+            7,
+            world.requested_sha,
+            "all-hands-bot",
+            "frozen-eval",
+            "/tmp/publication-state",
+        )
     state = SimpleNamespace(
         workspace=SimpleNamespace(working_dir="/tmp/workspace/repo"),
         env_observation_persistence_dir="/tmp/tool-output",
@@ -57,13 +114,55 @@ def serve(args):
             try:
                 if private and self.path == "/snapshot":
                     with lock:
-                        result = world.snapshot()
+                        result = {
+                            **world.snapshot(),
+                            "gateway_requests": gateway_requests,
+                        }
                 elif private and self.path == "/tool":
                     tool = tools[body["tool"]]
                     action = tool.action_type.model_validate(body["action"])
                     result = tool.executor(action).model_dump(mode="json")
+                elif private and self.path == "/precheck" and controlled:
+                    with lock:
+                        result = publisher.precheck()
+                elif private and self.path == "/publish" and controlled:
+                    with lock:
+                        if not body.get("finished") or gateway.proposal is None:
+                            result = {
+                                "status": "analysis_incomplete",
+                                "reason": "No accepted proposal from a finished agent",
+                            }
+                        else:
+                            result = publisher.publish(gateway.proposal)
                 elif private:
                     status, result = 404, {"error": "Unknown replay operation"}
+                elif self.path.startswith("/fixture/review.git/"):
+                    with lock:
+                        status, response_headers, result = git.request(
+                            self.command, self.path, raw, self.headers
+                        )
+                    self.send_response(status)
+                    for key, value in response_headers.items():
+                        self.send_header(key, value)
+                    self.send_header("Content-Length", str(len(result)))
+                    self.end_headers()
+                    self.wfile.write(result)
+                    return
+                elif controlled:
+                    with lock:
+                        status, result = gateway.handle(
+                            self.command,
+                            self.path,
+                            raw,
+                            self.headers.get("Authorization"),
+                        )
+                        gateway_requests.append(
+                            {
+                                "method": self.command,
+                                "path": self.path,
+                                "status": status,
+                            }
+                        )
                 else:
                     with lock:
                         status, result = world.request(
@@ -73,7 +172,9 @@ def serve(args):
                             self.headers.get("Accept", ""),
                         )
                 data = (
-                    result.encode()
+                    result
+                    if isinstance(result, bytes)
+                    else result.encode()
                     if isinstance(result, str)
                     else json.dumps(result).encode()
                 )
