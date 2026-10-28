@@ -152,6 +152,20 @@ class IssueTriage(GitHubRepository):
                     ],
                 }
             )
+            + "\n\nFinal decision audit before any GitHub write:\n"
+            "1. Identify whether the author reports harm that actually happened to them, "
+            "or only describes a hypothetical/code-only risk. Treat the report as a report, "
+            "without upgrading its unverified monetary amount or cause into a proven fact.\n"
+            "2. For reported actual harm, choose medium/high by impact. A draft rationale "
+            "that assigns low solely for missing reproduction, logs, invoices or independent "
+            "confirmation violates this policy: replace that priority and rationale. "
+            "Do not copy an earlier draft's priority without performing this audit. "
+            "For hypothetical/code-only risk without recorded user pain, keep low.\n"
+            "3. Decide readiness separately. Unresolved product decisions or missing "
+            "author-only information require DECISION NEEDED and no ready-for-dev; "
+            "they do not downgrade the priority of reported harm.\n"
+            "4. Apply the audited priority, preserve unrelated labels, and read back the "
+            "final priority and readiness labels before finishing."
         )
 
     def _submit(self, repository_id, issue, issues):
