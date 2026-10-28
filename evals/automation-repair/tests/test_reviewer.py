@@ -229,3 +229,113 @@ def test_public_summary_never_includes_private_model_or_error_text(tmp_path):
     assert "PRIVATE_CONTENT" not in text
     assert "inconclusive" in text
     assert "cost unknown" in text
+
+
+def test_trial_deadline_interrupts_blocking_work_and_restores_handler():
+    import signal
+    import time
+    from compare import TrialDeadline, deadline
+
+    previous = signal.getsignal(signal.SIGALRM)
+    started = time.monotonic()
+    with pytest.raises(TrialDeadline):
+        with deadline(0.02):
+            time.sleep(2)
+    assert time.monotonic() - started < 1
+    assert signal.getsignal(signal.SIGALRM) == previous
+
+
+def test_comparison_lock_prevents_duplicate_execution(tmp_path):
+    from compare import comparison_lock
+
+    with comparison_lock(tmp_path):
+        with pytest.raises(ValueError, match="already running"):
+            with comparison_lock(tmp_path):
+                pytest.fail("A second process must not enter")
+    with comparison_lock(tmp_path):
+        pass
+
+
+def test_resume_reuses_completed_trials_without_model_or_container_calls(
+    tmp_path, monkeypatch
+):
+    import json
+    from types import SimpleNamespace
+    import compare as runner
+
+    source = tmp_path / "checkout"
+    revisions = runner.fixture(source)
+    output = tmp_path / "output"
+    output.mkdir()
+    case = scenario("healthy") | {
+        "requested_sha": revisions["head"],
+        "base_sha": revisions["base"],
+        "moved_sha": revisions["buggy_head"],
+    }
+    manifest = {
+        "baseline": revisions["head"],
+        "candidate": revisions["buggy_head"],
+        "model": "test",
+        "llm_base_url": "https://example.invalid",
+        "effort": "low",
+        "max_steps": 5,
+        "image": "sha256:test",
+        "repeats": 1,
+        "cases": [case],
+        "fixture_revisions": revisions,
+    }
+    runner.write(output / "manifest.json", manifest)
+    for variant in ("baseline", "candidate"):
+        result = row("healthy", variant, True) | {
+            "repeat": 1,
+            "final_response": "preserved",
+            "measurements": {"seconds": 1},
+        }
+        runner.write(output / f"healthy-1-{variant}" / "result.json", result)
+    original = runner.command
+    monkeypatch.setattr(
+        runner,
+        "command",
+        lambda argv, **kwargs: "sha256:test"
+        if argv[0] == "docker"
+        else original(argv, **kwargs),
+    )
+    monkeypatch.setattr(runner.importlib.metadata, "version", lambda name: "1.58.2")
+    monkeypatch.setattr(
+        runner,
+        "Sandbox",
+        lambda *a, **k: pytest.fail("Saved trials must not start a container"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "run_agent",
+        lambda *a, **k: pytest.fail("Saved trials must not spend inference"),
+    )
+    args = SimpleNamespace(
+        output=output,
+        checkout=source,
+        baseline=revisions["head"],
+        candidate=revisions["buggy_head"],
+        image="test",
+        cases="healthy",
+        model="test",
+        base_url="https://example.invalid",
+        effort="low",
+        max_steps=5,
+        max_run_seconds=180,
+        repeats=1,
+        resume=True,
+    )
+    runner.main(args)
+    report = json.loads((output / "comparison.json").read_text())
+    assert report["complete"]
+    assert [run["final_response"] for run in report["runs"]] == [
+        "preserved",
+        "preserved",
+    ]
+    assert (
+        json.loads((output / "manifest.json").read_text())["resumes"][-1][
+            "executions_started"
+        ]
+        == 0
+    )

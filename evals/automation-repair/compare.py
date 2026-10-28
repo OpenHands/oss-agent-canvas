@@ -1,5 +1,6 @@
 import argparse
 import base64
+import fcntl
 import io
 import tarfile
 import hashlib
@@ -7,9 +8,11 @@ import importlib.metadata
 import json
 import os
 import secrets
+import signal
 import subprocess
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,6 +21,34 @@ from reviewer_world import GUIDANCE, REPO, scenario, score
 ROOT = Path(__file__).parent
 IMAGE = "automation-repair-replay:1.58.2"
 RPC = "import json,sys,urllib.request; b=json.load(sys.stdin); r=urllib.request.Request('http://127.0.0.1:8766'+b['path'],data=json.dumps(b['body']).encode(),headers={'Authorization':'Bearer '+b['token'],'Content-Type':'application/json'}); print(urllib.request.urlopen(r,timeout=100).read().decode())"
+
+
+class TrialDeadline(BaseException):
+    pass
+
+
+@contextmanager
+def deadline(seconds):
+    def expire(signum, frame):
+        raise TrialDeadline()
+
+    previous = signal.signal(signal.SIGALRM, expire)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+@contextmanager
+def comparison_lock(output):
+    with (output / ".run.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("Comparison already running") from None
+        yield
 
 
 def command(argv, *, cwd=None, data=None, timeout=120):
@@ -43,7 +74,8 @@ def digest(path):
 
 def fixture(path):
     path.mkdir()
-    command(["git", "init", "-q", str(path)])
+    command(["git", "init", "-q", "--initial-branch", "fix-add", str(path)])
+    command(["git", "config", "commit.gpgsign", "false"], cwd=path)
     command(["git", "config", "user.name", "Replay Fixture"], cwd=path)
     command(["git", "config", "user.email", "fixture@example.invalid"], cwd=path)
     (path / "AGENTS.md").write_text(GUIDANCE + "\n")
@@ -319,6 +351,10 @@ def run_agent(args, sandbox, prompt, output):
             self.name, self.observation = name, observation
 
         def __call__(self, action, conversation=None):
+            if self.name == "terminal":
+                action = action.model_copy(
+                    update={"timeout": min(action.timeout or 30, 30)}
+                )
             value = sandbox.call(
                 "/tool", {"tool": self.name, "action": action.model_dump(mode="json")}
             )
@@ -380,8 +416,11 @@ def run_agent(args, sandbox, prompt, output):
     started = time.monotonic()
     error = None
     try:
-        conversation.send_message(prompt)
-        conversation.run()
+        with deadline(args.max_run_seconds):
+            conversation.send_message(prompt)
+            conversation.run()
+    except TrialDeadline:
+        error = f"Trial exceeded {args.max_run_seconds} seconds; not retried"
     except Exception as exception:
         error = type(exception).__name__ + ": " + str(exception)[:1000]
     finally:
@@ -394,7 +433,12 @@ def run_agent(args, sandbox, prompt, output):
         "execution_status": status,
     }
     write(output / "measurements.json", measurements)
-    return status.upper() == "FINISHED", final_response, error, measurements
+    return (
+        status.upper() == "FINISHED" and error is None,
+        final_response,
+        error,
+        measurements,
+    )
 
 
 def compare(rows, cases, expected_repeats=1):
@@ -459,8 +503,7 @@ def compare(rows, cases, expected_repeats=1):
     }
 
 
-def main(args):
-    os.umask(0o077)
+def run_comparison(args):
     if any(
         importlib.metadata.version(package) != "1.58.2"
         for package in ("openhands-sdk", "openhands-tools")
@@ -475,9 +518,17 @@ def main(args):
         ["docker", "image", "inspect", args.image, "--format", "{{.Id}}"]
     )
     args.image = image_id
-    args.output.mkdir(parents=True, exist_ok=False)
+    if args.resume and any(
+        (args.output / "source" / name).exists() for name in ("baseline", "candidate")
+    ):
+        raise ValueError(
+            "Source worktrees still exist; wait for or clean up the previous execution before resuming"
+        )
     repo = args.output / "fixture"
-    fixture_revisions = fixture(repo)
+    previous = (
+        json.loads((args.output / "manifest.json").read_text()) if args.resume else None
+    )
+    fixture_revisions = previous["fixture_revisions"] if previous else fixture(repo)
     cases = [
         scenario(name)
         | {
@@ -499,6 +550,8 @@ def main(args):
         "effort": args.effort,
         "max_output_tokens": 4096,
         "max_steps": args.max_steps,
+        "max_run_seconds": args.max_run_seconds,
+        "max_tool_seconds": 30,
         "tools": ["terminal", "file_editor", "task_tracker"],
         "image": args.image,
         "sdk_version": "1.58.2",
@@ -507,6 +560,29 @@ def main(args):
         "harness_sha256": {p.name: digest(p) for p in ROOT.glob("*.py")},
         "fixture_revisions": fixture_revisions,
     }
+    if previous:
+        for name in (
+            "baseline",
+            "candidate",
+            "model",
+            "llm_base_url",
+            "effort",
+            "max_steps",
+            "image",
+            "repeats",
+            "cases",
+        ):
+            if previous[name] != manifest[name]:
+                raise ValueError(f"Cannot resume changed {name}")
+        previous.setdefault("resumes", []).append(
+            {
+                "harness_sha256": manifest["harness_sha256"],
+                "max_run_seconds": args.max_run_seconds,
+                "max_tool_seconds": 30,
+                "status": "started",
+            }
+        )
+        manifest = previous
     write(args.output / "manifest.json", manifest)
     sources = {}
     for name, revision in (("baseline", args.baseline), ("candidate", args.candidate)):
@@ -518,6 +594,7 @@ def main(args):
         )
         sources[name] = source
     rows = []
+    new_executions = 0
     try:
         for index in range(args.repeats):
             order = (
@@ -528,6 +605,13 @@ def main(args):
             for case in cases:
                 for variant in order:
                     output = args.output / f"{case['id']}-{index + 1}-{variant}"
+                    if args.resume and (output / "result.json").exists():
+                        rows.append(json.loads((output / "result.json").read_text()))
+                        continue
+                    if output.exists():
+                        raise ValueError(
+                            "Retain an explicit inconclusive result for the interrupted trial before resuming"
+                        )
                     sandbox = Sandbox(
                         args,
                         case,
@@ -556,6 +640,7 @@ def main(args):
                                 "sha256": hashlib.sha256(prompt.encode()).hexdigest(),
                             },
                         )
+                        new_executions += 1
                         finished, response, error, measurements = run_agent(
                             args, sandbox, prompt, output
                         )
@@ -600,8 +685,20 @@ def main(args):
                 ["git", "worktree", "remove", "--force", str(source)], cwd=args.checkout
             )
     result = compare(rows, cases, args.repeats)
+    if previous:
+        manifest["resumes"][-1].update(
+            status="completed", executions_started=new_executions
+        )
+        write(args.output / "manifest.json", manifest)
     write(args.output / "comparison.json", result)
     print(json.dumps({"status": result["status"], "cases": result["cases"]}))
+
+
+def main(args):
+    os.umask(0o077)
+    args.output.mkdir(parents=True, exist_ok=args.resume)
+    with comparison_lock(args.output):
+        return run_comparison(args)
 
 
 if __name__ == "__main__":
@@ -618,6 +715,10 @@ if __name__ == "__main__":
     parser.add_argument("--effort", default="low")
     parser.add_argument("--repeats", type=int, choices=range(1, 6), default=3)
     parser.add_argument("--max-steps", type=int, choices=range(1, 61), default=30)
+    parser.add_argument(
+        "--max-run-seconds", type=int, choices=range(30, 1201), default=180
+    )
+    parser.add_argument("--resume", action="store_true")
     parser.add_argument(
         "--cases",
         default="healthy,buggy,head_moved,head_moves_late,body_file_failure,accepted_empty",

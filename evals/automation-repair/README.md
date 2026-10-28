@@ -18,7 +18,7 @@ docker build -t automation-repair-replay:1.58.2 \
   evals/automation-repair
 ```
 
-Use Python with `openhands-sdk==1.58.2` and `openhands-tools==1.58.2`. Set
+Use Linux or macOS and Python with `openhands-sdk==1.58.2` and `openhands-tools==1.58.2`. Set
 `LITELLM_API_KEY` privately; the runner never copies it into an agent container.
 
 ```bash
@@ -29,6 +29,14 @@ python3 evals/automation-repair/compare.py \
   --base-url https://llm-proxy.app.all-hands.dev \
   --output /private/new-comparison --repeats 3
 ```
+
+The agent loop defaults to a 180-second wall-clock budget and 30 steps; terminal
+soft timeouts are capped at 30 seconds. Setup is outside the agent-loop budget.
+Timeouts are recorded as inconclusive without retrying. `--resume` with the same
+arguments reuses every saved trial, including failed/inconclusive trials, and
+spends inference only on missing trials. Overlapping executions are rejected.
+An interrupted trial without a result must be retained explicitly as inconclusive
+before resuming; it is never silently rerolled.
 
 The frozen scenarios are AI-authored development cases derived from reviewer
 findings: an initially moved head, head movement after the first state read,
@@ -49,8 +57,8 @@ outcomes are synthetic; historical external state was not reconstructed.
 The stateful API accepts malformed and duplicate reviews so assertions can detect
 an agent failure; it does not implement the candidate's publication preflight for
 it. Successful review cases require a valid review and the required final marker.
-Stop cases require current-state observation, no write attempt and no false
-completion claim. Provider/tool failures and failure to reproduce the baseline
+Stop cases require current-state observation, no write attempt and no new
+completion marker. Explanation semantics are not judged by this prototype. Provider/tool failures and failure to reproduce the baseline
 remain inconclusive. Improvement requires a reproduced regression to improve,
 all candidate cases to pass and no observed regression in controls. Small counts
 are development evidence, not a statistically established failure-rate reduction.
