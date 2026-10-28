@@ -1,14 +1,16 @@
 import io
 import json
 import sys
+import subprocess
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from urllib.error import HTTPError
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
-from review_gateway import ReviewGateway
-from review_publication import DISCLOSURE, ReviewPublisher, validate_proposal
+from review_gateway import ReviewGateway, serve_gateway
+from review_publication import DISCLOSURE, ReviewPublisher
 
 SHA = "a" * 40
 PROPOSAL = {
@@ -254,6 +256,40 @@ class GatewayTests(unittest.TestCase):
             self.request("POST", "/proposal", {**PROPOSAL, "target": "other"})[0], 400
         )
         self.assertFalse(self.reads)
+
+
+class ClientTests(unittest.TestCase):
+    def test_invalid_body_files_never_reach_the_gateway(self):
+        gateway = ReviewGateway(
+            "owner/repo", 7, SHA, "job-token", lambda path: {}, lambda: b""
+        )
+        client = Path(__file__).parents[1] / "scripts/review_client.py"
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            serve_gateway(gateway, "127.0.0.1") as url,
+        ):
+            for name, data in (
+                ("missing", None),
+                ("empty", b""),
+                ("broken", b"{"),
+                ("oversized", b"x" * 64001),
+            ):
+                with self.subTest(name=name):
+                    path = Path(directory) / name
+                    if data is not None:
+                        path.write_bytes(data)
+                    result = subprocess.run(
+                        [sys.executable, str(client), "submit", str(path)],
+                        env={
+                            **os.environ,
+                            "REVIEW_GATEWAY_URL": url,
+                            "REVIEW_GATEWAY_TOKEN": "job-token",
+                        },
+                        capture_output=True,
+                        timeout=10,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIsNone(gateway.proposal)
 
 
 if __name__ == "__main__":
