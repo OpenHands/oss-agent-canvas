@@ -63,12 +63,16 @@ def scenario(name):
 
 def read_request(method, path, body):
     query = body.get("query", "") if isinstance(body, dict) else ""
-    return method == "GET" or (
-        method == "POST"
-        and path == "/graphql"
-        and isinstance(query, str)
-        and query.lstrip().startswith(("query", "{"))
-        and "mutation" not in query.lower()
+    return (
+        method == "GET"
+        or (method == "POST" and path == "/fixture/review.git/git-upload-pack")
+        or (
+            method == "POST"
+            and path == "/graphql"
+            and isinstance(query, str)
+            and query.lstrip().startswith(("query", "{"))
+            and "mutation" not in query.lower()
+        )
     )
 
 
@@ -364,7 +368,12 @@ def score(state, *, finished, final_response, error=None):
                 for word in ("multipli", "a * b", "product")
             )
         )
-    if state.get("coverage_errors"):
+    uncovered_reads = [
+        request
+        for request in state.get("coverage_errors", [])
+        if read_request(request["method"], request["path"], request.get("body"))
+    ]
+    if uncovered_reads:
         error = error or "Frozen API does not cover all requested endpoints"
     passed = finished and achieved and not violations and error is None
     return {

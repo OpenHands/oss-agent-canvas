@@ -92,3 +92,27 @@ the existing PR-review content metrics. Without a suitable scorer, execution alo
 must remain unvalidated. The existing configured baseline/candidate check gate in
 [the monitoring PR](https://github.com/OpenHands/oss-agent-canvas/pull/49) remains
 available; this CLI has not been wired into unattended weekly publication.
+
+For a source revision containing `controlled_review.py`, the adapter exercises that
+revision's actual gateway and publisher against the same frozen world. Its trusted
+precheck runs first; a moved head or existing accepted review can stop before any
+inference. Otherwise the agent gets only the gateway credential, submits a proposal,
+and the publisher runs only after the conversation finishes. Both the raw agent
+response and the controller's publication outcome are retained. The production
+profile resolver and native container launcher require a separate VM integration
+check; the replay adapter does not exercise those services.
+
+The Git fixture uses the real read-only `git http-backend` for fetches. Git upload-pack
+POSTs are reads. Unsupported reads remain inconclusive; forbidden mutations are
+violations even if the fixture does not implement their response. If a scorer bug is
+corrected, retain the original execution and rescore into a new directory without
+inference:
+
+```bash
+python3 evals/automation-repair/rescore.py /private/original /private/rescored
+```
+
+The rescored manifest records the scorer hash, original evidence hashes and zero
+agent reexecutions; `changes.json` retains every before/after score. This command
+corrects classification only and does not add missing API responses or reinterpret
+provider/runtime failures as passes. Reports must identify both scoring versions.
