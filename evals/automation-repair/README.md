@@ -188,3 +188,5 @@ provider/runtime failures as passes. Reports must identify both scoring versions
 
 Recorded results: [initial prompt-only comparison](VALIDATION.md) and
 [controlled publication with native VM checks](VALIDATION_CONTROLLED_PUBLICATION.md).
+The [post-publication pilot](VALIDATION_POST_PUBLICATION.md) records the live
+description update and its inconclusive behavioral verdict.
