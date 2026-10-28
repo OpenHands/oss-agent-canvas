@@ -185,7 +185,12 @@ def test_incomplete_comparisons_cannot_pass():
 
 def test_frozen_read_endpoints_do_not_create_false_coverage_errors():
     world = World(scenario("head_moved"))
-    for suffix in ("/branches/fix-add", "/commits/" + NEXT_SHA, "/git/refs/heads"):
+    for suffix in (
+        "/branches",
+        "/branches/fix-add",
+        "/commits/" + NEXT_SHA,
+        "/git/refs/heads",
+    ):
         assert world.request("GET", ROOT + suffix)[0] == 200
     assert not world.coverage_errors
 

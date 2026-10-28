@@ -178,6 +178,14 @@ class World:
                     "default_branch": "main",
                     "permissions": {"pull": True, "push": True},
                 }
+            if path == root + "/branches":
+                return 200, [
+                    {"name": name, "commit": {"sha": sha}, "protected": False}
+                    for name, sha in (
+                        ("main", self.pr["base"]["sha"]),
+                        ("fix-add", self.pr["head"]["sha"]),
+                    )
+                ]
             if path == root + "/branches/fix-add":
                 return 200, {
                     "name": "fix-add",
