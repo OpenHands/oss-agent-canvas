@@ -21,7 +21,7 @@ In `OpenHands/software-agent-sdk` also treat `P0` as high priority and `P1` as m
 
 ## Ranking
 
-Pick the **5 issues that look the most important to fix quickly**, considering at least:
+Pick, **per repository**, up to **5 issues that look the most important to fix quickly**, considering at least:
 
 1. **Near-mergeable / review-blocked work (highest weight).** An open pull request already references or closes the issue and is waiting on review or on a small amount of work. Prefer issues whose PR is not a draft, is mergeable, has passing/neutral checks, and is awaiting maintainer review. A `Closes #N` / `Fixes #N` link, a `linked` PR, or a PR that mentions the issue number all count.
 2. **Severity and impact.** Data loss, security, crashes, regressions, or anything blocking many users or a release outranks cosmetic work.
@@ -32,23 +32,23 @@ Cross-check each candidate against the repo's open pull requests (search `repo:<
 
 ## Maintainers
 
-If a maintainer (a human collaborator or someone with write access — not a bot) is assigned to the issue, or is the author/assignee/reviewer of its linked pull request, **name them by their GitHub handle** and state their role (e.g. "assigned to @alice", "PR #1234 awaiting review from @bob"). Only name people you actually saw in the API response for this issue or its PR; never guess. If nobody is assigned, say "unassigned".
+If a maintainer (a human collaborator or someone with write access — not a bot) is assigned to the issue, or is the author/assignee/reviewer of its linked pull request, name them. If the "Maintainer Slack mentions" section above maps their GitHub login to a Slack user, mention them with that Slack mention (e.g. `<@U0123ABCD>`); otherwise fall back to the plain GitHub handle (e.g. `@alice`). State their role (e.g. "assigned to <@U0123ABCD>", "PR #1234 awaiting review from <@U0456EFGH>"). Only name people you actually saw in the API response for this issue or its PR; never guess. If nobody is assigned, say "unassigned".
 
 ## Slack output
 
-Post exactly **one** message to **each** of these channels by channel ID, using `https://slack.com/api/chat.postMessage` with header `Authorization: Bearer $SLACK_BOT_TOKEN_OPENHANDS_AI`:
+Post **one message per repository, to that repository's channel only** — do not cross-post. Use `https://slack.com/api/chat.postMessage` with header `Authorization: Bearer $SLACK_BOT_TOKEN_OPENHANDS_AI`:
 
-- `C06QT0AGY4W` (`#proj-agent-canvas`)
-- `C06R25BT5B2` (`#proj-agent`)
+- Issues from `OpenHands/OpenHands` go to `C06QT0AGY4W` (`#proj-agent-canvas`) **only**.
+- Issues from `OpenHands/software-agent-sdk` go to `C06R25BT5B2` (`#proj-agent`) **only**.
 
-Both live in the **OpenHands** Slack workspace. Post the same content to both. Use plain text / simple Slack markdown (no tables, no attachments, single top-level message).
+Both live in the **OpenHands** Slack workspace. Post exactly one message per repository, containing only that repository's entries; never post one repository's issues to the other's channel. Use plain text / simple Slack markdown (no tables, no attachments, single top-level message per channel).
 
-Format:
+Format (per channel):
 
 - Title line: `*High priority issues to fix — <YYYY-MM-DD>*`
-- Then up to 5 numbered entries, ordered by priority. Each entry on one or two lines:
+- Then up to 5 numbered entries for that repository, ordered by priority. Each entry on one or two lines:
   - `1. <https://github.com/OpenHands/OpenHands/issues/123|OpenHands/OpenHands#123> — <short title>` with a `[high]`/`[medium]` tag
-  - `   Why: <one clause on severity or near-mergeable status>` plus PR status when relevant (`PR <link|#1234> open, awaiting review from @name`) and the assignee (`assigned to @name` / `unassigned`)
+  - `   Why: <one clause on severity or near-mergeable status>` plus PR status when relevant (`PR <link|#1234> open, awaiting review from <@U0456EFGH>`) and the assignee (`assigned to <@U0456EFGH>` / `unassigned`)
 - If a PR is close to mergeable and waiting on review, lead with that fact — it is the most actionable item.
 - If fewer than 5 qualify, list only what qualifies. If nothing qualifies, post only the title line and `No high-priority issues need attention today.`
 - Keep the whole message tight — roughly 150 words max, no preamble, no filler.

@@ -1,6 +1,6 @@
 {
   "name": "high-priority-issue-notification",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Executable automation plugin for High priority issue notification.",
   "author": {
     "name": "OpenHands",

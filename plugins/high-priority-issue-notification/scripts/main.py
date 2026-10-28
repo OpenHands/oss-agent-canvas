@@ -73,6 +73,7 @@ import json
 import os
 import sys
 import time
+import urllib.request
 from datetime import datetime, timezone
 
 # Detect execution mode based on AGENT_SERVER_URL presence
@@ -149,6 +150,19 @@ def _conversation_supports_user_id() -> bool:
         return "user_id" in inspect.signature(Conversation.__new__).parameters
     except (TypeError, ValueError):
         return False
+
+
+def _read_secret(name: str) -> str:
+    """Read a raw secret value from the agent server (local) or Cloud API."""
+    if IS_LOCAL_MODE:
+        base = agent_server_url
+        headers = {"X-Session-API-Key": session_key}
+    else:
+        base = f"{api_url}/api/v1/sandboxes/{sandbox_id}"
+        headers = {"Authorization": f"Bearer {api_key}"}
+    req = urllib.request.Request(f"{base}/api/settings/secrets/{name}", headers=headers)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return resp.read().decode().strip()
 
 
 def _normalize_mcp_config(raw_mcp_config):
@@ -348,6 +362,41 @@ This automation was triggered by a webhook event:
     except Exception as e:
         # Not a hard failure — user may not have secrets configured
         print(f"  get_secrets() failed (ok if no secrets): {e}")
+
+    # Resolve GitHub maintainers -> Slack user IDs so the prompt can mention
+    # them with real Slack mentions instead of GitHub handles. Best-effort: a
+    # failure here just means the prompt falls back to plain @handles.
+    print("\n=== MAINTAINER SLACK MAP ===")
+    maintainer_map = {}
+    try:
+        import slack_directory
+
+        github_token = _read_secret("GITHUB_TOKEN")
+        slack_token = _read_secret("SLACK_BOT_TOKEN_OPENHANDS_AI")
+        maintainer_map = slack_directory.build_map(
+            github_token,
+            slack_token,
+            ["OpenHands/OpenHands", "OpenHands/software-agent-sdk"],
+            log=print,
+        )
+        print(f"  resolved {len(maintainer_map)} maintainer Slack IDs")
+    except Exception as e:
+        print(f"  maintainer map failed (non-fatal): {e}")
+
+    if maintainer_map:
+        map_lines = "\n".join(
+            f"- {login} -> <@{user_id}>" for login, user_id in sorted(maintainer_map.items())
+        )
+        # Prepend above any existing "## Task" header so the mention map reads as
+        # context, not a second task section.
+        USER_PROMPT = (
+            "## Maintainer Slack mentions\n\n"
+            "When you name a maintainer below, use their Slack mention exactly as "
+            "mapped here (not their GitHub handle). For any login not listed, use "
+            "the plain GitHub handle.\n\n"
+            f"{map_lines}\n\n"
+            f"{USER_PROMPT}"
+        )
 
     # Get MCP config via workspace
     print("\n=== GET_MCP_CONFIG ===")
