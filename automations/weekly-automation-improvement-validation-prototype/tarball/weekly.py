@@ -423,6 +423,10 @@ def run_locked(config, state_dir, *, dry_run, limit, seed):
             if any(item["status"] == "failed" for item in summary["automations"])
             else "completed"
         )
+    if summary["collection_errors"] and summary["status"] != "partial_failure":
+        summary["status"] = (
+            "completed_with_collection_errors" if grouped else "collection_incomplete"
+        )
     summary["pending_events"] = len(state["backlog"])
     write_json(output / "weekly-report.json", redact(summary))
     return summary

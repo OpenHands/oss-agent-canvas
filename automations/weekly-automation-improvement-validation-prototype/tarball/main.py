@@ -213,7 +213,7 @@ def references(values, sample):
     return result
 
 
-def validated_findings(result, sample):
+def validated_findings(result, sample, *, max_text_chars=2000):
     findings = result.get("findings")
     if not isinstance(findings, list) or len(findings) > 3:
         raise ValueError("Expected at most three findings")
@@ -227,7 +227,7 @@ def validated_findings(result, sample):
             for field in ("summary", "signature", "recommendation"):
                 if (
                     not isinstance(finding[field], str)
-                    or not 1 <= len(finding[field]) <= 2000
+                    or not 1 <= len(finding[field]) <= max_text_chars
                 ):
                     raise ValueError("Invalid finding text")
             for field in ("cause", "outcome"):
@@ -327,7 +327,9 @@ def run(args):
                     ANALYSIS,
                 )
             measurements.append(measurement)
-            valid, invalid = validated_findings(result, sample)
+            valid, invalid = validated_findings(
+                result, sample, max_text_chars=20000 if analyzer == "flow1" else 2000
+            )
             if analyzer == "flow1":
                 event_ids = result["finding_event_ids"]
                 for finding in valid:
