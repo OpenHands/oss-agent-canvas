@@ -24,7 +24,7 @@ This is a single-VM prototype. `REVIEW_STATE_DIR` defaults to
 cover analysis and publication. `REVIEW_GATEWAY_HOST` defaults to the VM's Docker
 bridge address `172.17.0.1`; the container must reach that private address. Gateway
 requests bypass HTTP proxies. No host credentials or state directory may be mounted
-in analyzing containers. The agent budget is 180 seconds and 30 steps; publication
+in analyzing containers. The agent budget is 180 seconds, 30 steps and 4,096 output tokens per model call; publication
 requires a finished conversation with a validated proposal.
 
 GitHub has no atomic compare-head-and-create-review operation. Repeated head checks
