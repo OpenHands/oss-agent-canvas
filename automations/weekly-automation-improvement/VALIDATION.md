@@ -1,3 +1,69 @@
+# End-to-end publication validation — October 27–28, 2026
+
+The unmodified weekly entrypoint completed native VM run
+`a3fd5a12-5925-4084-96bd-b1d9617840c0` against real production Laminar findings.
+It made real Luna and Sol calls, resolved the deployed automation bundle to source,
+checked the patch, pushed the validated commit and opened draft
+[PR #51](https://github.com/OpenHands/oss-agent-canvas/pull/51).
+No model, Laminar, automation-service or GitHub API was mocked.
+
+The two available findings belonged to a disabled historical reviewer whose bundle
+cannot map to current main. For this publication test only, its public historical
+source was restored on isolated base `validation-self-improvement-20261027`
+(`e478f340586e63425669a72088f53c6fad5d1597`). All six deployed bundle files matched
+that source uniquely. The normal source guard was unchanged; production main and
+the GitSync branch were not changed. The test PR is validation-only and is closed
+without merging after verification.
+
+The run took **26.3 seconds**. Luna used 1,470 input / 193 output tokens in 3.563s
+(**$0.000276975** proxy-reported); Sol used 69,889 / 692 in 12.994s
+(**$0.181577**). Sol proposed one reviewer prompt repair and rejected the weaker
+locale complaint because its comparison evidence was clipped. GitHub readback
+confirmed the published head exactly matched the mechanically validated candidate
+`4d260fbbecc999127831adcdb1cc1679f14629a2`, the expected base and the single
+approved changed file. This demonstrates publication mechanics, not behavioral benefit.
+
+Repeat dispatch `b858ca3d-e5c5-43f9-b271-5f03973fa071` completed without another
+model call or PR. Removing only the isolated validation ledger and dispatching
+`04b267d0-ea52-4579-a9ee-f574b3f085df` recovered the historical automation/week
+limit from GitHub markers and skipped its inference/publication. New overnight
+findings for two other automations were triaged independently; their main-branch
+plugin sources correctly failed the isolated test branch's source boundary.
+No second PR was created. The validation automation remains disabled, with
+publication disabled and its entrypoint reset to dry-run.
+
+Validation exposed three fixes: scope PR discovery/reuse to the configured base
+branch, report collection/ownership errors explicitly rather than reporting
+no unhandled findings, and accept native Flow-1 text up to 20,000 characters per
+field while retaining the older generated-Luna limit of 2,000. Native summaries
+were longer than that older contract; rejecting them hid two valid reviewer leads.
+The request-size limit, citation validation and source checks remain unchanged. Recovery readback exercised the latter status,
+`completed_with_collection_errors`. Five of 17 finding events in that window had
+ambiguous conversation ownership and were withheld; 55 Signal attempts included
+41 completed and 14 failed analyses. These are visible coverage gaps, not healthy
+labels. Failed Signal analysis and trace ownership remain operational follow-ups.
+
+Production-config run `b14b06f0-f005-425b-9d23-588df3023aca` opened genuine
+issue-triage draft [#53](https://github.com/OpenHands/oss-agent-canvas/pull/53)
+from new overnight findings, while independently reporting the reviewer text-limit
+failure. After the fix, run `cf30e0bd-a7fc-48b3-bad1-55fcd9a82d37` completed in
+**33.5s** and opened reviewer draft
+[#54](https://github.com/OpenHands/oss-agent-canvas/pull/54), using both previously
+rejected long summaries. The issue-triage weekly slot was skipped, with no second
+triage model call or PR. Both PRs target current main, resolve declared plugin
+sources, and have published heads/files exactly matching mechanical validation.
+Their behavioral benefit remains unevaluated. The reviewer Sol call took 17.951s,
+118,437 input / 1,009 output tokens, proxy-reported **$0.306117**. The final report
+explicitly retains five ambiguous-ownership collection warnings. Production main
+remained `208ff807ccdcba0532648b84f2064a3c9a663e51` throughout.
+
+All **91 tests pass**; Ruff, Python compilation and whitespace checks pass.
+Private reports, prompts, responses and receipts remain on the VM and under
+`~/experiments/laminar-validation-20261027`, outside git. The production ledger
+was never removed or reset. Earlier experiments below are historical evidence.
+
+---
+
 # Per-automation aggregation prototype — October 27, 2026
 
 The weekly path now collects all compatible finding events, maintains a pending

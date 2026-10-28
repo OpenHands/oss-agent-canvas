@@ -88,8 +88,15 @@ def test_completed_no_event_skips_all_model_calls_and_laminar(tmp_path, monkeypa
     assert report["measurements"][0]["reported_cost_usd"] is None
 
 
-def test_flow1_finding_goes_directly_to_sol_with_evidence(tmp_path, monkeypatch):
+@pytest.mark.parametrize("summary_length", [2000, 3500, 20000])
+def test_flow1_finding_goes_directly_to_sol_with_evidence(
+    tmp_path, monkeypatch, summary_length
+):
     value = frozen()
+    event = value["samples"][0]["flow1_events"][0]
+    payload = json.loads(event["payload"])
+    payload["summary"] = "x" * summary_length
+    event["payload"] = json.dumps(payload)
     path = tmp_path / "frozen.json"
     path.write_text(json.dumps(value))
     calls = []
@@ -111,11 +118,24 @@ def test_flow1_finding_goes_directly_to_sol_with_evidence(tmp_path, monkeypatch)
     app.run(args)
     assert [(m, n) for m, n, _ in calls] == [("large", "coordinator")]
     assert calls[0][2]["findings"][0]["evidence"] == ["s1"]
+    assert calls[0][2]["findings"][0]["summary"] == payload["summary"]
     assert "FAILED" in json.dumps(calls[0][2]["cases"])
     assert "payload" not in calls[0][2]["cases"][0]["prior_signals_unverified"][0]
     assert json.loads((args.output / "report.json").read_text())["rejected_findings"][
         0
     ]["reason"]
+
+
+def test_finding_text_limits_preserve_native_and_generated_boundaries():
+    sample = snapshot()["samples"][0]
+    result = {"findings": [candidate() | {"summary": "x" * 2001}]}
+    assert (
+        app.validated_findings(result, sample)[1][0]["reason"] == "Invalid finding text"
+    )
+    result["findings"][0]["summary"] = "x" * 20001
+    valid, rejected = app.validated_findings(result, sample, max_text_chars=20000)
+    assert valid == []
+    assert rejected[0]["reason"] == "Invalid finding text"
 
 
 def test_cost_estimate_counts_fresh_cached_output_and_distinct_attempts():

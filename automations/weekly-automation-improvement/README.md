@@ -94,6 +94,7 @@ Before publication, reserve that automation's weekly slot atomically. An uncerta
 publication blocks another attempt for that automation that week. Stable branch
 names derive from automation ID and week; PR bodies carry automation/week/event
 markers so GitHub can recover publication state if the local ledger is lost.
+PR discovery and reuse are scoped to the configured base branch.
 Existing remote branches are not overwritten. Existing PR descriptions are given
 to both models to reduce semantic duplicates; this is not a complete semantic
 deduplicator. Old global completion records do not block the new per-automation
@@ -137,7 +138,8 @@ The batch directory contains `collection/input.json` with the complete lightweig
 inventory. Each automation has `triage/triage-input.json`, saved model requests,
 responses and measurements, its frozen `snapshot-with-source.json`, source config,
 analysis and mechanical-validation artifacts, and `automation-report.json`.
-`weekly-report.json` reports all automation outcomes. Artifacts/state are owner-only;
+`weekly-report.json` reports all automation outcomes and explicit collection-error
+status when ownership or collection is incomplete. Artifacts/state are owner-only;
 redaction is best effort. Never share them without inspection.
 
 Replay a frozen Sol input without Laminar collection or publication:
@@ -157,7 +159,8 @@ available through `main.py`; the weekly path reuses persisted Flow-1 findings.
 
 Bounds: 10,000 Signal run rows per seven-day collection window; one Luna call and
 at most one Sol call per automation/week; three representative conversations;
-30 source files / 250 KB; 750 KB per model request; 4,096 output tokens. Oversized
+30 source files / 250 KB; 20,000 characters per native Flow-1 finding text field;
+750 KB per model request; 4,096 output tokens. Oversized
 requests fail visibly with pending data retained. Each conversation retains the
 existing 1,000-span, 2 MB projected-sample and 8 MB HTTP-response limits. There is
 no silent replacement sampling or inference retry. More automation groups mean

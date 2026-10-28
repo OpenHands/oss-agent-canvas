@@ -161,6 +161,13 @@ def test_unevaluated_draft_publishes_without_behavioral_checks(
         if argv[:2] == ["gh", "api"]:
             return config["revision"]
         if argv[:3] == ["gh", "pr", "list"]:
+            if (
+                "--base" not in argv
+                or argv[argv.index("--base") + 1] != config["base_branch"]
+            ):
+                return (
+                    '[{"url":"https://github.com/Example/automation/pull/wrong-base"}]'
+                )
             return "[]"
         if argv[:2] == ["git", "ls-remote"]:
             return ""
@@ -306,7 +313,7 @@ def prepare_grouped(configured_source, tmp_path, monkeypatch, records):
     config = configuration(tmp_path) | {"publish_drafts": True}
     monkeypatch.setenv("LMNR_PROJECT_API_KEY", "test")
     monkeypatch.setattr(weekly, "github_auth", lambda c: None)
-    monkeypatch.setattr(weekly, "existing_prs", lambda r: [])
+    monkeypatch.setattr(weekly, "existing_prs", lambda r, base="main": [])
     monkeypatch.setattr(weekly, "collect_events", lambda *a, **k: inventory(records))
     calls = []
 
@@ -447,7 +454,7 @@ def test_existing_pr_recovers_per_automation_cap_without_local_state(
     monkeypatch.setattr(
         weekly,
         "existing_prs",
-        lambda r: [
+        lambda r, base="main": [
             {
                 "body": "<!-- automation-improvement-automation: "
                 + records[0]["owner"]["automation_id"]
@@ -639,7 +646,7 @@ def test_legacy_event_markers_recover_automation_limit_for_other_pending_events(
     monkeypatch.setattr(
         weekly,
         "existing_prs",
-        lambda r: [
+        lambda r, base="main": [
             {
                 "body": "<!-- automation-improvement-event: "
                 + records[0]["event"]["id"]
@@ -664,3 +671,28 @@ def test_failed_reanalysis_does_not_reuse_older_finding():
     current["latest_runs"] = [old["run"] | {"status": "FAILED"}]
     assert weekly.update_backlog(state, current, []) == []
     assert not state["backlog"]
+
+
+def test_discovery_is_scoped_to_publication_base(monkeypatch):
+    def query(argv):
+        if "--base" in argv and argv[argv.index("--base") + 1] == "main":
+            return "[]"
+        return (
+            '[{"headRefName":"automation/improve-validation","body":"validation only"}]'
+        )
+
+    monkeypatch.setattr(weekly, "command", query)
+    assert weekly.existing_prs("Example/automation", "main") == []
+
+
+def test_collection_errors_are_not_reported_as_no_findings(
+    configured_source, tmp_path, monkeypatch
+):
+    config, calls = prepare_grouped(configured_source, tmp_path, monkeypatch, [])
+    frame = inventory([])
+    frame["collection_errors"] = [{"event_id": EVENT, "error": "Ambiguous ownership"}]
+    monkeypatch.setattr(weekly, "collect_events", lambda *a, **k: frame)
+    result = weekly.run(config)
+    assert result["status"] == "collection_incomplete"
+    assert result["collection_errors"] == frame["collection_errors"]
+    assert calls == []
