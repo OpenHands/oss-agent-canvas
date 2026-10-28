@@ -1,5 +1,6 @@
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -56,6 +57,16 @@ def redact(value):
 
 def encode(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def topic_id(automation_id, key):
+    if (
+        not isinstance(key, str)
+        or len(key) > 40
+        or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", key)
+    ):
+        raise ValueError("Topic keys must be short lowercase kebab-case identifiers")
+    return hashlib.sha256(encode([automation_id, key]).encode()).hexdigest()[:20]
 
 
 def write_json(path, value):

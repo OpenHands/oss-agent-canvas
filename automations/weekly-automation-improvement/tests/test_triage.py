@@ -26,72 +26,131 @@ def test_grouping_counts_unique_conversations_and_uses_native_clusters():
     assert sum(len(items) for items in members.values()) == 3
 
 
-def test_luna_sees_aggregates_and_returns_only_representative_ids(
-    tmp_path, monkeypatch
-):
+def topic(reference, key="publication-payload"):
+    return {
+        "key": key,
+        "title": "Validate publication payload",
+        "reason": "Repeated supported workflow defect",
+        "representative_event_refs": [reference],
+    }
+
+
+def test_luna_sees_compact_refs_and_returns_scoped_topics(tmp_path, monkeypatch):
     records = [record(1), record(2)]
-    args = arguments(tmp_path)
     calls = []
 
     def model(args, model, instruction, context, name, schema):
         calls.append(context)
-        group = context["groups"][0]
-        assert group["affected_conversations"] == 2
+        assert context["groups"][0]["affected_conversations"] == 2
         assert "spans" not in json.dumps(context)
-        return {
-            "priorities": [
-                {
-                    "group_ids": [group["group_id"]],
-                    "reason": "Repeated supported workflow defect",
-                }
-            ],
-            "representative_event_ids": [records[0]["event"]["id"]],
-            "no_action_reason": "",
-        }, {"model": model}
+        assert records[0]["event"]["id"] not in json.dumps(context)
+        assert context["groups"][0]["examples"][0]["conversation_ref"] == "c1"
+        allowed = schema["properties"]["topics"]["items"]["properties"][
+            "representative_event_refs"
+        ]["items"]["enum"]
+        assert allowed == ["e1", "e2"]
+        return {"topics": [topic("e1")], "no_action_reason": ""}, {"model": model}
 
     monkeypatch.setattr(triage, "call_model", model)
-    chosen, aggregation = triage.triage(args, records, [])
-    assert chosen == records[:1]
-    assert aggregation["total_events"] == 2
-    assert "examples" not in aggregation["groups"][0]
-    assert len(calls) == 1
-    assert (tmp_path / "triage-input.json").exists()
+    plans, aggregation = triage.triage(arguments(tmp_path), records, [])
+    assert plans[0]["representative_event_ids"] == [records[0]["event"]["id"]]
+    assert plans[0]["id"] == triage.topic_id(
+        records[0]["owner"]["automation_id"], plans[0]["key"]
+    )
+    assert (
+        aggregation["total_events"] == 2 and "examples" not in aggregation["groups"][0]
+    )
+    assert len(calls) == 1 and (tmp_path / "triage-references.json").exists()
 
 
 @pytest.mark.parametrize(
     "bad",
-    ["foreign_event", "foreign_group", "duplicate_conversation", "missing_evidence"],
+    [
+        "foreign_event",
+        "duplicate_conversation",
+        "missing_evidence",
+        "reused_event",
+        "duplicate_topic",
+        "invalid_key",
+        "budget",
+    ],
 )
 def test_luna_selection_rejects_invalid_references(tmp_path, monkeypatch, bad):
-    records = (
-        [record(1), record(2, conversation=1)]
-        if bad == "duplicate_conversation"
-        else [record(1), record(2)]
-    )
+    records = [
+        record(1),
+        record(2, conversation=1 if bad == "duplicate_conversation" else 2),
+    ]
+    if bad == "duplicate_conversation":
+        records[1]["event"]["leaf_clusters"] = [str(uuid.UUID(int=42))]
 
     def model(args, model, instruction, context, name, schema):
-        group = context["groups"][0]
-        result = {
-            "priorities": [{"group_ids": [group["group_id"]], "reason": "Investigate"}],
-            "representative_event_ids": [records[0]["event"]["id"]],
-            "no_action_reason": "",
-        }
+        plan = topic("e1")
+        result = {"topics": [plan], "no_action_reason": ""}
         if bad == "foreign_event":
-            result["representative_event_ids"] = [str(uuid.UUID(int=900))]
-        elif bad == "foreign_group":
-            result["priorities"][0]["group_ids"] = ["not-a-group"]
+            plan["representative_event_refs"] = ["e999"]
         elif bad == "duplicate_conversation":
-            context["groups"][0]["examples"].append(
-                {"event_id": records[1]["event"]["id"]}
-            )
-            result["representative_event_ids"].append(records[1]["event"]["id"])
+            plan["representative_event_refs"] = ["e1", "e2"]
+        elif bad == "missing_evidence":
+            plan["representative_event_refs"] = []
+        elif bad == "reused_event":
+            result["topics"].append(topic("e1", "other-issue"))
+        elif bad == "duplicate_topic":
+            result["topics"].append(topic("e2"))
+        elif bad == "invalid_key":
+            plan["key"] = "not a stable key"
         else:
-            result["representative_event_ids"] = []
+            result["topics"].append(topic("e2", "other-issue"))
         return result, {}
 
     monkeypatch.setattr(triage, "call_model", model)
+    args = arguments(tmp_path, max_topics=1 if bad == "budget" else 3)
     with pytest.raises(ValueError):
-        triage.triage(arguments(tmp_path), records, [])
+        triage.triage(args, records, [])
+
+
+def test_mixed_cluster_can_split_and_different_clusters_can_merge(
+    tmp_path, monkeypatch
+):
+    records = [record(1), record(2), record(3)]
+
+    def split(*args):
+        return {
+            "topics": [topic("e1", "head-check"), topic("e2", "payload-validation")],
+            "no_action_reason": "",
+        }, {}
+
+    monkeypatch.setattr(triage, "call_model", split)
+    plans, _ = triage.triage(arguments(tmp_path / "split"), records, [])
+    assert len(plans) == 2 and plans[0]["group_ids"] == plans[1]["group_ids"]
+    records[1]["event"]["leaf_clusters"] = [str(uuid.UUID(int=42))]
+
+    def merge(args, model, instruction, context, name, schema):
+        plan = topic(context["groups"][0]["examples"][0]["event_ref"])
+        plan["representative_event_refs"] = [
+            g["examples"][0]["event_ref"] for g in context["groups"]
+        ]
+        return {"topics": [plan], "no_action_reason": ""}, {}
+
+    monkeypatch.setattr(triage, "call_model", merge)
+    plans, _ = triage.triage(arguments(tmp_path / "merge"), records, [])
+    assert len(plans) == 1 and len(plans[0]["group_ids"]) == 2
+
+
+def test_different_topics_can_use_different_events_from_one_conversation(
+    tmp_path, monkeypatch
+):
+    records = [record(1), record(2, conversation=1)]
+    records[1]["event"]["leaf_clusters"] = [str(uuid.UUID(int=42))]
+
+    def model(*args):
+        return {
+            "topics": [topic("e1", "issue-1"), topic("e2", "issue-2")],
+            "no_action_reason": "",
+        }, {}
+
+    monkeypatch.setattr(triage, "call_model", model)
+    plans, _ = triage.triage(arguments(tmp_path), records, [])
+    assert len(plans) == 2
 
 
 def test_summary_collection_covers_all_events_without_loading_trajectories(tmp_path):

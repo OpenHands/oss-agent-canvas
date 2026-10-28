@@ -306,3 +306,44 @@ def test_shared_webhook_trace_cannot_be_attributed_to_one_automation():
     case["flow1_trace_sessions"][0]["conversation_ids"].append(str(uuid.UUID(int=99)))
     with pytest.raises(ValueError, match="shared across conversations"):
         findings(value, case)
+
+
+@pytest.mark.parametrize(
+    "disposition", ["unsupported", "other_topic", "already_tracked", "invalid", None]
+)
+def test_topic_rejections_are_typed_and_preserve_separate_issue_dispositions(
+    tmp_path, monkeypatch, disposition
+):
+    value = frozen()
+    value["topic"] = {
+        "id": "1" * 20,
+        "key": "one-issue",
+        "title": "One issue",
+        "representative_event_ids": [EVENT],
+    }
+    path = tmp_path / "frozen.json"
+    path.write_text(json.dumps(value))
+
+    def model(args, model, policy, context, name, schema):
+        assert context["repair_topic"] == value["topic"]
+        assert schema["properties"]["rejections"]["items"]["properties"]["disposition"][
+            "enum"
+        ] == ["unsupported", "other_topic", "already_tracked"]
+        rejection = {
+            "finding_id": context["findings"][0]["id"],
+            "reason": "Evidence belongs to another independently reviewable issue",
+        }
+        if disposition is not None:
+            rejection["disposition"] = disposition
+        return {"proposals": [], "rejections": [rejection]}, {}
+
+    monkeypatch.setattr(app, "call_model", model)
+    args = arguments(tmp_path / "review", input=path)
+    if disposition in ("invalid", None):
+        with pytest.raises(ValueError, match="Partial analysis"):
+            app.run(args)
+    else:
+        app.run(args)
+        report = json.loads((args.output / "report.json").read_text())
+        assert not report["errors"]
+        assert report["rejected_findings"][0]["disposition"] == disposition

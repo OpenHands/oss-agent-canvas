@@ -1,3 +1,6 @@
+Current topic-level behavior and checks: [TOPIC_VALIDATION.md](TOPIC_VALIDATION.md).
+The evidence below describes the earlier per-automation publication version.
+
 # End-to-end publication validation — October 27–28, 2026
 
 The unmodified weekly entrypoint completed native VM run

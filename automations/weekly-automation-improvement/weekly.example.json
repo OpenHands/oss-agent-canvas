@@ -13,5 +13,6 @@
   "state_dir": "/private/automation-improvement/state",
   "publish_drafts": true,
   "triage_model": "openai/gpt-6-luna",
-  "repair_model": "openai/gpt-6.1-sol"
+  "repair_model": "openai/gpt-6.1-sol",
+  "max_topics_per_automation": 3
 }

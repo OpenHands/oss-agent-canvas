@@ -2,8 +2,9 @@
 
 A standalone prototype for OSS-14275. Flow-1 analyzes eligible automation traces
 in self-hosted Laminar. Each week, the worker aggregates findings **per automation**,
-asks Luna to prioritize them, then asks Sol for at most **one unevaluated draft
-repair PR per automation**. It can decline every candidate. Behavioral evaluation,
+asks Luna to identify focused repair topics, then asks Sol for at most **one
+unevaluated draft PR per topic**. A topic is one concrete failure mechanism and
+behavior change that can be fixed and reviewed independently. It can decline every candidate. Behavioral evaluation,
 automatic merges and deployments are deferred.
 
 ## Weekly path
@@ -26,31 +27,43 @@ automatic merges and deployments are deferred.
    several leaf memberships, use its first sorted leaf once. Count distinct
    conversations so repeated events do not inflate affected-run counts. Cards have
    up to three distinct-conversation examples, outcome/cause counts and recency.
-5. Make one `openai/gpt-6-luna` call per automation to rank up to three problem
-   groups and select at most three representative conversations. It can combine
-   obvious duplicate groups. Summaries and severity labels are unverified leads;
-   cleanup does not erase an explicit instruction violation. Unselected findings
-   remain pending, and an empty selection requires an explanation.
-6. Load detailed evidence only for those representatives, freeze it with that
-   automation's approved source and aggregate context, then make one
-   `openai/gpt-6.1-sol` call. Sol checks the original task, recovery, counterevidence,
-   existing PRs and current code. It produces at most one coherent source patch,
-   accounts for rejected findings and may propose no repair.
-7. Apply the patch in a detached worktree, restrict edits to approved regular files,
-   and check whitespace and changed Python syntax. Live publication creates one
-   explicitly unevaluated draft PR per automation per ISO week. Dry runs perform
-   the mechanical checks without pushing or opening PRs.
+5. Make one `openai/gpt-6-luna` call per automation to select up to three repair
+   topics. Clusters are semantic hints: Luna may merge duplicate groups or split
+   a mixed group using different representative events. Each topic gets a title,
+   stable key, reason and up to three representative conversations. A single
+   event cannot be assigned to two topics, while different events from one
+   conversation may support different topics. Luna selects compact `e1`-style
+   references; trusted code resolves their event and group IDs from a saved map.
+   Unselected findings stay pending.
+6. For each topic separately, load its representatives and freeze their evidence,
+   the approved source and only that topic's aggregate context. Make a separate
+   `openai/gpt-6.1-sol` call. Sol confirms the issue against the task, trace,
+   recovery, current source and existing PRs, then proposes one focused patch or
+   declines. Independent fixes and incidental cleanup cannot be bundled into
+   another topic. An unrelated but potentially valid finding is deferred in the
+   backlog; unsupported findings can be rejected.
+7. Apply each patch in its own detached worktree, restricting edits to approved
+   regular files and checking whitespace/Python syntax. Live publication creates
+   one explicitly unevaluated draft per topic. Later topics see PRs created
+   earlier in the same batch. Dry runs perform mechanical checks without
+   publication. Every generated repair PR receives the model-independent
+   `automation-improvement` label, including reused PRs. Each topic has its own
+   failure/report/publication state, so one
+   failed or uncertain publication does not block the automation's other topics.
 
-This is one weekly process, two bounded model calls per investigated automation,
-and the existing JSON state file. There is no custom embedding service, new
-clustering infrastructure, repair loop or generalized evaluation framework.
+The prototype uses one Luna call and up to three Sol calls per automation in each
+weekly execution. There is no custom embedding service, new clustering
+infrastructure, repair loop or generalized evaluation framework.
 
 ## Configure and run
 
 Copy [weekly.example.json](weekly.example.json) outside git. Configure the project,
 Signal, endpoints, existing canonical checkout, approved repository/base branch,
-private state directory and GitHub secret name. `triage_model` and `repair_model`
-are configurable. Keep the credentials file owner-only:
+private state directory and GitHub secret name. Create the repository label `automation-improvement`
+(already installed in `OpenHands/oss-agent-canvas`). `triage_model` and `repair_model`
+are configurable. `max_topics_per_automation` sets the weekly investigation budget
+(default three, supported range one to three). Additional topics remain pending.
+Keep the credentials file owner-only:
 
 ```json
 {"LMNR_PROJECT_API_KEY":"...","LITELLM_API_KEY":"..."}
@@ -70,7 +83,7 @@ python3 automations/weekly-automation-improvement/tarball/weekly.py \
   --config /private/weekly.json
 ```
 
-`--limit 1..3` bounds representative conversations **per automation**, not the
+`--limit 1..3` bounds representative conversations **per topic**, not the
 number of findings collected. Dry runs spend inference tokens but neither publish
 nor change the backlog, handled-event ledger or weekly reservations. The YAML
 runs `python3 weekly.py` on Mondays at 08:00 UTC; owner configuration must exist.
@@ -86,19 +99,25 @@ historical executed source equals current source; context and PRs disclose this.
 ## State and publication
 
 A process lock prevents overlap. `backlog` stores pending event records, `events`
-stores assessed event IDs, and `automation_weeks` stores completed/reserved
-investigations. Each automation gets at most one completed investigation per ISO
-week. A failure in one automation is reported and does not stop the others.
+stores assessed event IDs with their topic IDs, and `topic_weeks` stores completed
+or reserved topic investigations. Each automation has a configurable weekly topic
+budget; there is no single-PR slot for the whole automation.
 
-Before publication, reserve that automation's weekly slot atomically. An uncertain
-publication blocks another attempt for that automation that week. Stable branch
-names derive from automation ID and week; PR bodies carry automation/week/event
-markers so GitHub can recover publication state if the local ledger is lost.
-PR discovery and reuse are scoped to the configured base branch.
-Existing remote branches are not overwritten. Existing PR descriptions are given
-to both models to reduce semantic duplicates; this is not a complete semantic
-deduplicator. Old global completion records do not block the new per-automation
-pipeline; an unresolved legacy publication reservation remains conservative.
+Before publication, reserve only that topic's slot atomically. An uncertain result
+blocks that topic rather than its siblings. Branch names derive from automation
+ID, topic ID and ISO week. Topic identity hashes the automation UUID and a stable,
+short semantic key; it does not depend on event IDs, cluster labels or the week.
+PR bodies carry automation/topic/key/week/event markers. An open PR with the same
+topic blocks another PR across weeks; a closed/merged PR blocks only its creation
+week, allowing later regressions to be investigated. PR discovery/reuse remains
+scoped to the configured base branch, and remote branches are never overwritten.
+
+GitHub markers recover individual weekly topic slots if local state is lost.
+Legacy handled events remain handled. Old completed automation-wide slots do not
+block unrelated new topics; uncertain old publication reservations remain
+conservative. Existing PR descriptions and completed topic keys are supplied to
+Luna and Sol. A model can still misclassify or rename an issue: this is not a
+complete semantic deduplicator, and cluster membership does not prove root cause.
 
 No finding is automatically labeled a confirmed defect. Recurrence counts describe
 the pending backlog, not validated failure rates. Human review controls merge and
@@ -135,9 +154,11 @@ The workload limits below are not a dollar cap.
 ## Frozen local iteration and bounds
 
 The batch directory contains `collection/input.json` with the complete lightweight
-inventory. Each automation has `triage/triage-input.json`, saved model requests,
-responses and measurements, its frozen `snapshot-with-source.json`, source config,
-analysis and mechanical-validation artifacts, and `automation-report.json`.
+inventory. Each automation has `triage/triage-input.json` plus saved Luna requests,
+responses and measurements. Its `topics/TOPIC_ID/` directories each contain a
+frozen `snapshot-with-source.json`, source config, Sol request/response, analysis,
+mechanical-validation artifacts and `topic-report.json`. `automation-report.json`
+collects the topic outcomes.
 `weekly-report.json` reports all automation outcomes and explicit collection-error
 status when ownership or collection is incomplete. Artifacts/state are owner-only;
 redaction is best effort. Never share them without inspection.
@@ -146,8 +167,8 @@ Replay a frozen Sol input without Laminar collection or publication:
 
 ```bash
 python3 automations/weekly-automation-improvement/tarball/main.py \
-  --input /private/run/AUTOMATION_UUID/snapshot-with-source.json \
-  --source-config /private/run/AUTOMATION_UUID/source-config.json \
+  --input /private/run/AUTOMATION_UUID/topics/TOPIC_ID/snapshot-with-source.json \
+  --source-config /private/run/AUTOMATION_UUID/topics/TOPIC_ID/source-config.json \
   --check-draft --output /private/replay
 ```
 
@@ -158,19 +179,21 @@ Luna trajectory-analysis mode and optional configured behavioral-check path rema
 available through `main.py`; the weekly path reuses persisted Flow-1 findings.
 
 Bounds: 10,000 Signal run rows per seven-day collection window; one Luna call and
-at most one Sol call per automation/week; three representative conversations;
+up to three Sol calls per automation in a weekly execution; up to three topic
+investigations per automation/week, each with three representative conversations;
 30 source files / 250 KB; 20,000 characters per native Flow-1 finding text field;
 750 KB per model request; 4,096 output tokens. Oversized
 requests fail visibly with pending data retained. Each conversation retains the
 existing 1,000-span, 2 MB projected-sample and 8 MB HTTP-response limits. There is
 no silent replacement sampling or inference retry. More automation groups mean
-more model calls; the former one-PR-global limit has been replaced deliberately.
+more model calls; the former one-PR-per-automation limit has been replaced
+with a bounded topic budget.
 
 ```bash
 python3 -m pytest automations/weekly-automation-improvement/tests -q
 python3 -m ruff check automations/weekly-automation-improvement
 ```
 
-See [VALIDATION.md](VALIDATION.md) and rollout tracker
+See [TOPIC_VALIDATION.md](TOPIC_VALIDATION.md), earlier [VALIDATION.md](VALIDATION.md), and rollout tracker
 [#50](https://github.com/OpenHands/oss-agent-canvas/issues/50). Detector accuracy,
 behavioral benefit, executed revision uptake and post-merge benefit remain unproven.

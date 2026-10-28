@@ -14,6 +14,7 @@ from test_flow1 import EVENT, SIGNAL, frozen
 import patches
 import sources
 import weekly
+import triage
 from events import collect_events
 from flow1 import findings
 
@@ -146,6 +147,12 @@ def test_unevaluated_draft_publishes_without_behavioral_checks(
     args = arguments(tmp_path / "review", source_config=path, publish_draft=True)
     args.output.mkdir()
     args.publication_automation_id, args.publication_week = identifier, "2026-W44"
+    args.publication_topic = {
+        "id": triage.topic_id(identifier, "payload-validation"),
+        "key": "payload-validation",
+        "title": "Validate review payloads",
+        "representative_event_ids": [EVENT],
+    }
     report = fix_report(
         PATCH if valid_syntax else PATCH.replace("+VALUE = 4", "+VALUE = (")
     )
@@ -153,6 +160,7 @@ def test_unevaluated_draft_publishes_without_behavioral_checks(
         trace_urls=["https://example.test/trace"],
         signal_event_id=EVENT,
         automation_id=identifier,
+        case_id="c1",
     )
     original = patches.command
     pushed = []
@@ -176,6 +184,7 @@ def test_unevaluated_draft_publishes_without_behavioral_checks(
             return ""
         if argv[:3] == ["gh", "pr", "create"]:
             assert "--draft" in argv
+            assert argv[argv.index("--label") + 1] == "automation-improvement"
             assert "[Unevaluated]" in argv[argv.index("--title") + 1]
             body = Path(argv[argv.index("--body-file") + 1]).read_text()
             assert "behavioral evaluation has not been performed" in body
@@ -191,10 +200,16 @@ def test_unevaluated_draft_publishes_without_behavioral_checks(
     )
     if not valid_syntax:
         with pytest.raises(ValueError, match="invalid Python syntax"):
-            patches.propose_fix(args, report, {"source": load_source(path)})
+            patches.propose_fix(
+                args,
+                report,
+                {"source": load_source(path), "topic": args.publication_topic},
+            )
         assert pushed == []
         return
-    result = patches.propose_fix(args, report, {"source": load_source(path)})
+    result = patches.propose_fix(
+        args, report, {"source": load_source(path), "topic": args.publication_topic}
+    )
     assert result["status"] == "unevaluated_draft"
     assert result["baseline"] == result["candidate"] == []
     assert len(pushed) == 1
@@ -317,14 +332,33 @@ def prepare_grouped(configured_source, tmp_path, monkeypatch, records):
     monkeypatch.setattr(weekly, "collect_events", lambda *a, **k: inventory(records))
     calls = []
 
-    def rank(args, pending, prs):
+    def rank(args, pending, prs, completed_topics=()):
         identifier = pending[0]["owner"]["automation_id"]
         calls.append(("luna", identifier))
         assert all(item["owner"]["automation_id"] == identifier for item in pending)
-        return pending[:1], {
+        cards, _ = triage.group_findings(pending)
+        done = {t["id"] for t in completed_topics}
+        plans = []
+        for card in cards:
+            key = "issue-" + card["group_id"]
+            topic_id = triage.topic_id(identifier, key)
+            if topic_id not in done:
+                plans.append(
+                    {
+                        "id": topic_id,
+                        "key": key,
+                        "title": "One issue",
+                        "reason": "Investigate one failure",
+                        "group_ids": [card["group_id"]],
+                        "representative_event_ids": [card["examples"][0]["event_id"]],
+                    }
+                )
+        plans = plans[: args.max_topics]
+        return plans, {
             "automation_id": identifier,
             "total_events": len(pending),
             "affected_conversations": len(pending),
+            "groups": cards,
         }
 
     def hydrate(client, frame, chosen):
@@ -344,7 +378,12 @@ def prepare_grouped(configured_source, tmp_path, monkeypatch, records):
     def analyze(args):
         value = json.loads(args.input.read_text())
         case = value["samples"][0]
-        calls.append(("sol", case["automation_id"]))
+        assert value["aggregation"]["luna_triage"]["topics"] == [value["topic"]]
+        assert set(value["aggregation"]["groups"][0])
+        assert set(case["selected_event_ids"]) <= set(
+            value["topic"]["representative_event_ids"]
+        )
+        calls.append(("sol", case["automation_id"], value["topic"]["key"]))
         assert args.coordinator == "openai/gpt-6.1-sol" and not args.publish_draft
         args.output.mkdir()
         report = fix_report(PATCH)
@@ -359,11 +398,11 @@ def prepare_grouped(configured_source, tmp_path, monkeypatch, records):
         identifier = args.publication_automation_id
         assert args.publish_draft and not args.publish_fix
         assert snapshot["source"]["automation_ids"] == [identifier]
-        calls.append(("publish", identifier))
+        calls.append(("publish", identifier, args.publication_topic["key"]))
         return {
             "status": "unevaluated_draft",
             "pr_url": "https://github.com/Example/automation/pull/"
-            + str(int(uuid.UUID(identifier))),
+            + str(int(args.publication_topic["id"], 16)),
         }
 
     monkeypatch.setattr(weekly, "triage", rank)
@@ -382,19 +421,16 @@ def test_two_automations_get_independent_repairs_and_pending_findings_survive(
     result = weekly.run(config)
     assert result["status"] == "completed" and len(result["automations"]) == 2
     assert all(
-        item["publication"]["status"] == "unevaluated_draft"
+        item["topics"][0]["publication"]["status"] == "unevaluated_draft"
         for item in result["automations"]
     )
     state = json.loads((Path(config["state_dir"]) / "state.json").read_text())
-    assert len(state["automation_weeks"]) == 2
+    assert len(state["topic_weeks"]) == 2
     assert set(state["backlog"]) == {records[1]["event"]["id"]}
     assert len([call for call in calls if call[0] == "sol"]) == 2
     again = weekly.run(config)
-    assert len(calls) == 6
-    assert (
-        again["automations"][0]["status"]
-        == "automation_week_already_completed_or_reserved"
-    )
+    assert len([call for call in calls if call[0] == "sol"]) == 2
+    assert again["automations"][0]["status"] == "no_promising_findings"
 
 
 def test_uncertain_publication_blocks_only_its_automation(
@@ -412,18 +448,18 @@ def test_uncertain_publication_blocks_only_its_automation(
     monkeypatch.setattr(weekly, "propose_fix", publish)
     result = weekly.run(config)
     assert result["status"] == "partial_failure"
-    assert result["automations"][0]["status"] == "failed"
-    assert result["automations"][1]["publication"]["status"] == "unevaluated_draft"
+    assert result["automations"][0]["topics"][0]["status"] == "failed"
+    assert (
+        result["automations"][1]["topics"][0]["publication"]["status"]
+        == "unevaluated_draft"
+    )
     state = json.loads((Path(config["state_dir"]) / "state.json").read_text())
-    assert sorted(item["status"] for item in state["automation_weeks"].values()) == [
+    assert sorted(item["status"] for item in state["topic_weeks"].values()) == [
         "completed",
         "reserved",
     ]
     again = weekly.run(config)
-    assert (
-        again["automations"][0]["status"]
-        == "automation_week_already_completed_or_reserved"
-    )
+    assert again["automations"][0]["status"] == "no_promising_findings"
     assert len([call for call in calls if call[0] == "sol"]) == 2
 
 
@@ -441,12 +477,12 @@ def test_dry_run_does_not_publish_or_change_backlog(
 
     monkeypatch.setattr(weekly, "propose_fix", check)
     result = weekly.run(config, dry_run=True)
-    assert result["automations"][0]["publication"] == "disabled"
+    assert result["automations"][0]["topics"][0]["publication"] == "disabled"
     assert not (Path(config["state_dir"]) / "state.json").exists()
     assert [call[0] for call in calls] == ["luna", "sol", "check"]
 
 
-def test_existing_pr_recovers_per_automation_cap_without_local_state(
+def test_old_automation_marker_does_not_block_new_topics(
     configured_source, tmp_path, monkeypatch
 ):
     records = [record(1), record(2, automation=2)]
@@ -464,12 +500,8 @@ def test_existing_pr_recovers_per_automation_cap_without_local_state(
         ],
     )
     result = weekly.run(config)
-    assert (
-        result["automations"][0]["status"]
-        == "automation_week_already_completed_or_reserved"
-    )
-    assert [call[0] for call in calls] == ["luna", "sol", "publish"]
-    assert all(call[1] == records[1]["owner"]["automation_id"] for call in calls)
+    assert result["status"] == "completed"
+    assert len([call for call in calls if call[0] == "publish"]) == 2
 
 
 def test_backlog_survives_window_and_sampling_only_version_changes():
@@ -638,7 +670,7 @@ def test_check_draft_applies_and_checks_patch_without_network(
     assert (checkout / "value.py").read_text() == "VALUE = 3\n"
 
 
-def test_legacy_event_markers_recover_automation_limit_for_other_pending_events(
+def test_legacy_event_marker_does_not_block_other_findings(
     configured_source, tmp_path, monkeypatch
 ):
     records = [record(1), record(2), record(3, automation=2)]
@@ -656,11 +688,10 @@ def test_legacy_event_markers_recover_automation_limit_for_other_pending_events(
         ],
     )
     result = weekly.run(config)
-    assert (
-        result["automations"][0]["status"]
-        == "automation_week_already_completed_or_reserved"
-    )
-    assert all(call[1] == records[2]["owner"]["automation_id"] for call in calls)
+    assert result["status"] == "completed"
+    assert len([call for call in calls if call[0] == "sol"]) == 2
+    state = json.loads((Path(config["state_dir"]) / "state.json").read_text())
+    assert records[0]["event"]["id"] not in state["backlog"]
 
 
 def test_failed_reanalysis_does_not_reuse_older_finding():
@@ -696,3 +727,338 @@ def test_collection_errors_are_not_reported_as_no_findings(
     assert result["status"] == "collection_incomplete"
     assert result["collection_errors"] == frame["collection_errors"]
     assert calls == []
+
+
+def distinct_records():
+    records = [record(1), record(2), record(3)]
+    for i, item in enumerate(records):
+        payload = json.loads(item["event"]["payload"])
+        payload["signature"] = "independent issue " + str(i)
+        item["event"]["payload"] = json.dumps(payload)
+    return records
+
+
+def test_one_automation_creates_separate_topic_repairs_and_reservations(
+    configured_source, tmp_path, monkeypatch
+):
+    records = distinct_records()
+    config, calls = prepare_grouped(configured_source, tmp_path, monkeypatch, records)
+    result = weekly.run(config)
+    topics = result["automations"][0]["topics"]
+    assert len(topics) == 3
+    assert len({t["publication"]["pr_url"] for t in topics}) == 3
+    assert len([c for c in calls if c[0] == "luna"]) == 1
+    assert len([c for c in calls if c[0] == "sol"]) == 3
+    state = json.loads((Path(config["state_dir"]) / "state.json").read_text())
+    assert len(state["topic_weeks"]) == 3 and not state["backlog"]
+    before = list(calls)
+    monkeypatch.setattr(
+        weekly, "collect_events", lambda *a, **k: inventory(records + [record(4)])
+    )
+    again = weekly.run(config)
+    assert again["automations"][0]["status"] == "weekly_topic_budget_exhausted"
+    assert calls == before
+
+
+def test_failed_topic_does_not_block_other_topics_in_same_automation(
+    configured_source, tmp_path, monkeypatch
+):
+    config, calls = prepare_grouped(
+        configured_source, tmp_path, monkeypatch, distinct_records()
+    )
+    original = weekly.propose_fix
+    count = []
+
+    def publish(args, report, snapshot):
+        count.append(args.publication_topic["id"])
+        if len(count) == 1:
+            raise RuntimeError("uncertain write")
+        return original(args, report, snapshot)
+
+    monkeypatch.setattr(weekly, "propose_fix", publish)
+    result = weekly.run(config)
+    assert result["status"] == "partial_failure"
+    assert [t["status"] for t in result["automations"][0]["topics"]] == [
+        "failed",
+        "analyzed",
+        "analyzed",
+    ]
+    state = json.loads((Path(config["state_dir"]) / "state.json").read_text())
+    assert sorted(t["status"] for t in state["topic_weeks"].values()) == [
+        "completed",
+        "completed",
+        "reserved",
+    ]
+    weekly.run(config)
+    assert len(count) == 3
+
+
+def test_invalid_topic_budget_fails_before_collection(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        weekly,
+        "load_environment",
+        lambda c: pytest.fail("Invalid budget must fail before access"),
+    )
+    for value in (0, 4, True, "3"):
+        with pytest.raises(ValueError, match="max_topics_per_automation"):
+            weekly.run(configuration(tmp_path) | {"max_topics_per_automation": value})
+
+
+def test_completed_legacy_automation_does_not_block_new_topic(
+    configured_source, tmp_path, monkeypatch
+):
+    records = [record()]
+    config, calls = prepare_grouped(configured_source, tmp_path, monkeypatch, records)
+    state_dir = Path(config["state_dir"])
+    state_dir.mkdir()
+    key = (
+        weekly.week_key(weekly.dt.datetime.now(weekly.dt.UTC))
+        + "/"
+        + records[0]["owner"]["automation_id"]
+    )
+    (state_dir / "state.json").write_text(
+        json.dumps({"events": {}, "automation_weeks": {key: {"status": "completed"}}})
+    )
+    assert weekly.run(config)["status"] == "completed"
+    assert len([c for c in calls if c[0] == "publish"]) == 1
+
+
+def test_uncertain_legacy_automation_publication_is_preserved(
+    configured_source, tmp_path, monkeypatch
+):
+    records = [record()]
+    config, calls = prepare_grouped(configured_source, tmp_path, monkeypatch, records)
+    state_dir = Path(config["state_dir"])
+    state_dir.mkdir()
+    key = (
+        weekly.week_key(weekly.dt.datetime.now(weekly.dt.UTC))
+        + "/"
+        + records[0]["owner"]["automation_id"]
+    )
+    (state_dir / "state.json").write_text(
+        json.dumps({"events": {}, "automation_weeks": {key: {"status": "reserved"}}})
+    )
+    assert (
+        weekly.run(config)["automations"][0]["status"] == "legacy_publication_reserved"
+    )
+    assert not calls
+
+
+def test_topic_deduplication_is_scoped_by_automation_and_open_across_weeks():
+    owner = str(uuid.UUID(int=1))
+    topic = {
+        "id": triage.topic_id(owner, "one-issue"),
+        "key": "one-issue",
+        "representative_event_ids": [EVENT],
+    }
+    pr = {
+        "url": "https://example.test/pr/1",
+        "body": f"<!-- automation-improvement-automation: {owner} -->\n<!-- automation-improvement-topic: {topic['id']} -->",
+        "state": "OPEN",
+        "createdAt": "2026-10-01T00:00:00Z",
+    }
+    assert weekly.published_for([pr], owner, "2026-W44", topic) == pr
+    assert (
+        weekly.published_for([pr | {"state": "MERGED"}], owner, "2026-W44", topic)
+        is None
+    )
+    assert weekly.published_for([pr], str(uuid.UUID(int=2)), "2026-W44", topic) is None
+    other = topic | {"id": triage.topic_id(owner, "other-issue")}
+    assert weekly.published_for([pr], owner, "2026-W44", other) is None
+
+
+def test_topic_markers_recover_individual_slots_without_blocking_other_topics(
+    configured_source, tmp_path, monkeypatch
+):
+    records = distinct_records()[:2]
+    config, calls = prepare_grouped(configured_source, tmp_path, monkeypatch, records)
+    cards, _ = triage.group_findings(records)
+    key = "issue-" + cards[0]["group_id"]
+    owner = records[0]["owner"]["automation_id"]
+    pr = {
+        "url": "https://example.test/pr/1",
+        "body": f"<!-- automation-improvement-automation: {owner} -->\n<!-- automation-improvement-topic: {triage.topic_id(owner, key)} -->\n<!-- automation-improvement-topic-key: {key} -->",
+        "state": "OPEN",
+        "createdAt": weekly.dt.datetime.now(weekly.dt.UTC).isoformat(),
+    }
+    monkeypatch.setattr(weekly, "existing_prs", lambda *a: [pr])
+    result = weekly.run(config)
+    assert result["status"] == "completed"
+    assert len([c for c in calls if c[0] == "publish"]) == 1
+    assert [c[2] for c in calls if c[0] == "sol"] != [key]
+
+
+def test_out_of_topic_finding_is_deferred_in_backlog(
+    configured_source, tmp_path, monkeypatch
+):
+    records = [record()]
+    config, calls = prepare_grouped(configured_source, tmp_path, monkeypatch, records)
+    original = weekly.analysis.run
+
+    def analyze(args):
+        original(args)
+        path = args.output / "report.json"
+        report = json.loads(path.read_text())
+        report["proposals"] = []
+        report["rejected_findings"] = [
+            {
+                "finding_id": report["findings"][0]["id"],
+                "reason": "A different independent issue",
+                "disposition": "other_topic",
+            }
+        ]
+        path.write_text(json.dumps(report))
+
+    monkeypatch.setattr(weekly.analysis, "run", analyze)
+    weekly.run(config)
+    state = json.loads((Path(config["state_dir"]) / "state.json").read_text())
+    assert records[0]["event"]["id"] in state["backlog"]
+    assert records[0]["event"]["id"] not in state["events"]
+
+
+def test_real_publisher_uses_distinct_topic_branches(
+    configured_source, tmp_path, monkeypatch
+):
+    checkout, path, config = configured_source
+    owner = str(uuid.UUID(int=1))
+    config.update(checks=[], automation_ids=[owner])
+    path.write_text(json.dumps(config))
+    command(
+        ["git", "remote", "add", "origin", "https://github.com/Example/automation.git"],
+        checkout,
+    )
+    original = patches.command
+    branches = []
+
+    def transport(argv, cwd=None, **kwargs):
+        if argv[:2] == ["gh", "api"]:
+            return config["revision"]
+        if argv[:3] == ["gh", "pr", "list"]:
+            return "[]"
+        if argv[:2] == ["git", "ls-remote"]:
+            return ""
+        if argv[:2] == ["git", "push"]:
+            branches.append(argv[-1])
+            return ""
+        if argv[:3] == ["gh", "pr", "create"]:
+            assert argv[argv.index("--label") + 1] == "automation-improvement"
+            body = Path(argv[argv.index("--body-file") + 1]).read_text()
+            assert "automation-improvement-topic:" in body
+            assert "Repair topic:" in body
+            return "https://github.com/Example/automation/pull/" + str(len(branches))
+        return original(argv, cwd, **kwargs)
+
+    monkeypatch.setattr(patches, "command", transport)
+    for i, key in enumerate(["head-check", "payload-check"]):
+        event = str(uuid.UUID(int=900 + i))
+        topic = {
+            "key": key,
+            "id": triage.topic_id(owner, key),
+            "title": key,
+            "representative_event_ids": [event],
+        }
+        args = arguments(
+            tmp_path / key,
+            source_config=path,
+            publish_draft=True,
+            publication_automation_id=owner,
+            publication_week="2026-W44",
+            publication_topic=topic,
+        )
+        args.output.mkdir()
+        report = fix_report(PATCH)
+        report["findings"][0].update(
+            automation_id=owner, signal_event_id=event, trace_urls=[], case_id="c1"
+        )
+        result = patches.propose_fix(
+            args, report, {"source": load_source(path), "topic": topic}
+        )
+        assert result["status"] == "unevaluated_draft"
+    assert len(branches) == len(set(branches)) == 2
+
+
+@pytest.mark.parametrize(
+    "mutation", ["foreign_event", "wrong_identity", "wrong_snapshot"]
+)
+def test_publisher_rejects_cross_topic_binding_before_any_write(
+    configured_source, tmp_path, monkeypatch, mutation
+):
+    checkout, path, config = configured_source
+    owner = str(uuid.UUID(int=1))
+    config.update(checks=[], automation_ids=[owner])
+    path.write_text(json.dumps(config))
+    topic = {
+        "key": "head-check",
+        "id": triage.topic_id(owner, "head-check"),
+        "title": "Head check",
+        "representative_event_ids": [EVENT],
+    }
+    args = arguments(
+        tmp_path / "topic",
+        source_config=path,
+        publish_draft=True,
+        publication_automation_id=owner,
+        publication_week="2026-W44",
+        publication_topic=copy.deepcopy(topic),
+    )
+    report = fix_report(PATCH)
+    report["findings"][0].update(automation_id=owner, signal_event_id=EVENT)
+    if mutation == "foreign_event":
+        report["findings"][0]["signal_event_id"] = str(uuid.UUID(int=99))
+    elif mutation == "wrong_identity":
+        args.publication_topic["id"] = "0" * 20
+    else:
+        topic["key"] = "other-topic"
+    original = patches.command
+
+    def run(argv, cwd=None, **kwargs):
+        if argv[0] == "gh" or argv[:2] == ["git", "push"]:
+            pytest.fail("Cannot publish a foreign topic")
+        return original(argv, cwd, **kwargs)
+
+    monkeypatch.setattr(patches, "command", run)
+    with pytest.raises(ValueError):
+        patches.propose_fix(args, report, {"source": load_source(path), "topic": topic})
+
+
+def test_reusing_existing_pr_applies_model_agnostic_label(
+    configured_source, tmp_path, monkeypatch
+):
+    checkout, path, config = configured_source
+    args = arguments(
+        tmp_path / "reuse",
+        source_config=path,
+        publish_draft=True,
+        coordinator="future-model",
+    )
+    original = patches.command
+    edits = []
+    url = "https://github.com/Example/automation/pull/7"
+
+    def commands(argv, cwd=None, **kwargs):
+        if argv[:2] == ["gh", "api"]:
+            return config["revision"]
+        if argv[:3] == ["gh", "pr", "list"]:
+            return json.dumps([{"url": url}])
+        if argv[:3] == ["gh", "pr", "edit"]:
+            edits.append(argv)
+            return ""
+        if argv[:2] == ["git", "push"] or argv[:3] == ["gh", "pr", "create"]:
+            pytest.fail("Reuse cannot publish a new PR")
+        return original(argv, cwd, **kwargs)
+
+    monkeypatch.setattr(patches, "command", commands)
+    result = patches.propose_fix(args, fix_report(PATCH), {"source": load_source(path)})
+    assert result == {"status": "already_tracked", "pr_url": url}
+    assert edits == [
+        [
+            "gh",
+            "pr",
+            "edit",
+            url,
+            "--repo",
+            config["repository"],
+            "--add-label",
+            "automation-improvement",
+        ]
+    ]

@@ -289,7 +289,7 @@ def hydrate_events(client, inventory, records):
         "samples": samples,
         "selection": inventory["selection"]
         | {
-            "method": "luna_ranked_representatives_per_automation",
+            "method": "luna_ranked_representatives_per_topic",
             "selected_event_ids": [record["event"]["id"] for record in records],
             "sample_size": len(records),
             "inclusion_probability": None,

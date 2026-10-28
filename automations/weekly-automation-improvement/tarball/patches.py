@@ -7,7 +7,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from common import read_json, redact, write_json
+from common import read_json, redact, topic_id, write_json
 
 
 def patch_from_edits(source, edits):
@@ -164,6 +164,9 @@ def run_checks(directory, checks, output, label):
     return results
 
 
+IMPROVEMENT_LABEL = "automation-improvement"
+
+
 def propose_fix(args, report, snapshot):
     config = read_json(args.source_config)
     source = load_source(args.source_config)
@@ -202,18 +205,34 @@ def propose_fix(args, report, snapshot):
     ).hexdigest()[:20]
     publication_automation = getattr(args, "publication_automation_id", None)
     publication_week = getattr(args, "publication_week", None)
-    if publication_automation or publication_week:
+    publication_topic = getattr(args, "publication_topic", None)
+    if publication_automation or publication_week or publication_topic:
         if (
             not publication_automation
+            or not publication_topic
+            or snapshot.get("topic") != publication_topic
+            or topic_id(publication_automation, publication_topic["key"])
+            != publication_topic["id"]
+            or any(
+                finding.get("signal_event_id")
+                not in publication_topic["representative_event_ids"]
+                for finding in findings
+            )
             or not re.fullmatch(r"[0-9]{4}-W[0-9]{2}", publication_week or "")
             or {finding["automation_id"] for finding in findings}
             != {publication_automation}
         ):
             raise ValueError(
-                "Weekly publication must be scoped to exactly one automation"
+                "Weekly publication must be scoped to exactly one automation and repair topic"
             )
         fingerprint = hashlib.sha256(
-            (publication_automation + "|" + publication_week).encode()
+            (
+                publication_automation
+                + "|"
+                + publication_week
+                + "|"
+                + publication_topic["id"]
+            ).encode()
         ).hexdigest()[:20]
     branch = "automation/improve-" + fingerprint
     if publishing:
@@ -250,6 +269,18 @@ def propose_fix(args, report, snapshot):
             )
         )
         if existing:
+            command(
+                [
+                    "gh",
+                    "pr",
+                    "edit",
+                    existing[0]["url"],
+                    "--repo",
+                    source["repository"],
+                    "--add-label",
+                    IMPROVEMENT_LABEL,
+                ]
+            )
             return {"status": "already_tracked", "pr_url": existing[0]["url"]}
     checkout = Path(config["checkout"]).expanduser().resolve()
     baseline = (args.output / "baseline").resolve()
@@ -394,9 +425,22 @@ def propose_fix(args, report, snapshot):
                 + publication_automation
                 + " -->",
                 "<!-- automation-improvement-week: " + publication_week + " -->",
+                "<!-- automation-improvement-topic: "
+                + publication_topic["id"]
+                + " -->",
+                "<!-- automation-improvement-topic-key: "
+                + publication_topic["key"]
+                + " -->",
             ]
         )
-    if report.get("aggregation"):
+    if publication_topic:
+        body += (
+            f"\n\nRepair topic: {publication_topic['title']}. "
+            f"Investigated {len(findings)} representative findings across "
+            f"{len({finding['case_id'] for finding in findings})} conversations. "
+            "Cluster membership and recurrence are leads, not validated failure rates.\n"
+        )
+    elif report.get("aggregation"):
         aggregation = report["aggregation"]
         body += f"\n\nAutomation backlog reviewed: {aggregation['total_events']} findings across {aggregation['affected_conversations']} distinct conversations. These counts are not validated failure rates.\n"
     body = "\n".join(markers) + "\n\n" + body
@@ -415,6 +459,8 @@ def propose_fix(args, report, snapshot):
             "--head",
             branch,
             "--draft",
+            "--label",
+            IMPROVEMENT_LABEL,
             "--title",
             (("[Unevaluated] " if unevaluated else "") + proposal["title"])[:120],
             "--body-file",

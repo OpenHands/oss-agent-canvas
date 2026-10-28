@@ -147,7 +147,10 @@ def source_config(config, snapshot, output):
 
 def run(config, *, dry_run=False, limit=3, seed=None):
     if not 1 <= limit <= 3:
-        raise ValueError("Select one to three representatives per automation")
+        raise ValueError("Select one to three representatives per topic")
+    maximum = config.get("max_topics_per_automation", 3)
+    if type(maximum) is not int or not 1 <= maximum <= 3:
+        raise ValueError("max_topics_per_automation must be between one and three")
     load_environment(config)
     state_dir = Path(config["state_dir"]).expanduser()
     state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -208,27 +211,57 @@ def update_backlog(state, inventory, prs):
     ]
 
 
-def published_for(prs, automation_id, week, records):
-    marker = "<!-- automation-improvement-automation: " + automation_id + " -->"
-    identifiers = {
-        record["event"]["id"]
-        for record in records
-        if record["owner"]["automation_id"] == automation_id
-    }
+def published_for(prs, automation_id, week, topic):
+    automation_marker = (
+        "<!-- automation-improvement-automation: " + automation_id + " -->"
+    )
+    topic_marker = "<!-- automation-improvement-topic: " + topic["id"] + " -->"
+    identifiers = set(topic["representative_event_ids"])
     for pr in prs:
-        if week_key(timestamp(pr["createdAt"])) != week:
+        if pr.get("state") != "OPEN" and week_key(timestamp(pr["createdAt"])) != week:
             continue
         events = set(
             re.findall(
                 r"<!-- automation-improvement-event: ([0-9a-f-]{36}) -->", pr["body"]
             )
         )
-        if marker in pr["body"] or events.intersection(identifiers):
-            return True
-    return False
+        if (
+            automation_marker in pr["body"] and topic_marker in pr["body"]
+        ) or events.intersection(identifiers):
+            return pr
+    return None
 
 
-def investigate(
+def recover_topic_slots(state, prs, week):
+    for pr in prs:
+        if week_key(timestamp(pr["createdAt"])) != week:
+            continue
+        body = pr["body"]
+        automation = re.search(
+            r"<!-- automation-improvement-automation: ([0-9a-f-]{36}) -->", body
+        )
+        topic = re.search(
+            r"<!-- automation-improvement-topic: ([0-9a-f]{20}) -->", body
+        )
+        key = re.search(
+            r"<!-- automation-improvement-topic-key: ([a-z0-9-]{1,40}) -->", body
+        )
+        if automation and topic:
+            state["topic_weeks"].setdefault(
+                week + "/" + automation[1] + "/" + topic[1],
+                {
+                    "status": "completed",
+                    "topic": {
+                        "id": topic[1],
+                        "key": key[1] if key else "",
+                        "title": pr.get("title", ""),
+                    },
+                    "pr_url": pr["url"],
+                },
+            )
+
+
+def investigate_topic(
     config,
     inventory,
     records,
@@ -240,21 +273,18 @@ def investigate(
     dry_run,
     limit,
     seed,
+    topic,
+    aggregation,
 ):
     automation_id = records[0]["owner"]["automation_id"]
-    args = arguments(config, output / "triage", limit, seed)
-    args.output.mkdir(mode=0o700)
-    chosen, aggregation = triage(args, records, prs)
+    args = arguments(config, output / "analysis", limit, seed)
     result = {
         "automation_id": automation_id,
-        "automation_name": records[0]["owner"]["automation_name"],
+        "topic": topic,
         "status": "no_promising_findings",
-        "aggregation": aggregation,
         "publication": "disabled" if dry_run else "none",
     }
-    if not chosen:
-        return result
-    snapshot = hydrate_events(Laminar(args), inventory, chosen)
+    snapshot = hydrate_events(Laminar(args), inventory, records)
     path, samples, errors = source_config(config, snapshot, output)
     result["source_errors"] = errors
     if not samples:
@@ -267,6 +297,7 @@ def investigate(
     if set(snapshot["source"]["automation_ids"]) != {automation_id}:
         raise ValueError("Repair source must be scoped to exactly this automation")
     snapshot["aggregation"] = aggregation
+    snapshot["topic"] = topic
     snapshot["existing_improvement_prs"] = prs
     frozen = output / "snapshot-with-source.json"
     write_json(frozen, snapshot)
@@ -274,12 +305,20 @@ def investigate(
     args.output = output / "analysis"
     analysis.run(args)
     report = read_json(args.output / "report.json")
+    if report.get("errors"):
+        raise ValueError(
+            "Topic analysis incomplete; retain findings for another attempt"
+        )
     by_id = {finding["id"]: finding for finding in report["findings"]}
     updates = {}
     for rejection in report["rejected_findings"]:
+        if rejection.get("disposition") == "other_topic":
+            continue
         event_id = by_id[rejection["finding_id"]]["signal_event_id"]
         updates[event_id] = {
             "status": "rejected",
+            "topic_id": topic["id"],
+            "disposition": rejection.get("disposition", "unsupported"),
             "reason": rejection["reason"],
             "week": week,
         }
@@ -298,19 +337,22 @@ def investigate(
     if report["proposals"]:
         proposal = report["proposals"][0]
         if proposal["patch"] and config.get("publish_drafts", False) and not dry_run:
-            key = week + "/" + automation_id
-            state["automation_weeks"][key] = {
+            key = week + "/" + automation_id + "/" + topic["id"]
+            state["topic_weeks"][key] = {
+                "topic": topic,
                 "status": "reserved",
                 "report": str(args.output / "report.json"),
             }
             save_state(state_path, state)
             args.publish_draft = True
             args.publication_automation_id, args.publication_week = automation_id, week
+            args.publication_topic = topic
             publication = propose_fix(args, report, snapshot)
             result["publication"] = publication
             for finding_id in proposal["finding_ids"]:
                 updates[by_id[finding_id]["signal_event_id"]] = {
                     "status": "draft_pr",
+                    "topic_id": topic["id"],
                     "pr_url": publication["pr_url"],
                     "week": week,
                 }
@@ -321,6 +363,7 @@ def investigate(
             for finding_id in proposal["finding_ids"]:
                 updates[by_id[finding_id]["signal_event_id"]] = {
                     "status": "diagnostic_only",
+                    "topic_id": topic["id"],
                     "week": week,
                 }
     if not dry_run:
@@ -328,6 +371,142 @@ def investigate(
         for event_id in updates:
             state["backlog"].pop(event_id, None)
     return result
+
+
+def investigate(
+    config,
+    inventory,
+    records,
+    prs,
+    output,
+    state,
+    state_path,
+    week,
+    dry_run,
+    limit,
+    seed,
+):
+    automation_id = records[0]["owner"]["automation_id"]
+    maximum = config.get("max_topics_per_automation", 3)
+    prefix = week + "/" + automation_id + "/"
+    completed = [
+        value["topic"]
+        for key, value in state["topic_weeks"].items()
+        if key.startswith(prefix)
+    ]
+    remaining = maximum if dry_run else maximum - len(completed)
+    result = {
+        "automation_id": automation_id,
+        "automation_name": records[0]["owner"]["automation_name"],
+        "topics": [],
+    }
+    if remaining <= 0:
+        return result | {"status": "weekly_topic_budget_exhausted"}
+    args = arguments(config, output / "triage", limit, seed)
+    args.max_topics = remaining
+    args.output.mkdir(mode=0o700)
+    scoped_prs = [
+        pr
+        for pr in prs
+        if "<!-- automation-improvement-automation:" not in pr["body"]
+        or "<!-- automation-improvement-automation: " + automation_id + " -->"
+        in pr["body"]
+    ]
+    topics, aggregation = triage(args, records, scoped_prs, completed)
+    result["aggregation"] = aggregation
+    by_id = {record["event"]["id"]: record for record in records}
+    for topic in topics:
+        key = prefix + topic["id"]
+        directory = output / "topics" / topic["id"]
+        directory.mkdir(parents=True, mode=0o700)
+        tracked = published_for(scoped_prs, automation_id, week, topic)
+        if not dry_run and (key in state["topic_weeks"] or tracked):
+            outcome = {
+                "topic": topic,
+                "status": "topic_already_completed_or_tracked",
+                "pr_url": tracked["url"]
+                if tracked
+                else state["topic_weeks"][key].get("pr_url"),
+            }
+        else:
+            context = {
+                **aggregation,
+                "groups": [
+                    card
+                    for card in aggregation["groups"]
+                    if card["group_id"] in topic["group_ids"]
+                ],
+                "luna_triage": {"topics": [topic], "no_action_reason": ""},
+            }
+            try:
+                outcome = investigate_topic(
+                    config,
+                    inventory,
+                    [by_id[event_id] for event_id in topic["representative_event_ids"]],
+                    scoped_prs,
+                    directory,
+                    state,
+                    state_path,
+                    week,
+                    dry_run,
+                    limit,
+                    seed,
+                    topic,
+                    context,
+                )
+                if not dry_run:
+                    state["topic_weeks"][key] = {
+                        "status": "completed",
+                        "topic": topic,
+                        "report": str(directory / "topic-report.json"),
+                        "publication": outcome["publication"],
+                        "pr_url": outcome["publication"].get("pr_url")
+                        if isinstance(outcome["publication"], dict)
+                        else None,
+                    }
+                    save_state(state_path, state)
+                if isinstance(outcome.get("publication"), dict) and outcome[
+                    "publication"
+                ].get("pr_url"):
+                    report = read_json(directory / "analysis/report.json")
+                    proposal = report["proposals"][0]
+                    scoped_prs.append(
+                        {
+                            "url": outcome["publication"]["pr_url"],
+                            "title": proposal["title"],
+                            "body": "\n".join(
+                                (
+                                    "<!-- automation-improvement-automation: "
+                                    + automation_id
+                                    + " -->",
+                                    "<!-- automation-improvement-topic: "
+                                    + topic["id"]
+                                    + " -->",
+                                    "<!-- automation-improvement-topic-key: "
+                                    + topic["key"]
+                                    + " -->",
+                                    proposal["hypothesis"],
+                                )
+                            ),
+                            "state": "OPEN",
+                            "createdAt": dt.datetime.now(dt.UTC).isoformat(),
+                        }
+                    )
+            except Exception as error:
+                outcome = {
+                    "topic": topic,
+                    "status": "failed",
+                    "error": str(error)[:1000],
+                }
+        write_json(directory / "topic-report.json", redact(outcome))
+        result["topics"].append(outcome)
+    return result | {
+        "status": "partial_failure"
+        if any(item["status"] == "failed" for item in result["topics"])
+        else "completed"
+        if topics
+        else "no_promising_findings"
+    }
 
 
 def run_locked(config, state_dir, *, dry_run, limit, seed):
@@ -345,9 +524,10 @@ def run_locked(config, state_dir, *, dry_run, limit, seed):
         if state_path.exists()
         else {"events": {}, "publications": {}}
     )
-    state.setdefault("automation_weeks", {})
+    state.setdefault("topic_weeks", {})
     github_auth(config)
     prs = existing_prs(config["repository"], config.get("base_branch", "main"))
+    recover_topic_slots(state, prs, week)
     args = arguments(config, output / "collection", limit, seed)
     args.output.mkdir(mode=0o700)
     inventory = collect_events(Laminar(args), set(), aggregate=True)
@@ -359,11 +539,8 @@ def run_locked(config, state_dir, *, dry_run, limit, seed):
         "signal_runs": inventory["signal_run_summary"],
         "collection_errors": inventory["collection_errors"],
         "automations": [],
-        "publication": "disabled" if dry_run else "per_automation",
+        "publication": "disabled" if dry_run else "per_topic",
     }
-    known_records = list(state.get("backlog", {}).values()) + inventory.get(
-        "events", []
-    )
     records = update_backlog(state, inventory, prs)
     if not dry_run:
         save_state(state_path, state)
@@ -378,14 +555,13 @@ def run_locked(config, state_dir, *, dry_run, limit, seed):
         directory = output / automation_id
         directory.mkdir(mode=0o700)
         if not dry_run and (
-            key in state["automation_weeks"]
-            or published_for(prs, automation_id, week, known_records)
+            state.get("automation_weeks", {}).get(key, {}).get("status") == "reserved"
             or legacy
             and legacy.get("status") == "reserved"
         ):
             result = {
                 "automation_id": automation_id,
-                "status": "automation_week_already_completed_or_reserved",
+                "status": "legacy_publication_reserved",
             }
         else:
             try:
@@ -402,13 +578,6 @@ def run_locked(config, state_dir, *, dry_run, limit, seed):
                     limit,
                     seed,
                 )
-                if not dry_run:
-                    state["automation_weeks"][key] = {
-                        "status": "completed",
-                        "report": str(directory / "automation-report.json"),
-                        "publication": result["publication"],
-                    }
-                    save_state(state_path, state)
             except Exception as error:
                 result = {
                     "automation_id": automation_id,
@@ -420,7 +589,10 @@ def run_locked(config, state_dir, *, dry_run, limit, seed):
     if grouped:
         summary["status"] = (
             "partial_failure"
-            if any(item["status"] == "failed" for item in summary["automations"])
+            if any(
+                item["status"] in ("failed", "partial_failure")
+                for item in summary["automations"]
+            )
             else "completed"
         )
     if summary["collection_errors"] and summary["status"] != "partial_failure":
@@ -444,7 +616,7 @@ def main():
         "--limit",
         type=analysis.bounded(1, 3),
         default=3,
-        help="Representative conversations per automation",
+        help="Representative conversations per repair topic",
     )
     parser.add_argument("--seed", type=int)
     args = parser.parse_args()
