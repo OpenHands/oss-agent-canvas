@@ -49,6 +49,13 @@ automatic merges and deployments are deferred.
    `automation-improvement` label, including reused PRs. Each topic has its own
    failure/report/publication state, so one
    failed or uncertain publication does not block the automation's other topics.
+8. Add a **Before / After Evidence** section to the draft. When a trusted comparison
+   adapter is configured for its automation UUID, run pinned baseline/candidate
+   versions on the same frozen cases after publication and replace that section
+   with side-by-side outcomes, violations and resource measurements. Missing
+   adapters, uncovered repair topics and execution gaps cannot establish an
+   improvement. Drafts are never automatically accepted. See the
+   [comparison setup](../../evals/automation-repair/README.md#compare-a-published-repair).
 
 The worker continues to new batches until Luna finds no further actionable
 issues, all available representatives have been considered, or the run reaches a

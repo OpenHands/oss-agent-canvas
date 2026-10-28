@@ -141,6 +141,12 @@ def source_config(config, snapshot, output):
         "files": paths,
         "checks": [],
     }
+    if len(identifiers) == 1:
+        comparison = config.get("comparative_validation", {}).get(
+            next(iter(identifiers))
+        )
+        if comparison:
+            value["comparative_validation"] = comparison
     path = output / "source-config.json"
     write_json(path, value)
     return path, samples, errors
@@ -355,6 +361,9 @@ def investigate_topic(
             args.publication_topic = topic
             publication = propose_fix(args, report, snapshot)
             result["publication"] = publication
+            result["behavioral_evaluation"] = publication.get("comparison", {}).get(
+                "status", "not_performed"
+            )
             for finding_id in proposal["finding_ids"]:
                 updates[by_id[finding_id]["signal_event_id"]] = {
                     "status": "draft_pr",

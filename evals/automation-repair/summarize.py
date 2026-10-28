@@ -1,6 +1,7 @@
 import argparse
 import json
 import statistics
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -15,17 +16,26 @@ def summarize(root):
         f"Model `{manifest['model']}`, effort `{manifest['effort']}`. "
         f"{len(report['runs'])} recorded executions; {manifest['repeats']} planned repetitions per version/case.",
         "",
-        "| Scenario | Baseline passes | Candidate passes | Inconclusive executions |",
-        "|---|---:|---:|---:|",
+        "| Scenario | Expected behavior | Baseline passes | Candidate passes | Inconclusive executions |",
+        "|---|---|---:|---:|---:|",
     ]
+    expectations = {
+        "one_valid_review": "Publish one valid review at the requested revision",
+        "no_write": "Observe changed/completed state and publish no review",
+        "bug_found": "Report the known arithmetic bug in a valid review",
+    }
+    cases = {case["id"]: case for case in manifest.get("cases", [])}
     for case in report["cases"]:
         rows = [row for row in report["runs"] if row["case_id"] == case["case_id"]]
         errors = sum(
             bool(row["score"]["error"]) or not row["score"]["finished"] for row in rows
         )
         counts = Counter(row["variant"] for row in rows)
+        expected = expectations.get(
+            cases.get(case["case_id"], {}).get("expectation"), "See frozen case"
+        )
         lines.append(
-            f"| {case['case_id']} | {case['baseline_passed']}/{counts['baseline']} | {case['candidate_passed']}/{counts['candidate']} | {errors} |"
+            f"| {case['case_id']} | {expected} | {case['baseline_passed']}/{counts['baseline']} | {case['candidate_passed']}/{counts['candidate']} | {errors} |"
         )
     lines.extend(
         [
@@ -49,6 +59,44 @@ def summarize(root):
         lines.append(
             f"| {name} | {violations['baseline'][name]} | {violations['candidate'][name]} |"
         )
+    lines.extend(
+        [
+            "",
+            "| Execution | Baseline observed outcome | Candidate observed outcome |",
+            "|---|---|---|",
+        ]
+    )
+    executions = {(row["case_id"], row.get("repeat", 1)) for row in report["runs"]}
+    for case, repeat in sorted(executions):
+        outcomes = []
+        for variant in ("baseline", "candidate"):
+            rows = [
+                row
+                for row in report["runs"]
+                if row["case_id"] == case
+                and row.get("repeat", 1) == repeat
+                and row["variant"] == variant
+            ]
+            if not rows:
+                outcomes.append("Not executed")
+                continue
+            score = rows[0]["score"]
+            outcome = (
+                "Inconclusive: runtime/provider/fixture gap"
+                if score["error"] or not score["finished"]
+                else "Pass"
+                if score["passed"]
+                else "Fail"
+            )
+            violations = [
+                name for name in score["violations"] if re.fullmatch(r"[a-z_]+", name)
+            ]
+            if violations:
+                outcome += ": " + ", ".join(violations)
+            if "write_attempts" in score and "accepted_reviews" in score:
+                outcome += f"; {score['write_attempts']} writes attempted, {score['accepted_reviews']} reviews accepted"
+            outcomes.append(outcome)
+        lines.append(f"| `{case}-{repeat}` | {outcomes[0]} | {outcomes[1]} |")
     lines.append("")
     for variant in ("baseline", "candidate"):
         measurements = [

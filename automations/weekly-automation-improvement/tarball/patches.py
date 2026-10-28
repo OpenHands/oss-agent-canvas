@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 from common import read_json, redact, topic_id, write_json
+from evidence import after_publication, section
 
 
 def patch_from_edits(source, edits):
@@ -444,6 +445,12 @@ def propose_fix(args, report, snapshot):
         aggregation = report["aggregation"]
         body += f"\n\nAutomation backlog reviewed: {aggregation['total_events']} findings across {aggregation['affected_conversations']} distinct conversations. These counts are not validated failure rates.\n"
     body = "\n".join(markers) + "\n\n" + body
+    body += "\n\n" + section(
+        "**Pending:** baseline/candidate comparison will run after publication."
+        if config.get("comparative_validation")
+        else "**Not run:** no behavioral comparison adapter is configured for this automation. "
+        "Mechanical checks passed; behavioral improvement has not been demonstrated."
+    )
     body_path = args.output / "pr-body.md"
     body_path.write_text(redact(body))
     body_path.chmod(0o600)
@@ -468,4 +475,13 @@ def propose_fix(args, report, snapshot):
         ],
         candidate,
     )
+    results["comparison"] = after_publication(
+        config,
+        source,
+        snapshot | {"comparison_findings": findings},
+        results,
+        args.output,
+        command,
+    )
+    write_json(args.output / "publication.json", results)
     return results

@@ -164,6 +164,14 @@ def test_unevaluated_draft_publishes_without_behavioral_checks(
     )
     original = patches.command
     pushed = []
+    comparisons = []
+
+    def compare(config, source, snapshot, results, output, command):
+        assert results["pr_url"] == "https://github.com/Example/automation/pull/1"
+        assert len(results["candidate_revision"]) == 40
+        assert len(pushed) == 1
+        comparisons.append(results["candidate_revision"])
+        return {"status": "inconclusive", "published": True}
 
     def run(argv, cwd=None, **kwargs):
         if argv[:2] == ["gh", "api"]:
@@ -195,6 +203,7 @@ def test_unevaluated_draft_publishes_without_behavioral_checks(
         return original(argv, cwd, **kwargs)
 
     monkeypatch.setattr(patches, "command", run)
+    monkeypatch.setattr(patches, "after_publication", compare)
     monkeypatch.setattr(
         patches, "run_checks", lambda *a: pytest.fail("Behavioral checks are deferred")
     )
@@ -206,12 +215,15 @@ def test_unevaluated_draft_publishes_without_behavioral_checks(
                 {"source": load_source(path), "topic": args.publication_topic},
             )
         assert pushed == []
+        assert comparisons == []
         return
     result = patches.propose_fix(
         args, report, {"source": load_source(path), "topic": args.publication_topic}
     )
     assert result["status"] == "unevaluated_draft"
     assert result["baseline"] == result["candidate"] == []
+    assert comparisons == [result["candidate_revision"]]
+    assert result["comparison"]["status"] == "inconclusive"
     assert len(pushed) == 1
     assert pushed[0][-1].startswith("HEAD:refs/heads/automation/improve-")
     assert (checkout / "value.py").read_text() == "VALUE = 3\n"

@@ -74,9 +74,9 @@ execution test environment, not an adversarial sandbox or reward-hacking eval.
 `manifest.json`, per-run prompts, SDK events, API requests/results, measurements
 and `comparison.json` are private artifacts. The runner removes its containers and
 source worktrees after execution. It never triggers or changes production
-schedules, merges a repair, or posts GitHub reviews. The weekly publisher remains
-explicitly unevaluated; this prototype supplies evidence for human review rather
-than automatically accepting its own generated repairs.
+schedules, merges a repair, or posts GitHub reviews. Repair PRs remain drafts;
+comparison evidence supports human review and never automatically accepts or
+deploys a generated repair.
 
 Generate a public summary containing aggregate checks and measurements, without
 private model responses or error text:
@@ -91,7 +91,76 @@ adapter can run issue triage in the same way and an optional scorer can incorpor
 the existing PR-review content metrics. Without a suitable scorer, execution alone
 must remain unvalidated. The existing configured baseline/candidate check gate in
 [the monitoring PR](https://github.com/OpenHands/oss-agent-canvas/pull/49) remains
-available; this CLI has not been wired into unattended weekly publication.
+available. The weekly publisher can invoke this runner after opening a repair PR,
+as described below.
+
+## Compare a published repair
+
+This PR is stacked on [#49](https://github.com/OpenHands/oss-agent-canvas/pull/49).
+Its publisher adds a **Before / After Evidence** section to every generated draft.
+With an operator-configured adapter, it freezes the published baseline/candidate
+SHAs, runs both versions, then updates only that section in the PR description.
+A changed head or closed PR rejects the update. Completed receipts are reused
+without inference; failed/interrupted comparisons are retained as inconclusive.
+Other PR text and the draft state are preserved.
+
+Configure the trusted runner in the weekly host configuration, keyed by automation
+UUID. Paths must reference the installed evaluator and SDK Python, outside candidate
+worktrees. This is host configuration, never a model-generated shell command:
+
+```json
+{
+  "comparative_validation": {
+    "AUTOMATION_UUID": {
+      "command": ["/private/venv/bin/python", "/private/evaluator/pr_comparison.py"],
+      "timeout_seconds": 1800,
+      "model": "openai/glm-5.3-flash",
+      "base_url": "https://llm-proxy.app.all-hands.dev",
+      "effort": "high",
+      "repeats": 1,
+      "max_run_seconds": 180,
+      "topics": {
+        "publish-against-moved-head": {
+          "cases": ["healthy", "buggy", "head_moved"]
+        }
+      }
+    }
+  }
+}
+```
+
+Topic keys must match the generated repair topic. Each configured topic needs a
+frozen regression scenario and control. Unmapped reviewer topics run the healthy
+and buggy controls but cannot establish the intended improvement; other automation
+families are not executed by this reviewer-specific adapter. Missing adapters are
+reported as **Not run**, never as passes. Scenario coverage must match the repair
+claim; adding an unrelated passing scenario is not validation.
+
+The section compares each run's pass/fail/inconclusive outcome and recorded
+violations side by side, plus aggregate latency, tokens and estimated cost. It
+records exact source SHAs, model settings and evidence hashes. Full prompts and
+tool/API logs remain private. No raw LLM response or private exception text is
+copied to GitHub. The verdict distinguishes observed development-case improvement,
+regression and inconclusive results; it never claims statistical proof.
+
+The runner receives only the model credential, not GitHub or Laminar credentials;
+the publisher updates the description after it finishes. Comparisons have their
+own configured execution bounds and are not included in the weekly Luna/Sol proxy
+cost threshold. Provision an inference budget for this separate step. A runner
+timeout requests interruption and cleanup before terminating a stuck process.
+
+To publish an already recorded result again without new inference, use the
+owner-only request retained beside the repair's analysis artifacts:
+
+```bash
+python3 automations/weekly-automation-improvement/tarball/evidence.py \
+  --request /private/repair-analysis/comparison-request.json
+```
+
+Historical traces identify the problem and remain linked on the repair PR, but
+these comparisons run fresh on the same synthetic frozen inputs. Reconstructing
+the exact historical external state and evaluating task quality for other
+automation families still require additional adapters and outcome checks.
 
 For a source revision containing `controlled_review.py`, the adapter exercises that
 revision's actual gateway and publisher against the same frozen world. Its trusted
