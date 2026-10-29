@@ -14,9 +14,8 @@ from weekly import arguments, load_environment
 
 
 def historical_cohort(config, body, revision, files, output):
-    from cohorts import annotate, collect
+    from cohorts import annotate, collect, topic_records
     from events import collect_events
-    from triage import group_findings
 
     owner = re.search(
         r"<!-- automation-improvement-automation: ([0-9a-f-]{36}) -->", body
@@ -44,13 +43,7 @@ def historical_cohort(config, body, revision, files, output):
             for record in inventory["events"]
             if record["owner"]["automation_id"] == owner[1]
         ]
-        _, groups = group_findings(records)
-        records = [
-            record
-            for members in groups.values()
-            if any(record["event"]["id"] in marked for record in members)
-            for record in members
-        ]
+        records = topic_records(records, marked)
         source_path = output / "source.json"
         write_json(
             source_path,

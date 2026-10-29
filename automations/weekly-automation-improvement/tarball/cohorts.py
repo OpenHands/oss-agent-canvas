@@ -15,6 +15,23 @@ from raw_evidence import population
 from patches import command
 
 
+def topic_records(records, representative_ids):
+    def signature(record):
+        payload = object_value(record["event"]["payload"])
+        value = str(payload.get("signature") or "").strip().lower()
+        return (str(payload.get("cause", "unknown")), value) if value else None
+
+    selected = set(representative_ids)
+    signatures = {
+        signature(record) for record in records if record["event"]["id"] in selected
+    } - {None}
+    return [
+        record
+        for record in records
+        if record["event"]["id"] in selected or signature(record) in signatures
+    ]
+
+
 def repository_snapshot(repository):
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", repository):
         raise ValueError("Invalid task repository")

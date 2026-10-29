@@ -10,12 +10,13 @@ from pathlib import Path
 
 import main as analysis
 from budget import BudgetExhausted, RunBudget
+from cohorts import topic_records
 from common import encode, read_json, redact, timestamp, write_json
 from events import collect_events, hydrate_events
 from laminar import Laminar
 from patches import command, load_source, propose_fix
 from sources import github_auth, native_request, repository_index, resolve_source
-from triage import definition_key, group_findings, triage
+from triage import definition_key, triage
 
 
 def save_state(path, state):
@@ -634,12 +635,9 @@ def investigate(
                         topic,
                         context,
                         budget,
-                        validation_records=[
-                            record
-                            for group_id, members in group_findings(records)[1].items()
-                            if group_id in topic["group_ids"]
-                            for record in members
-                        ],
+                        validation_records=topic_records(
+                            records, topic["representative_event_ids"]
+                        ),
                     )
                     if not dry_run and outcome["status"] != "deferred_validation":
                         state["topic_weeks"][key] = {

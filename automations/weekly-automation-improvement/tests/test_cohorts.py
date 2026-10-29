@@ -167,3 +167,27 @@ def test_annotations_are_blind_and_frozen_before_candidate_code(tmp_path, monkey
         sample["expected_outcome"]["priority"] == "medium_or_high"
         for sample in result["samples"]
     )
+
+
+def test_validation_expands_exact_signatures_without_absorbing_a_mixed_cluster():
+    def record(identifier, signature, cause="agent"):
+        return {
+            "event": {
+                "id": identifier,
+                "leaf_clusters": ["mixed"],
+                "payload": {"signature": signature, "cause": cause},
+            }
+        }
+
+    records = [
+        record("a", "Wrong priority"),
+        record("b", " wrong PRIORITY "),
+        record("c", "Wrong readiness"),
+        record("d", "Wrong priority", "provider"),
+    ]
+    assert [item["event"]["id"] for item in cohorts.topic_records(records, ["a"])] == [
+        "a",
+        "b",
+    ]
+    missing = [record("e", ""), record("f", "")]
+    assert cohorts.topic_records(missing, ["e"]) == missing[:1]

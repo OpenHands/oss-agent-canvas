@@ -17,6 +17,8 @@ with no finding, not verified healthy. Unscored, failed and mixed-negative
 conversations are excluded from controls. Sampling seeds, eligible-frame hashes,
 selected identities and the complete evidence hash are retained. Missing selected
 inputs or fewer than N eligible controls make the cohort incomplete; no rerolls.
+Negative candidates are the topic representatives plus exact cause/signature
+matches. A shared Laminar cluster alone cannot pull another repair topic into the cohort.
 
 - **Historical issue priority:** execute `IssueTriage._prompt` on each original
   native task payload. Independently derive expected priority/readiness from the

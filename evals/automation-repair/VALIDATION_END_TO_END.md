@@ -36,7 +36,7 @@ Private artifacts under `automation-cohort-validation-20261029`:
   every execution with zero additional inference. Relative-control acceptance is
   disclosed in the report; no input, annotation or raw execution changed.
 
-The full worker/evaluator suite passes **227 tests**. Ruff and whitespace checks
+The full worker/evaluator suite passes **228 tests**. Ruff and whitespace checks
 pass. N is a positive top-level `validation_sample_size`, default **5**, independently
 of repetitions. Historical execution currently supports issue-priority topics;
 reviewer-family adapters remain pending and cannot silently use three old fixtures.
