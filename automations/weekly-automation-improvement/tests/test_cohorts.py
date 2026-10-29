@@ -144,8 +144,10 @@ def test_annotations_are_blind_and_frozen_before_candidate_code(tmp_path, monkey
             "cases": [
                 {
                     "id": row["id"],
-                    "priority": "medium_or_high",
-                    "readiness": "unspecified",
+                    "priority_basis": "experienced_user_harm",
+                    "priority_quote": "Reported real harm",
+                    "readiness_basis": "unknown",
+                    "readiness_quote": "",
                     "rationale": "The task records actual user harm",
                 }
                 for row in context["inputs"]
@@ -157,7 +159,15 @@ def test_annotations_are_blind_and_frozen_before_candidate_code(tmp_path, monkey
         cohorts, "repository_snapshot", lambda repo: {"repository": repo, "files": {}}
     )
     result = cohorts.annotate(
-        SimpleNamespace(model="luna"), data, {"revision": "a" * 40}, tmp_path
+        SimpleNamespace(model="luna"),
+        data,
+        {
+            "revision": "a" * 40,
+            "files": {
+                "worker.py": "class IssueTriage:\n    def _prompt(self):\n        return 'Policy'\n"
+            },
+        },
+        tmp_path,
     )
     assert result["complete"]
     assert result["annotation"]["blind_to_candidate_and_signal_classification"]
@@ -191,3 +201,42 @@ def test_validation_expands_exact_signatures_without_absorbing_a_mixed_cluster()
     ]
     missing = [record("e", ""), record("f", "")]
     assert cohorts.topic_records(missing, ["e"]) == missing[:1]
+
+
+def test_evidence_categories_determine_priority_and_require_real_quotes():
+    from triage_expectations import outcome
+
+    native = {
+        "task": {
+            "issue": {
+                "author_body": "Run npm run dev:mock with MSW; the same code runs in production."
+            }
+        }
+    }
+    label = {
+        "priority_basis": "synthetic_only",
+        "priority_quote": "Run npm run dev:mock with MSW",
+        "readiness_basis": "unknown",
+        "readiness_quote": "",
+        "rationale": "A mock reproduction does not establish production impact",
+    }
+    assert outcome(label, native)["priority"] == "low"
+    assert outcome(label, native)["readiness"] == "unspecified"
+    label["priority_quote"] = "A real customer lost money"
+    with pytest.raises(ValueError, match="grounded"):
+        outcome(label, native)
+    label["priority_quote"] = ""
+    with pytest.raises(ValueError, match="grounded"):
+        outcome(label, native)
+
+
+def test_annotation_policy_excludes_unrelated_dispatcher_code():
+    from triage_expectations import baseline_policy
+
+    source = {
+        "files": {
+            "worker.py": "class IssueTriage:\n    def _prompt(self):\n        return 'Triage policy'\n\ndef unrelated_dispatch():\n    return 'Do not include'\n"
+        }
+    }
+    policy = baseline_policy(source)
+    assert "Triage policy" in policy and "unrelated_dispatch" not in policy

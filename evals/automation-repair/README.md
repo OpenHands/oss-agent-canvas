@@ -24,7 +24,12 @@ matches. A shared Laminar cluster alone cannot pull another repair topic into th
   native task payload. Independently derive expected priority/readiness from the
   frozen baseline policy, task data and pinned root repository guidance using Luna;
   shuffle opaque input IDs and hide Signal classification, candidate code and
-  candidate outcomes. Unscorable expectations block acceptance. Inspect labels,
+  candidate outcomes. The annotation prompt includes only the baseline `_prompt`
+  policy rather than unrelated dispatcher source. Luna extracts an evidence
+  category and a verbatim quote; trusted code maps categories to outcomes and
+  rejects quotes absent from the input. Dependency mentions do not establish a
+  linked PR's merge state. Quotes make annotations auditable, not infallible.
+  Unscorable expectations block acceptance. Inspect labels,
   human-text/comment preservation and unrelated labels. Current root guidance is
   shared across versions; complete historical repositories and linked discussions
   are not reconstructed. This adapter supports priority topics only.

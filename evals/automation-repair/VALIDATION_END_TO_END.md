@@ -36,11 +36,46 @@ Private artifacts under `automation-cohort-validation-20261029`:
   every execution with zero additional inference. Relative-control acceptance is
   disclosed in the report; no input, annotation or raw execution changed.
 
-The full worker/evaluator suite passes **228 tests**. Ruff and whitespace checks
+The full worker/evaluator suite passes **231 tests**. Ruff and whitespace checks
 pass. N is a positive top-level `validation_sample_size`, default **5**, independently
 of repetitions. Historical execution currently supports issue-priority topics;
 reviewer-family adapters remain pending and cannot silently use three old fixtures.
 Production schedules, deployments and the weekly production ledger were unchanged.
+
+## Additional architecture check
+
+A later seven-day inventory contained 29 usable finding events linked to five
+automations. Issue triage had six negative conversations and 35 eligible
+non-negative controls; the main reviewer had 18 negative conversations and eight
+controls. Finding volume is not the limiting factor.
+
+An explicit pilot selected two actual priority-overescalation findings, froze
+those inputs plus five uniformly sampled non-negative inputs, and ran the normal
+Luna → Sol → comparison path. Sol generated one focused pre-write evidence check.
+Both fresh negative baseline executions already chose low priority; neither
+historical priority error reproduced. The initial AI annotation also incorrectly
+treated mock-mode evidence as actual-product reproduction and inferred an
+unobserved dependency state. That experiment was invalidated and interrupted;
+completed and interrupted artifacts remain retained. No new repair qualified or
+was published from it.
+
+The test exposed a separate transport bug: applying secret redaction to an
+already serialized JSON context could corrupt embedded source expressions.
+The transport now redacts structured inputs before encoding and separately
+sanitizes structured function-call audit arguments. An extracted-policy annotation
+pass, without candidate code or outcomes, produced grounded categories and exact
+task quotes for all seven selected inputs. The two synthetic negatives now map to
+low priority, and the unobserved dependency maps to unspecified readiness. This
+is a separately retained annotation correction, not a successful repair comparison.
+
+Private artifacts: `automation-architecture-validation-20261029/0d9437ebd2d0`
+retains the original pilot; `annotations-716483ffcc01` retains rejected,
+non-verbatim quotes; `annotations-a53550a65701` retains the successful grounded
+annotation pass on the same selected inputs and repository snapshots. The normal
+publication gate kept the unproven patch local. Existing #60/#59 remain draft and
+inconclusive. Meaningful repair validation still needs better replay coverage and
+reproducible failures; the stronger architecture has no qualified positive example
+from these historical-input experiments yet.
 
 # Earlier checkpoint experiment (superseded qualification)
 
