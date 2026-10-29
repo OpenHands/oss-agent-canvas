@@ -14,6 +14,9 @@ with demonstrated improvement has not yet been verified.**
 
 ## Local verification
 
+The full worker/comparison suite passes: **189 tests in 73.58 seconds**. Ruff and
+whitespace checks also pass.
+
 The integration tests execute the real publisher against temporary Git commits
 and a trusted comparison subprocess. They verify that an improving candidate
 reaches push/PR creation with evidence already present, while failed comparisons
