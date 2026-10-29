@@ -94,6 +94,28 @@ def timestamp(value):
     )
 
 
+def audit_response(response):
+    audit = redact(response)
+    pairs = list(zip(response.get("output", []), audit.get("output", [])))
+    for old, new in zip(response.get("choices", []), audit.get("choices", [])):
+        pairs.extend(
+            (first["function"], second["function"])
+            for first, second in zip(
+                old.get("message", {}).get("tool_calls", []),
+                new.get("message", {}).get("tool_calls", []),
+            )
+        )
+    for original, sanitized in pairs:
+        if isinstance(original.get("arguments"), str):
+            try:
+                sanitized["arguments"] = encode(
+                    redact(json.loads(original["arguments"]))
+                )
+            except ValueError:
+                pass
+    return audit
+
+
 def request_model(args, model, body, endpoint, name, *, redact_body=True):
     budget = getattr(args, "budget", None)
     if budget:
@@ -140,7 +162,7 @@ def request_model(args, model, body, endpoint, name, *, redact_body=True):
     if len(raw) > 2_000_000:
         raise ValueError("Model response exceeds its byte budget")
     response = json.loads(raw)
-    write_json(args.output / "responses" / (name + ".json"), redact(response))
+    write_json(args.output / "responses" / (name + ".json"), audit_response(response))
     measurement = {
         "model": response.get("model", model),
         "api": args.api,
@@ -165,8 +187,8 @@ def call_model(args, model, instruction, context, name, schema):
         budget.check()
     body = {"model": model}
     messages = [
-        {"role": "system", "content": instruction},
-        {"role": "user", "content": encode(context)},
+        {"role": "system", "content": redact(instruction)},
+        {"role": "user", "content": encode(redact(context))},
     ]
     if args.api == "responses":
         body.update(
@@ -190,7 +212,9 @@ def call_model(args, model, instruction, context, name, schema):
             max_tokens=args.max_output_tokens,
         )
         endpoint = "/v1/chat/completions"
-    response, measurement = request_model(args, model, body, endpoint, name)
+    response, measurement = request_model(
+        args, model, body, endpoint, name, redact_body=False
+    )
     if args.api == "responses":
         if response.get("status") == "incomplete":
             raise ValueError("Model exhausted its output budget")
