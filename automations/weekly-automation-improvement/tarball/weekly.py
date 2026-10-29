@@ -666,6 +666,15 @@ def comparison_feedback(output):
     }
 
 
+def reuse_topic(topic, previous_topics):
+    groups = set(topic["group_ids"])
+    for previous in previous_topics:
+        previous_groups = set(previous.get("group_ids", []))
+        if 2 * len(groups & previous_groups) > max(len(groups), len(previous_groups)):
+            return topic | {field: previous[field] for field in ("id", "key")}
+    return topic
+
+
 def investigate(
     config,
     inventory,
@@ -728,6 +737,15 @@ def investigate(
             )
             break
         for topic in topics:
+            topic = reuse_topic(
+                topic,
+                (
+                    value["topic"]
+                    for key, value in state["topic_weeks"].items()
+                    if value["status"] == "retryable"
+                    and key.split("/")[1] == automation_id
+                ),
+            )
             attempted.update(topic["representative_event_ids"])
             if topic["id"] in seen:
                 continue
@@ -737,7 +755,11 @@ def investigate(
             directory = output / "topics" / topic["id"]
             directory.mkdir(parents=True, mode=0o700)
             tracked = published_for(scoped_prs, automation_id, week, topic)
-            if not dry_run and (key in state["topic_weeks"] or tracked):
+            if not dry_run and (
+                state["topic_weeks"].get(key, {}).get("status")
+                in ("completed", "reserved")
+                or tracked
+            ):
                 outcome = {
                     "topic": topic,
                     "status": "publication_reserved"
@@ -840,6 +862,18 @@ def investigate(
                         "status": "failed",
                         "error": str(error)[:1000],
                     }
+            if (
+                not dry_run
+                and outcome["status"]
+                in ("failed", "deferred_budget", "deferred_validation")
+                and state["topic_weeks"].get(key, {}).get("status") != "reserved"
+            ):
+                state["topic_weeks"][key] = {
+                    "status": "retryable",
+                    "topic": topic,
+                    "report": str(directory / "topic-report.json"),
+                }
+                save_state(state_path, state)
             write_json(directory / "topic-report.json", redact(outcome))
             result["topics"].append(outcome)
             if exhausted:

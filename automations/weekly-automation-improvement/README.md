@@ -230,6 +230,9 @@ Publication reservations begin immediately before pushing a branch. Preparation
 failures remain retryable. An uncertain write is reconciled against existing PRs
 and its remote branch; unresolved reservations appear in `pending_publications`
 and keep the weekly report incomplete.
+Retryable topics retain their identity when most finding clusters overlap,
+even if Luna renames the topic, so the same issue and private evidence remain
+available to the next coding attempt.
 
 The repair worker is a normal OpenHands SDK `Agent`/`Conversation` powered by
 `openai/gpt-6.1-sol`, with the default terminal, editor, browser, task tracker,

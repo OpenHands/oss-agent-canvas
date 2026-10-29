@@ -528,7 +528,7 @@ def test_unproven_repair_stays_pending_without_a_publication_reservation(
     assert result["automations"][0]["status"] == "validation_incomplete"
     state = json.loads((Path(config["state_dir"]) / "state.json").read_text())
     assert records[0]["event"]["id"] in state["backlog"]
-    assert not state["topic_weeks"]
+    assert {row["status"] for row in state["topic_weeks"].values()} == {"retryable"}
     assert not state["events"]
 
 
@@ -705,7 +705,8 @@ def test_one_repair_revision_keeps_failed_evidence_and_only_consumes_proven_find
     else:
         assert result["status"] == "validation_incomplete"
         assert records[0]["event"]["id"] in state["backlog"]
-        assert not state["events"] and not state["topic_weeks"]
+        assert not state["events"]
+        assert {row["status"] for row in state["topic_weeks"].values()} == {"retryable"}
 
 
 def test_dry_run_cannot_backfill_or_publish_existing_pr_evidence(
@@ -1354,7 +1355,11 @@ def test_budget_defers_unstarted_topics_and_preserves_backlog(
     assert result["budget"]["stop_reason"] == "inference_cost_threshold"
     assert len([c for c in calls if c[0] == "publish"]) == 1
     state = json.loads((Path(config["state_dir"]) / "state.json").read_text())
-    assert len(state["backlog"]) == 2 and len(state["topic_weeks"]) == 1
+    assert len(state["backlog"]) == 2
+    assert sorted(row["status"] for row in state["topic_weeks"].values()) == [
+        "completed",
+        "retryable",
+    ]
 
 
 def test_default_collects_validation_inputs_without_replay_adapter(
@@ -1448,10 +1453,26 @@ def test_failure_before_external_write_remains_retryable(
     first = weekly.run(config)
     state_path = Path(config["state_dir"]) / "state.json"
     state = json.loads(state_path.read_text())
-    assert not state["topic_weeks"] and state["backlog"]
+    assert {row["status"] for row in state["topic_weeks"].values()} == {"retryable"}
+    assert state["backlog"]
     assert first["status"] in ("partial_failure", "budget_exhausted")
+    original_triage = weekly.triage
+
+    def rename(args, pending, prs, completed_topics=()):
+        topics, context = original_triage(args, pending, prs, completed_topics)
+        return [
+            topic
+            | {
+                "key": "renamed",
+                "id": triage.topic_id(pending[0]["owner"]["automation_id"], "renamed"),
+            }
+            for topic in topics
+        ], context
+
+    monkeypatch.setattr(weekly, "triage", rename)
     second = weekly.run(config)
     assert second["status"] == "completed" and len(attempts) == 2
+    assert attempts[0].parent.name == attempts[1].parent.name
     assert not json.loads(state_path.read_text())["backlog"]
 
 
@@ -1486,3 +1507,24 @@ def test_uncertain_publication_recovers_matching_pr_or_absent_branch(monkeypatch
     )
     weekly.recover_topic_slots(state, [], week, {"checkout": "/existing"})
     assert state["topic_weeks"][key]["status"] == "reserved"
+
+
+def test_retry_preserves_issue_namespace_when_luna_renames_overlapping_clusters():
+    previous = {
+        "id": "original-id",
+        "key": "retry-provider-outages",
+        "group_ids": ["a", "b", "c"],
+    }
+    current = {
+        "id": "renamed-id",
+        "key": "retry-provider-failures",
+        "group_ids": ["a", "c", "d"],
+        "representative_event_ids": ["new-evidence"],
+    }
+    reused = weekly.reuse_topic(current, [previous])
+    assert reused["id"] == previous["id"] and reused["key"] == previous["key"]
+    assert reused["group_ids"] == current["group_ids"] and reused[
+        "representative_event_ids"
+    ] == ["new-evidence"]
+    unrelated = current | {"group_ids": ["c", "d", "e"]}
+    assert weekly.reuse_topic(unrelated, [previous]) == unrelated

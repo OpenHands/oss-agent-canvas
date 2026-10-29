@@ -45,6 +45,14 @@ sequential-dispatch implications. The patch, original metadata, runtime settings
 preflight and paired results are indexed in issue #67 for a subsequent attempt.
 No new accepted repair or successful unattended publication is claimed.
 
+The next run renamed overlapping provider clusters and created duplicate #69.
+It was stopped before implementing another patch. Its frozen inputs and partial
+agent progress are archived in [issue #67](https://github.com/OpenHands/oss-agent-canvas/issues/67#issuecomment-6511347829),
+and #69 is closed with a backlink. Retryable topic identities are now retained
+when a majority of finding clusters overlap, preserving the same issue and
+evidence namespace despite a changed generated title. Focused weekly tests cover
+renamed retries, unrelated clusters and uncertain-publication reservations.
+
 A separate live existing-PR check on #66 preserved its complete three-file
 manifest, including the added helper and test, and reached the trusted evaluator.
 That adapter declined unsupported historical execution, recorded zero new
