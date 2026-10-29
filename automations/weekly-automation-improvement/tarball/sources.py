@@ -19,7 +19,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def native_request(base, path, limit=1_000_000):
+def native_request(base, path, limit=1_000_000, *, expose_secrets=False):
     parsed = urllib.parse.urlparse(base)
     if parsed.scheme != "https" and not (
         parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1", "::1")
@@ -28,9 +28,10 @@ def native_request(base, path, limit=1_000_000):
     key = os.environ.get("OH_SESSION_API_KEYS_0") or os.environ.get("SESSION_API_KEY")
     if not key:
         raise ValueError("Native service session credential is unavailable")
-    request = urllib.request.Request(
-        base.rstrip("/") + path, headers={"X-Session-API-Key": key}
-    )
+    headers = {"X-Session-API-Key": key}
+    if expose_secrets:
+        headers["X-Expose-Secrets"] = "plaintext"
+    request = urllib.request.Request(base.rstrip("/") + path, headers=headers)
     opener = urllib.request.build_opener(NoRedirect())
     with opener.open(request, timeout=30) as response:
         raw = response.read(limit + 1)

@@ -1,192 +1,152 @@
-# Behavioral comparison prototype
+# Automation repair comparisons
 
-Run the actual reviewer prompt code at two pinned revisions with real SDK/LLM
-execution, a fresh conversation and a fresh frozen GitHub world for each run.
-The prototype evaluates publication behavior; it does not score substantive review
-quality or reproduce entire historical production environments.
+The weekly publisher compares the actual automation source before opening a new
+repair PR. It selects a trusted task contract, freezes its inputs and execution
+settings, runs baseline/candidate code, and publishes **Before / After Evidence**
+only when the target improvement is demonstrated. This PR is stacked on
+[#49](https://github.com/OpenHands/oss-agent-canvas/pull/49).
 
-The reviewer adapter invokes `PullRequestReviewer._prompt`, including its acceptance
-reporting instructions. Its workspace adapter supplies an already checked-out tiny
-Python repository instead of fetching a live PR. Model, effort, SDK version,
-container image ID, source SHAs, case definitions, prompt hashes and harness hashes
-are recorded before inference. Baseline/candidate order alternates between repeats.
+## Contracts and evidence
 
-Build once, before running any agent:
+- **Issue priority:** execute `IssueTriage._prompt` with the original author body
+  captured from native Laminar input, plus AI-authored unknown-amount and
+  speculative-risk cases. Inspect final GitHub labels, preservation of human text
+  and unrelated labels, and separation of priority from readiness.
+- **Review faithfulness:** execute the reviewer against a complete PR description
+  and a reconstructed working draft. Detect explicit false test-absence claims
+  while requiring retention of a known independent code bug. A genuine-absence
+  control prevents rewarding blanket suppression of findings. The current checks
+  cover these explicit claims, not general semantic review quality.
+- **Review publication:** exercise requested-head checks, duplicate/empty review
+  handling and publication formatting, with normal/known-bug controls. For source
+  containing `controlled_review.py`, run its actual gateway and trusted publisher.
+  The historical body-file fault targets `/tmp/review_body.md`; a different path
+  can avoid that particular fault, so it alone cannot establish general recovery.
 
-```bash
-docker build -t automation-repair-replay:1.58.2 \
-  evals/automation-repair
-```
+Contracts are selected by source family and failure mechanism, without a manual
+per-automation/topic mapping. Unsupported mechanisms stay pending. A suitable
+execution adapter and outcome checker are necessary for each additional family.
+These are AI-authored development scenarios. Some start from reconstructed draft
+checkpoints derived from observed failures. They do not reproduce the entire
+historical production environment or establish a statistical failure-rate reduction.
 
-Use Linux or macOS and Python with `openhands-sdk==1.58.2` and `openhands-tools==1.58.2`. Set
-`LITELLM_API_KEY` privately; the runner never copies it into an agent container.
+Improvement requires a baseline execution with the **specific target violation**,
+a paired passing candidate, passing controls on both versions, complete execution
+and all candidate checks passing. An unrelated formatting failure does not prove a
+factual-accuracy fix. Runtime/provider failures, absent required inputs and
+unreproduced failures remain inconclusive. The narrow priority contract requires
+observation of the complete current issue and checks the verified final labels;
+unsupported optional research reads are retained as warnings. Unsupported writes
+remain failures. Reviewer contracts require complete read coverage.
 
-```bash
-python3 evals/automation-repair/compare.py \
-  --checkout /private/existing-repository \
-  --baseline BASE_COMMIT_SHA --candidate PR_COMMIT_SHA \
-  --model openai/glm-5.3-flash --effort high \
-  --base-url https://llm-proxy.app.all-hands.dev \
-  --output /private/new-comparison --repeats 3
-```
+Reports compare expected behavior and observed outcomes side by side, including
+labels, violations, retained code findings, timing, tokens and estimated cost.
+Exact source SHAs, SDK/image/model settings and evidence hashes identify what was
+executed. Full prompts, events, API records and manifests stay private. A successful
+comparison supports human review; it never merges or deploys the repair.
 
-The agent loop defaults to a 180-second wall-clock budget and 30 steps; terminal
-soft timeouts are capped at 30 seconds. Setup is outside the agent-loop budget.
-Timeouts are recorded as inconclusive without retrying. `--resume` with the same
-arguments reuses every saved trial, including failed/inconclusive trials, and
-spends inference only on missing trials. Overlapping executions are rejected.
-An interrupted trial without a result must be retained explicitly as inconclusive
-before resuming; it is never silently rerolled.
+## Install and configure
 
-The frozen scenarios are AI-authored development cases derived from reviewer
-findings: an initially moved head, head movement after the first state read,
-a body-file write failure, and an already accepted empty review. A normal review
-and a known multiplication regression in the tiny Python
-repository are the completion and substantive-finding controls. The optional
-`inline_rejected` case exercises rejected inline positions. These are not independent held-out examples; do not modify cases
-in response to candidate results and then describe the same run as validation.
-The body-file fault targets `/tmp/review_body.md`; choosing another path can avoid
-that fault, so a passing case alone does not establish recovery from this failure.
-
-The cases are derived from the two traces cited in
-[repair PR #54](https://github.com/OpenHands/oss-agent-canvas/pull/54),
-`14229882-d059-4426-4486-3bebc9bfcf33` and
-`589b1cd1-3d61-2497-2522-5a6358d66ece`. The fixture repository and its expected
-outcomes are synthetic; historical external state was not reconstructed.
-
-The stateful API accepts malformed and duplicate reviews so assertions can detect
-an agent failure; it does not implement the candidate's publication preflight for
-it. Successful review cases require a valid review and the required final marker.
-Stop cases require current-state observation, no write attempt and no new
-completion marker. Explanation semantics are not judged by this prototype. Provider/tool failures and failure to reproduce the baseline
-remain inconclusive. Improvement requires a reproduced regression to improve,
-all candidate cases to pass and controls to pass on both versions. Small counts
-are development evidence, not a statistically established failure-rate reduction.
-
-Agent terminal, file-editor and task-tracker operations execute inside containers
-with networking disabled, no host mounts and no real GitHub credentials. The SDK
-and model client run outside; candidate prompt code also runs inside the container.
-Tool calls cross a narrow bridge using the native
-SDK action/observation schemas and persistent terminal executor. The browser tool
-is omitted; these scenarios use GitHub REST/CLI and a local checkout. This is an
-execution test environment, not an adversarial sandbox or reward-hacking eval.
-
-`manifest.json`, per-run prompts, SDK events, API requests/results, measurements
-and `comparison.json` are private artifacts. The runner removes its containers and
-source worktrees after execution. It never triggers or changes production
-schedules, merges a repair, or posts GitHub reviews. Repair PRs remain drafts;
-comparison evidence supports human review and never automatically accepts or
-deploys a generated repair.
-
-Generate a public summary containing aggregate checks and measurements, without
-private model responses or error text:
+Use an existing checkout, Docker, and Python with `openhands-sdk==1.58.2` and
+`openhands-tools==1.58.2`. Build the pinned execution image:
 
 ```bash
-python3 evals/automation-repair/summarize.py /private/new-comparison \
-  > /private/review-report.md
+docker build -t automation-repair-replay:1.58.2 evals/automation-repair
 ```
 
-The execution/comparison runner and reviewer scorer are separate modules. A future
-adapter can run issue triage in the same way and an optional scorer can incorporate
-the existing PR-review content metrics. Without a suitable scorer, execution alone
-must remain unvalidated. The existing configured baseline/candidate check gate in
-[the monitoring PR](https://github.com/OpenHands/oss-agent-canvas/pull/49) remains
-available. The weekly publisher can invoke this runner after opening a repair PR,
-as described below.
-
-## Compare a published repair
-
-This PR is stacked on [#49](https://github.com/OpenHands/oss-agent-canvas/pull/49).
-Its publisher adds a **Before / After Evidence** section to every generated draft.
-With an operator-configured adapter, it freezes the published baseline/candidate
-SHAs, runs both versions, then updates only that section in the PR description.
-A changed head or closed PR rejects the update. Completed receipts are reused
-without inference; failed/interrupted comparisons are retained as inconclusive.
-Other PR text and the draft state are preserved.
-
-Configure the trusted runner in the weekly host configuration, keyed by automation
-UUID. Paths must reference the installed evaluator and SDK Python, outside candidate
-worktrees. This is host configuration, never a model-generated shell command:
+Configure the [weekly worker](../../automations/weekly-automation-improvement/weekly.example.json)
+outside git. The runner path must reference the installed evaluator, outside
+candidate worktrees. For example:
 
 ```json
 {
+  "require_improvement": true,
+  "validate_existing_repairs": true,
   "comparative_validation": {
-    "AUTOMATION_UUID": {
-      "command": ["/private/venv/bin/python", "/private/evaluator/pr_comparison.py"],
-      "timeout_seconds": 1800,
-      "model": "openai/glm-5.3-flash",
-      "base_url": "https://llm-proxy.app.all-hands.dev",
-      "effort": "high",
-      "repeats": 1,
-      "max_run_seconds": 180,
-      "topics": {
-        "publish-against-moved-head": {
-          "cases": ["healthy", "buggy", "head_moved"]
-        }
-      }
-    }
+    "command": ["/private/sdk-venv/bin/python", "/private/evaluator/pr_comparison.py"],
+    "automatic_contracts": true,
+    "model": "openai/glm-5.3-flash",
+    "base_url": "https://llm-proxy.eval.all-hands.dev",
+    "effort": "high",
+    "repeats": 3,
+    "llm_timeout": 120,
+    "max_run_seconds": 180,
+    "timeout_seconds": 3600
   }
 }
 ```
 
-Topic keys must match the generated repair topic. Each configured topic needs a
-frozen regression scenario and control. Unmapped reviewer topics run the healthy
-and buggy controls but cannot establish the intended improvement; other automation
-families are not executed by this reviewer-specific adapter. Missing adapters are
-reported as **Not run**, never as passes. Scenario coverage must match the repair
-claim; adding an unrelated passing scenario is not validation.
+Alternatively, `profile_id` resolves the native Agent Server's model, endpoint,
+effort and model credential. Model credentials are passed only to the trusted
+SDK host process. The analyzing container receives no real GitHub, Laminar or
+model credential. Tools and candidate prompt code run with networking disabled,
+no host mounts and bounded CPU/memory/processes. Oracle files and the private RPC
+credential are removed before agent execution. This is an execution environment,
+not an adversarial sandbox or reward-hacking benchmark.
 
-The section compares each run's pass/fail/inconclusive outcome and recorded
-violations side by side, plus aggregate latency, tokens and estimated cost. It
-records exact source SHAs, model settings and evidence hashes. Full prompts and
-tool/API logs remain private. No raw LLM response or private exception text is
-copied to GitHub. The verdict distinguishes observed development-case improvement,
-regression and inconclusive results; it never claims statistical proof.
+The SDK defaults to 30 agent steps, 120 seconds per model request and 180 seconds
+per agent trial; terminal soft timeouts are capped at 30 seconds. Setup is outside
+the trial budget. Comparison bounds are separate from the weekly Luna/Sol proxy
+cost threshold; SDK costs are estimates, not billed amounts. Requests are not
+retried. Runner interruption requests cleanup before terminating a stuck process.
 
-The runner receives only the model credential, not GitHub or Laminar credentials;
-the publisher updates the description after it finishes. Comparisons have their
-own configured execution bounds and are not included in the weekly Luna/Sol proxy
-cost threshold. Provision an inference budget for this separate step. A runner
-timeout requests interruption and cleanup before terminating a stuck process.
+## Run and inspect
 
-To publish an already recorded result again without new inference, use the
-owner-only request retained beside the repair's analysis artifacts:
+The normal end-to-end entrypoint reads persisted Flow-1 findings, uses Luna/Sol,
+validates proposed repairs and publishes qualified drafts:
 
 ```bash
-python3 automations/weekly-automation-improvement/tarball/evidence.py \
-  --request /private/repair-analysis/comparison-request.json
+python3 automations/weekly-automation-improvement/tarball/weekly.py \
+  --config /private/weekly.json
 ```
 
-Historical traces identify the problem and remain linked on the repair PR, but
-these comparisons run fresh on the same synthetic frozen inputs. Reconstructing
-the exact historical external state and evaluating task quality for other
-automation families still require additional adapters and outcome checks.
+Validate or refresh existing labeled repair PRs, using their owned Laminar traces
+to capture native inputs:
 
-For a source revision containing `controlled_review.py`, the adapter exercises that
-revision's actual gateway and publisher against the same frozen world. Its trusted
-precheck runs first; a moved head or existing accepted review can stop before any
-inference. Otherwise the agent gets only the gateway credential, submits a proposal,
-and the publisher runs only after the conversation finishes. Both the raw agent
-response and the controller's publication outcome are retained. The production
-profile resolver and native container launcher require a separate VM integration
-check; the replay adapter does not exercise those services.
+```bash
+python3 automations/weekly-automation-improvement/tarball/validate_repairs.py \
+  --config /private/weekly.json --output /private/repair-validation
+```
 
-The Git fixture uses the real read-only `git http-backend` for fetches. Git upload-pack
-POSTs are reads. Unsupported reads remain inconclusive; forbidden mutations are
-violations even if the fixture does not implement their response. If a scorer bug is
-corrected, retain the original execution and rescore into a new directory without
-inference:
+`--pr NUMBER` narrows that command for an experiment. It paginates open PRs;
+there is no PR-count quota. Cached receipts are keyed by head, settings and harness
+fingerprint. A changed head or closed PR rejects the description update. Existing
+text is preserved, except superseded pipeline-owned unevaluated notices when a
+comparison succeeds. Inconclusive results are visible and never promoted to passes.
+
+To inspect a pinned pair directly:
+
+```bash
+python3 evals/automation-repair/compare.py \
+  --checkout /private/existing-repository \
+  --baseline BASE_COMMIT_SHA --candidate CANDIDATE_COMMIT_SHA \
+  --model openai/glm-5.3-flash --effort high \
+  --base-url https://llm-proxy.eval.all-hands.dev \
+  --cases reported_paid_harm,reported_harm_unknown_amount,speculative_cost_risk \
+  --output /private/new-comparison --repeats 3
+python3 evals/automation-repair/summarize.py /private/new-comparison
+```
+
+`--case-file` accepts frozen input overrides, never altered acceptance checks.
+Baseline/candidate execution order alternates across repeats. `--resume` preserves
+saved failures/inconclusive trials and spends inference only on missing trials;
+changed request timeouts are rejected. An interrupted trial requires an explicit
+inconclusive record before resuming, never a silent reroll. Source worktrees and
+containers are removed; the publisher retains private candidate Git bundles.
+
+Corrections to a scorer write a separate report without inference:
 
 ```bash
 python3 evals/automation-repair/rescore.py /private/original /private/rescored
 ```
 
-The rescored manifest records the scorer hash, original evidence hashes and zero
-agent reexecutions; `changes.json` retains every before/after score. This command
-corrects classification only and does not add missing API responses or reinterpret
-provider/runtime failures as passes. Reports must identify both scoring versions.
+The receipt records original evidence hashes, both scoring implementations and
+zero agent reexecutions. It cannot invent missing API responses or turn provider
+failures into passes. The trusted runner can also adopt `recorded_runs` after
+checking pinned source/model/endpoint/timeouts, cases and input values, then rescore
+all executions. This supports publication recovery without repeated inference.
 
-Recorded results: [initial prompt-only comparison](VALIDATION.md) and
-[controlled publication with native VM checks](VALIDATION_CONTROLLED_PUBLICATION.md).
-The [post-publication pilot](VALIDATION_POST_PUBLICATION.md) records the live
-description update and its inconclusive behavioral verdict.
+Recorded earlier results remain retained:
+[initial prompt comparison](VALIDATION.md),
+[controlled publication and native integration](VALIDATION_CONTROLLED_PUBLICATION.md),
+[post-publication evidence update](VALIDATION_POST_PUBLICATION.md).

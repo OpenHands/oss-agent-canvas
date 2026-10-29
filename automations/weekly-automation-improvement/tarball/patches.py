@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 
 from common import read_json, redact, topic_id, write_json
-from evidence import after_publication, section
+from evidence import after_publication, before_publication, section
 
 
 def patch_from_edits(source, edits):
@@ -169,6 +169,18 @@ IMPROVEMENT_LABEL = "automation-improvement"
 
 
 def propose_fix(args, report, snapshot):
+    try:
+        return _propose_fix(args, report, snapshot)
+    finally:
+        config = read_json(args.source_config)
+        checkout = Path(config["checkout"]).expanduser().resolve()
+        for name in ("baseline", "candidate"):
+            path = (args.output / name).resolve()
+            if path.exists() and (path / ".git").is_file():
+                command(["git", "worktree", "remove", "--force", str(path)], checkout)
+
+
+def _propose_fix(args, report, snapshot):
     config = read_json(args.source_config)
     source = load_source(args.source_config)
     if source != snapshot["source"]:
@@ -381,6 +393,45 @@ def propose_fix(args, report, snapshot):
     ):
         raise ValueError("Commit differs from the validated patch")
     results["candidate_revision"] = command(["git", "rev-parse", "HEAD"], candidate)
+    bundle = args.output / "candidate.bundle"
+    command(
+        [
+            "git",
+            "bundle",
+            "create",
+            str(bundle.resolve()),
+            "HEAD",
+            "^" + source["revision"],
+        ],
+        candidate,
+    )
+    bundle.chmod(0o600)
+    results["candidate_bundle"] = str(bundle)
+    verified = None
+    if config.get("require_improvement", True):
+        verified = before_publication(
+            config, source, snapshot, results, proposal, findings, args.output
+        )
+        results["comparison"] = {"status": verified["status"]}
+        if verified["status"] != "improvement_on_development_cases":
+            results["status"] = "improvement_not_demonstrated"
+            write_json(args.output / "publication.json", results)
+            return results
+        results["status"] = "evidence_supported_draft"
+        results["behavioral_evaluation"] = verified["status"]
+        current = command(
+            [
+                "gh",
+                "api",
+                f"repos/{source['repository']}/git/ref/heads/{config['base_branch']}",
+                "--jq",
+                ".object.sha",
+            ]
+        )
+        if current != source["revision"]:
+            results["status"] = "source_base_advanced"
+            write_json(args.output / "publication.json", results)
+            return results
     if command(
         ["git", "ls-remote", "--heads", "origin", "refs/heads/" + branch], candidate
     ):
@@ -394,11 +445,15 @@ def propose_fix(args, report, snapshot):
         + "\n\nTrace evidence:\n"
         + "\n".join("- " + value for value in links)
         + f"\n\nBaseline revision: {source['revision']}. Executed automation revision has not been verified.\n\n"
-        + proposal["evaluation_plan"]
+        + (
+            "Executed comparison and its scope are reported below."
+            if verified
+            else proposal["evaluation_plan"]
+        )
         + (
             "\n\n**UNEVALUATED PROPOSAL:** behavioral evaluation has not been performed. "
             "The checks below only establish that the patch applies within the approved source scope.\n"
-            if unevaluated
+            if unevaluated and not verified
             else "\n\nExecuted configured checks:\n"
         )
         + (
@@ -446,7 +501,9 @@ def propose_fix(args, report, snapshot):
         body += f"\n\nAutomation backlog reviewed: {aggregation['total_events']} findings across {aggregation['affected_conversations']} distinct conversations. These counts are not validated failure rates.\n"
     body = "\n".join(markers) + "\n\n" + body
     body += "\n\n" + section(
-        "**Pending:** baseline/candidate comparison will run after publication."
+        redact(verified["markdown"])
+        if verified
+        else "**Pending:** baseline/candidate comparison will run after publication."
         if config.get("comparative_validation")
         else "**Not run:** no behavioral comparison adapter is configured for this automation. "
         "Mechanical checks passed; behavioral improvement has not been demonstrated."
@@ -469,7 +526,10 @@ def propose_fix(args, report, snapshot):
             "--label",
             IMPROVEMENT_LABEL,
             "--title",
-            (("[Unevaluated] " if unevaluated else "") + proposal["title"])[:120],
+            (
+                ("[Evidence] " if verified else "[Unevaluated] " if unevaluated else "")
+                + proposal["title"]
+            )[:120],
             "--body-file",
             str(body_path.resolve()),
         ],

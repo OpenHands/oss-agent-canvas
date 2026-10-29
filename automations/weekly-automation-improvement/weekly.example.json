@@ -12,6 +12,16 @@
   "credentials_file": "/private/automation-improvement/credentials.json",
   "state_dir": "/private/automation-improvement/state",
   "publish_drafts": true,
+  "require_improvement": true,
+  "validate_existing_repairs": true,
+  "comparative_validation": {
+    "command": ["/private/sdk-venv/bin/python", "/private/evaluator/pr_comparison.py"],
+    "profile_id": "glm-5.3-flash",
+    "automatic_contracts": true,
+    "timeout_seconds": 3600,
+    "repeats": 3,
+    "max_run_seconds": 180
+  },
   "triage_model": "openai/gpt-6-luna",
   "repair_model": "openai/gpt-6.1-sol",
   "triage_batch_size": 3,

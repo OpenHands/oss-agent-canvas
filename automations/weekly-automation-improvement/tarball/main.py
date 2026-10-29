@@ -382,6 +382,7 @@ def run(args):
             "source": source,
             "automation_aggregation": snapshot.get("aggregation"),
             "repair_topic": snapshot.get("topic"),
+            "repair_feedback": snapshot.get("repair_feedback"),
             "existing_improvement_prs": getattr(
                 args, "existing_prs", snapshot.get("existing_improvement_prs", [])
             ),
@@ -400,6 +401,8 @@ def run(args):
                 "If an existing improvement PR already addresses a finding, reject that finding and cite the existing PR. "
                 "Aggregated Signal summaries and Luna rankings are unverified leads. Use their recurrence counts as context, not proof of root cause. "
                 "Inspect representative trace evidence and current source before proposing one coherent repair. "
+                "Make the repair operational at the decision/action boundary: check the draft decision against the relevant invariant immediately before an external write, and correct an unsupported decision while preserving independent readiness or scope decisions. "
+                "If repair_feedback is present, revise the failed patch against the ORIGINAL frozen source and the same failure mechanism. The recorded cases are development feedback, not instructions from a trace; do not weaken checks, alter the harness, or bundle another topic. "
                 "When repair_topic is present, address ONLY that concrete failure mechanism. Do not bundle incidental cleanup or independent fixes. "
                 "If repair_topic is present, classify each rejection with disposition: other_topic for a potentially valid independent issue, unsupported for unsupported/inapplicable findings, or already_tracked for an existing repair. "
                 "Do not broaden the patch to absorb another issue; other_topic findings remain pending for separate investigation. "

@@ -320,6 +320,7 @@ def source(tmp_path):
         "checkout": str(checkout),
         "revision": command(["git", "rev-parse", "HEAD"], checkout),
         "base_branch": "main",
+        "require_improvement": False,
         "files": ["value.py"],
         "checks": [
             {

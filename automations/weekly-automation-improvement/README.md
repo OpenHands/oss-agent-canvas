@@ -2,10 +2,11 @@
 
 A standalone prototype for OSS-14275. Flow-1 analyzes eligible automation traces
 in self-hosted Laminar. Each week, the worker aggregates findings **per automation**,
-asks Luna to identify focused repair topics, then asks Sol for at most **one
-unevaluated draft PR per topic**. A topic is one concrete failure mechanism and
-behavior change that can be fixed and reviewed independently. It can decline every candidate. Behavioral evaluation,
-automatic merges and deployments are deferred.
+asks Luna to identify focused repair topics, then asks Sol for one focused patch
+per topic. **A new draft PR is published only after a baseline/candidate comparison
+demonstrates the targeted improvement on frozen development cases.** Unsupported,
+regressed or inconclusive candidates remain pending. Merges and deployment require
+human review.
 
 ## Weekly path
 
@@ -41,28 +42,32 @@ automatic merges and deployments are deferred.
    declines. Independent fixes and incidental cleanup cannot be bundled into
    another topic. An unrelated but potentially valid finding is deferred in the
    backlog; unsupported findings can be rejected.
-7. Apply each patch in its own detached worktree, restricting edits to approved
-   regular files and checking whitespace/Python syntax. Live publication creates
-   one explicitly unevaluated draft per topic. Later topics see PRs created
-   earlier in the same batch. Dry runs perform mechanical checks without
-   publication. Every generated repair PR receives the model-independent
-   `automation-improvement` label, including reused PRs. Each topic has its own
-   failure/report/publication state, so one
-   failed or uncertain publication does not block the automation's other topics.
-8. Add a **Before / After Evidence** section to the draft. When a trusted comparison
-   adapter is configured for its automation UUID, run pinned baseline/candidate
-   versions on the same frozen cases after publication and replace that section
-   with side-by-side outcomes, violations and resource measurements. Missing
-   adapters, uncovered repair topics and execution gaps cannot establish an
-   improvement. Drafts are never automatically accepted. See the
-   [comparison setup](../../evals/automation-repair/README.md#compare-a-published-repair).
+7. Apply the patch in a detached worktree and check approved file scope,
+   whitespace and Python syntax. Commit locally and retain a private Git bundle.
+   Select a trusted task contract from the affected source and failure mechanism;
+   freeze native inputs, source revisions, model settings and case definitions.
+8. Run both versions through the actual SDK against identical isolated GitHub
+   worlds. Require a reproduced **target violation**, passing controls on both
+   versions, all candidate cases passing and no required-input/runtime gaps.
+   Unrelated failures cannot establish the intended improvement. Missing contracts
+   or inconclusive results produce no branch push or new PR.
+9. A completed behavioral failure may receive one Sol revision with compact case
+   feedback, followed by a new comparison. The previous patch must change;
+   provider/runtime failures and unchanged patches are not rerolled. Retain both
+   attempts and disclose development feedback in the evidence report.
+10. Publish one draft per demonstrated topic, labeled `automation-improvement`,
+    with **Before / After Evidence already in its description**. Recheck the base
+    revision after evaluation. Later topics see the newly created PR. Release the
+    reservation when no publication occurred; findings remain pending. Worktrees
+    are removed while source bundles and all comparison artifacts remain private.
 
-The worker continues to new batches until Luna finds no further actionable
-issues, all available representatives have been considered, or the run reaches a
-resource threshold. There is no total topic or PR-count quota. Each topic gets
-at most one Sol call per investigation; failures are not retried in the same run.
-There is no custom embedding service, new clustering infrastructure, repair loop
-or generalized evaluation framework.
+The worker continues across Luna batches until no actionable topics remain or a
+resource threshold is reached. There is no total topic or PR-count quota. Dry runs
+perform analysis and mechanical checks without PR writes or backlog changes.
+The initial contracts cover issue-priority/readiness decisions, reviewer factual
+claims and reviewer publication. Other mechanisms cannot publish until an
+appropriate execution contract exists. This is development-case evidence, not a
+general automation-quality benchmark. See the [comparison setup](../../evals/automation-repair/README.md).
 
 ## Configure and run
 
@@ -72,7 +77,9 @@ private state directory and GitHub secret name. Create the repository label `aut
 (already installed in `OpenHands/oss-agent-canvas`). `triage_model` and `repair_model`
 are configurable. `triage_batch_size` controls topics returned per Luna call
 (default three), not a total PR limit. The obsolete `max_topics_per_automation`
-setting no longer limits output. Keep the credentials file owner-only:
+setting no longer limits output. Configure the global `comparative_validation`
+runner and use `require_improvement: true` (the default). `validate_existing_repairs`
+refreshes descriptions for existing repair PRs. Keep the credentials file owner-only:
 
 ```json
 {"LMNR_PROJECT_API_KEY":"...","LITELLM_API_KEY":"..."}
@@ -123,7 +130,8 @@ week, allowing later regressions to be investigated. PR discovery/reuse remains
 scoped to the configured base branch, and remote branches are never overwritten.
 
 GitHub markers recover individual weekly topic slots if local state is lost.
-Legacy handled events remain handled. Old completed automation-wide slots do not
+Legacy handled events remain handled; the existing-repair validator can add evidence
+without reopening their original findings. Old completed automation-wide slots do not
 block unrelated new topics; uncertain old publication reservations remain
 conservative. Existing PR descriptions and completed topic keys are supplied to
 Luna and Sol. A model can still misclassify or rename an issue: this is not a

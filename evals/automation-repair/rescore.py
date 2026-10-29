@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from compare import compare, write
-from reviewer_world import score
+from scenarios import scenario, score
 
 
 def rescore(source, output):
@@ -34,7 +34,11 @@ def rescore(source, output):
             receipts[str(artifact.relative_to(source))] = hashlib.sha256(
                 artifact.read_bytes()
             ).hexdigest()
-    report = compare(rows, manifest["cases"], manifest["repeats"])
+    cases = []
+    for case in manifest["cases"]:
+        target = scenario(case["id"]).get("target_violation")
+        cases.append(case | ({"target_violation": target} if target else {}))
+    report = compare(rows, cases, manifest["repeats"])
     if not report["complete"]:
         raise ValueError("Only rescore a complete comparison")
     output.mkdir(parents=True, exist_ok=False)
@@ -42,6 +46,7 @@ def rescore(source, output):
         output / "manifest.json",
         {
             **manifest,
+            "cases": cases,
             "rescoring": {
                 "source_manifest_sha256": hashlib.sha256(
                     manifest_path.read_bytes()

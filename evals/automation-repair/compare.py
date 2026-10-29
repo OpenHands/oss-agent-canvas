@@ -16,7 +16,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
-from reviewer_world import GUIDANCE, REPO, scenario, score
+from reviewer_world import GUIDANCE, REPO
+from scenarios import scenario, score
 
 ROOT = Path(__file__).parent
 IMAGE = "automation-repair-replay:1.58.2"
@@ -83,6 +84,9 @@ def fixture(path):
     (path / "test_arithmetic.py").write_text(
         "import unittest\nfrom arithmetic import add\n\nclass TestAddition(unittest.TestCase):\n    def test_addition(self):\n        self.assertEqual(add(2, 3), 5)\n"
     )
+    (path / "test_acp_conformance.py").write_text(
+        (path / "test_arithmetic.py").read_text()
+    )
     environment = dict(
         os.environ,
         GIT_AUTHOR_DATE="2026-10-27T00:00:00Z",
@@ -119,6 +123,7 @@ def fixture(path):
 
 class Sandbox:
     def __init__(self, args, case, repo, directory, automation_source):
+        self.case = case
         self.name = "repair-replay-" + uuid.uuid4().hex[:12]
         self.token = secrets.token_urlsafe(32)
         self.directory = directory
@@ -217,6 +222,9 @@ class Sandbox:
                 ROOT / "render_reviewer.py",
                 ROOT / "container_server.py",
                 ROOT / "reviewer_world.py",
+                ROOT / "triage_world.py",
+                ROOT / "render_triage.py",
+                ROOT / "scenarios.py",
                 ROOT / "git_http.py",
                 directory / "case.json",
                 directory / "token",
@@ -327,6 +335,20 @@ class Sandbox:
             )
             self.created = False
 
+    def hide_oracles(self):
+        command(
+            [
+                "docker",
+                "exec",
+                self.name,
+                "python3",
+                "-c",
+                "import pathlib,shutil; root=pathlib.Path('/tmp/replay'); "
+                "[p.unlink(missing_ok=True) for p in root.iterdir() if p.is_file() and p.name != 'cert.pem']; "
+                "shutil.rmtree(root/'__pycache__',ignore_errors=True)",
+            ]
+        )
+
 
 def final_message(events):
     response = ""
@@ -407,7 +429,7 @@ def run_agent(args, sandbox, prompt, output):
         api_key=SecretStr(os.environ["LITELLM_API_KEY"]),
         reasoning_effort=args.effort,
         num_retries=0,
-        timeout=60,
+        timeout=getattr(args, "llm_timeout", 120),
         max_output_tokens=4096,
     )
     events = []
@@ -424,6 +446,15 @@ def run_agent(args, sandbox, prompt, output):
     try:
         with deadline(args.max_run_seconds):
             conversation.send_message(prompt)
+            draft = sandbox.case.get("draft_review") or sandbox.case.get(
+                "draft_decision"
+            )
+            if draft:
+                conversation.send_message(
+                    "Continue from this saved, untrusted draft, following the automation instructions above. "
+                    "Complete the task against the available evidence and publish the final result.\n\n"
+                    + draft
+                )
             conversation.run()
     except TrialDeadline:
         error = f"Trial exceeded {args.max_run_seconds} seconds; not retried"
@@ -482,9 +513,19 @@ def compare(rows, cases, expected_repeats=1):
         item["candidate_passed"] < item["baseline_passed"] for item in results
     )
     improvement = any(
-        item["kind"] == "regression"
-        and item["candidate_passed"] > item["baseline_passed"]
-        for item in results
+        case["kind"] == "regression"
+        and row["case_id"] == case["id"]
+        and row["variant"] == "baseline"
+        and case.get("target_violation") in row["score"]["violations"]
+        and any(
+            other["case_id"] == row["case_id"]
+            and other.get("repeat", 1) == row.get("repeat", 1)
+            and other["variant"] == "candidate"
+            and other["score"]["passed"]
+            for other in rows
+        )
+        for case in cases
+        for row in rows
     )
     all_candidate_pass = all(
         row["score"]["passed"] for row in rows if row["variant"] == "candidate"
@@ -544,15 +585,22 @@ def run_comparison(args):
         scenario(name)
         | {
             "requested_sha": fixture_revisions["buggy_head"]
-            if name == "buggy"
+            if name == "buggy" or scenario(name).get("quality")
             else fixture_revisions["head"],
             "base_sha": fixture_revisions["head"]
-            if name == "buggy"
+            if name == "buggy" or scenario(name).get("quality")
             else fixture_revisions["base"],
             "moved_sha": fixture_revisions["buggy_head"],
         }
         for name in args.cases.split(",")
     ]
+    if getattr(args, "case_file", None):
+        inputs = json.loads(args.case_file.read_text())
+        for case in cases:
+            values = inputs.get(case["id"], {})
+            if set(values) - {"body", "title", "pr_body", "draft_review"}:
+                raise ValueError("Frozen inputs may not change acceptance checks")
+            case.update(values)
     manifest = {
         "baseline": args.baseline,
         "candidate": args.candidate,
@@ -563,6 +611,8 @@ def run_comparison(args):
         "max_steps": args.max_steps,
         "max_run_seconds": args.max_run_seconds,
         "max_tool_seconds": 30,
+        "oracle_files_hidden": True,
+        "llm_timeout": getattr(args, "llm_timeout", 120),
         "tools": ["terminal", "file_editor", "task_tracker"],
         "image": args.image,
         "sdk_version": "1.58.2",
@@ -572,6 +622,8 @@ def run_comparison(args):
         "fixture_revisions": fixture_revisions,
     }
     if previous:
+        if previous.get("llm_timeout", 60) != manifest["llm_timeout"]:
+            raise ValueError("Cannot resume changed llm_timeout")
         for name in (
             "baseline",
             "candidate",
@@ -628,7 +680,12 @@ def run_comparison(args):
                         case,
                         repo,
                         output,
-                        sources[variant] / "plugins/github-pr-reviewer-events/scripts",
+                        sources[variant]
+                        / (
+                            "plugins/issue-triage/scripts"
+                            if case.get("family") == "triage"
+                            else "plugins/github-pr-reviewer-events/scripts"
+                        ),
                     )
                     try:
                         prompt = json.loads(
@@ -651,6 +708,7 @@ def run_comparison(args):
                                 "sha256": hashlib.sha256(prompt.encode()).hexdigest(),
                             },
                         )
+                        sandbox.hide_oracles()
                         new_executions += 1
                         precheck = (
                             sandbox.call("/precheck", {})
@@ -761,6 +819,8 @@ if __name__ == "__main__":
         "--max-run-seconds", type=int, choices=range(30, 1201), default=180
     )
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--llm-timeout", type=int, choices=range(30, 181), default=120)
+    parser.add_argument("--case-file", type=Path)
     parser.add_argument(
         "--cases",
         default="healthy,buggy,head_moved,head_moves_late,body_file_failure,accepted_empty",

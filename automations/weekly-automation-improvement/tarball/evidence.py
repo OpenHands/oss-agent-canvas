@@ -36,6 +36,8 @@ def execute(argv, log, timeout):
         for key, value in os.environ.items()
         if key in ("PATH", "HOME", "LANG", "LC_ALL", "LITELLM_API_KEY")
     }
+    if os.environ.get("COMPARISON_API_KEY"):
+        environment["LITELLM_API_KEY"] = os.environ["COMPARISON_API_KEY"]
     with log.open("x") as stream:
         log.chmod(0o600)
         process = subprocess.Popen(
@@ -73,14 +75,8 @@ def validate_receipt(receipt, request):
         raise ValueError("Comparison receipt does not match the repair revisions")
 
 
-def run_locked(request_path, command):
+def evaluate(request_path):
     request = read_json(request_path)
-    match = re.fullmatch(
-        r"https://github.com/([\w.-]+/[\w.-]+)/pull/([1-9][0-9]*)", request["pr_url"]
-    )
-    if not match or match[1] != request["repository"]:
-        raise ValueError("Comparison PR must belong to the source repository")
-    endpoint = f"repos/{match[1]}/pulls/{match[2]}"
     root = request_path.parent
     output = root / "comparison"
     receipt_path = output / "evidence.json"
@@ -131,15 +127,45 @@ def run_locked(request_path, command):
         }
         if not failure_path.exists():
             write_json(failure_path, receipt)
+    return receipt
+
+
+def run_locked(request_path, command):
+    request = read_json(request_path)
+    if not request.get("pr_url"):
+        request["pr_url"] = read_json(
+            request_path.parent / "comparison-publication.json"
+        )["pr_url"]
+    match = re.fullmatch(
+        r"https://github.com/([\w.-]+/[\w.-]+)/pull/([1-9][0-9]*)", request["pr_url"]
+    )
+    if not match or match[1] != request["repository"]:
+        raise ValueError("Comparison PR must belong to the source repository")
+    endpoint = f"repos/{match[1]}/pulls/{match[2]}"
+    root = request_path.parent
+    receipt_path = root / "comparison/evidence.json"
+    receipt = evaluate(request_path)
     current = json.loads(command(["gh", "api", endpoint]))
     if current["head"]["sha"] != request["candidate"] or current["state"] != "open":
         return {"status": "stale_pr", "comparison_status": receipt["status"]}
     body = replace_section(current["body"], redact(receipt["markdown"]))
+    payload = {"body": body}
+    if receipt["status"] == "improvement_on_development_cases":
+        body = body.replace(
+            "**UNEVALUATED PROPOSAL:** behavioral evaluation has not been performed. The checks below only establish that the patch applies within the approved source scope.",
+            "**Development comparison recorded:** see Before / After Evidence for executed checks, exact source revisions and limitations.",
+        ).replace(
+            "This proposal has not been validated.",
+            "The original plan is superseded by the executed development comparison below.",
+        )
+        payload["body"] = body
+        if current.get("title", "").startswith("[Unevaluated] "):
+            payload["title"] = "[Evidence] " + current["title"][len("[Unevaluated] ") :]
     body_path = root / "pr-body-with-evidence.md"
     body_path.write_text(body)
     body_path.chmod(0o600)
     payload_path = root / "pr-evidence-update.json"
-    payload_path.write_text(json.dumps({"body": body}))
+    payload_path.write_text(json.dumps(payload))
     payload_path.chmod(0o600)
     command(["gh", "api", "--method", "PATCH", endpoint, "--input", str(payload_path)])
     return {
@@ -159,6 +185,23 @@ def after_publication(config, source, snapshot, results, output, command):
     plan = config.get("comparative_validation")
     if not plan:
         return {"status": "not_configured", "published": False}
+    path = output / "comparison-request.json"
+    if path.exists():
+        frozen = read_json(path)
+        if (
+            frozen["baseline"] != source["revision"]
+            or frozen["candidate"] != results["candidate_revision"]
+        ):
+            raise ValueError("Published source differs from the evaluated candidate")
+        link_path = output / "comparison-publication.json"
+        if link_path.exists():
+            if read_json(link_path)["pr_url"] != results["pr_url"]:
+                raise ValueError("Comparison is already linked to another PR")
+        else:
+            write_json(link_path, {"pr_url": results["pr_url"]})
+        return run(path, command)
+    snapshot_path = output / "comparison-snapshot.json"
+    write_json(snapshot_path, {"samples": snapshot.get("samples", [])})
     request = {
         "schema_version": 1,
         "repository": source["repository"],
@@ -168,6 +211,8 @@ def after_publication(config, source, snapshot, results, output, command):
         "candidate": results["candidate_revision"],
         "changed_files": results["changed_files"],
         "topic": snapshot.get("topic"),
+        "findings": snapshot.get("comparison_findings", []),
+        "snapshot": str(snapshot_path.resolve()),
         "trace_urls": sorted(
             {
                 url
@@ -177,7 +222,6 @@ def after_publication(config, source, snapshot, results, output, command):
         ),
         "plan": plan,
     }
-    path = output / "comparison-request.json"
     write_json(path, request)
     try:
         return run(path, command)
@@ -187,6 +231,34 @@ def after_publication(config, source, snapshot, results, output, command):
             "published": False,
             "error": redact(str(error)),
         }
+
+
+def before_publication(config, source, snapshot, results, proposal, findings, output):
+    plan = config.get("comparative_validation")
+    if not plan:
+        return {
+            "status": "inconclusive",
+            "markdown": "No comparison runner configured.",
+        }
+    snapshot_path = output / "comparison-snapshot.json"
+    write_json(snapshot_path, {"samples": snapshot.get("samples", [])})
+    request = {
+        "schema_version": 1,
+        "repository": source["repository"],
+        "checkout": config["checkout"],
+        "baseline": source["revision"],
+        "candidate": results["candidate_revision"],
+        "changed_files": results["changed_files"],
+        "topic": snapshot.get("topic"),
+        "findings": findings,
+        "hypothesis": proposal["hypothesis"],
+        "snapshot": str(snapshot_path.resolve()),
+        "plan": plan,
+        "development_feedback_used": bool(snapshot.get("repair_feedback")),
+    }
+    path = output / "comparison-request.json"
+    write_json(path, request)
+    return evaluate(path)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 
-from reviewer_world import World
+from scenarios import world as make_world
 from git_http import GitHTTP
 
 
@@ -19,7 +19,7 @@ def serve(args):
     from openhands.tools.task_tracker import TaskTrackerTool
     from openhands.tools.terminal import TerminalTool
 
-    world = World(json.loads(Path(args.case).read_text()))
+    world = make_world(json.loads(Path(args.case).read_text()))
     lock = threading.RLock()
     source = Path("/tmp/replay/automation-source")
     controlled = (source / "controlled_review.py").exists()

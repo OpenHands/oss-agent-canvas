@@ -23,8 +23,19 @@ def summarize(root):
         "one_valid_review": "Publish one valid review at the requested revision",
         "no_write": "Observe changed/completed state and publish no review",
         "bug_found": "Report the known arithmetic bug in a valid review",
+        "recognize_reported_harm": "Medium/high priority for reported harm; keep readiness separate",
+        "keep_speculative_risk_low": "Low priority for speculation without recorded user harm",
+        "faithful_review": "Faithful description claims while retaining the known code bug",
     }
     cases = {case["id"]: case for case in manifest.get("cases", [])}
+    if any(
+        case.get("draft_decision") or case.get("draft_review")
+        for case in cases.values()
+    ):
+        lines[4:4] = [
+            "Mode: reconstructed draft checkpoints derived from observed failure mechanisms, with fresh native SDK execution in a frozen GitHub world. These test correction before writing; they do not replay the full historical environment.",
+            "",
+        ]
     for case in report["cases"]:
         rows = [row for row in report["runs"] if row["case_id"] == case["case_id"]]
         errors = sum(
@@ -95,6 +106,21 @@ def summarize(root):
                 outcome += ": " + ", ".join(violations)
             if "write_attempts" in score and "accepted_reviews" in score:
                 outcome += f"; {score['write_attempts']} writes attempted, {score['accepted_reviews']} reviews accepted"
+            if "final_priority" in score:
+                outcome += "; final priority: " + score["final_priority"]
+            if score.get("optional_read_gaps"):
+                outcome += f"; {len(score['optional_read_gaps'])} optional research reads unsupported"
+            if "known_bug_retained" in score:
+                outcome += "; independent bug retained: " + (
+                    "yes" if score["known_bug_retained"] else "no"
+                )
+            if score.get("contradicted_claim"):
+                claim = (
+                    score["contradicted_claim"]
+                    .replace("|", "\\|")
+                    .replace("\n", " ")[:300]
+                )
+                outcome += "; contradicted claim: " + claim
             outcomes.append(outcome)
         lines.append(f"| `{case}-{repeat}` | {outcomes[0]} | {outcomes[1]} |")
     lines.append("")
@@ -127,7 +153,7 @@ def summarize(root):
     lines.extend(
         [
             "",
-            "These are AI-authored development scenarios with a synthetic repository and controlled GitHub state, not exact historical replays or a held-out quality benchmark. Unsupported API/Git reads and runtime/provider errors are inconclusive. Small counts do not establish statistical improvement. No real GitHub review was posted; production was unchanged.",
+            "These are AI-authored development scenarios with a synthetic repository and controlled GitHub state, not exact historical replays or a held-out quality benchmark. Missing required inputs, unsupported mutations and runtime/provider errors are inconclusive. The priority contract reports unsupported optional research reads separately: its checks use the observed complete issue and verified final labels. Reviewer contracts require complete read coverage. Small counts do not establish statistical improvement. No real GitHub review was posted; production was unchanged.",
         ]
     )
     return "\n".join(lines) + "\n"

@@ -494,6 +494,80 @@ def test_dry_run_does_not_publish_or_change_backlog(
     assert [call[0] for call in calls] == ["luna", "sol", "check"]
 
 
+def test_unproven_repair_stays_pending_without_a_publication_reservation(
+    configured_source, tmp_path, monkeypatch
+):
+    records = [record()]
+    config, calls = prepare_grouped(configured_source, tmp_path, monkeypatch, records)
+    monkeypatch.setattr(
+        weekly,
+        "propose_fix",
+        lambda *args: {
+            "status": "improvement_not_demonstrated",
+            "comparison": {"status": "inconclusive"},
+        },
+    )
+    result = weekly.run(config)
+    assert result["status"] == "validation_incomplete"
+    state = json.loads((Path(config["state_dir"]) / "state.json").read_text())
+    assert records[0]["event"]["id"] in state["backlog"]
+    assert not state["topic_weeks"]
+    assert not state["events"]
+
+
+@pytest.mark.parametrize(
+    "provider_error,expected", [(None, True), ("Provider unavailable", False)]
+)
+def test_repair_feedback_requires_a_completed_behavioral_failure(
+    tmp_path, provider_error, expected
+):
+    path = tmp_path / "comparison/runs/comparison.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "runs": [
+                    {
+                        "case_id": "reported_harm",
+                        "variant": "candidate",
+                        "score": {
+                            "passed": False,
+                            "finished": provider_error is None,
+                            "error": provider_error,
+                            "violations": ["incorrect_priority"],
+                            "final_priority": "priority:low",
+                        },
+                    }
+                ]
+            }
+        )
+    )
+    feedback = weekly.comparison_feedback(tmp_path)
+    assert bool(feedback) == expected
+    if expected:
+        assert feedback["failed_cases"][0]["final_priority"] == "priority:low"
+
+
+def test_dry_run_cannot_backfill_or_publish_existing_pr_evidence(
+    configured_source, tmp_path, monkeypatch
+):
+    import validate_repairs
+
+    config, calls = prepare_grouped(
+        configured_source, tmp_path, monkeypatch, [record()]
+    )
+    config["validate_existing_repairs"] = True
+    monkeypatch.setattr(
+        validate_repairs,
+        "validate",
+        lambda *args: pytest.fail("Dry run must not update PRs"),
+    )
+    monkeypatch.setattr(
+        weekly, "propose_fix", lambda *args: {"status": "mechanical_checks_passed"}
+    )
+    weekly.run(config, dry_run=True)
+
+
 def test_old_automation_marker_does_not_block_new_topics(
     configured_source, tmp_path, monkeypatch
 ):

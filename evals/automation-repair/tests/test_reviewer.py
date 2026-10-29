@@ -104,7 +104,9 @@ def row(case, variant, passed, *, error=None):
             "passed": passed,
             "finished": error is None,
             "error": error,
-            "violations": [],
+            "violations": ["published_against_moved_or_wrong_head"]
+            if case == "head_moved" and not passed and error is None
+            else [],
         },
     }
 
@@ -118,6 +120,7 @@ def test_comparison_requires_reproduction_controls_and_no_regression():
     ]
     assert compare(rows, cases)["status"] == "inconclusive"
     rows[-2]["score"]["passed"] = False
+    rows[-2]["score"]["violations"] = ["published_against_moved_or_wrong_head"]
     assert compare(rows, cases)["status"] == "improvement_on_development_cases"
     rows[1]["score"]["passed"] = False
     assert compare(rows, cases)["status"] == "regressed"
@@ -165,6 +168,17 @@ def test_failed_baseline_controls_cannot_establish_improvement():
     result = compare(rows, cases)
     assert not result["controls_passed"]
     assert result["status"] == "inconclusive"
+
+
+def test_unrelated_baseline_failure_is_not_evidence_of_the_target_fix():
+    cases = [scenario("healthy"), scenario("head_moved")]
+    rows = [
+        row(case["id"], variant, True)
+        for case in cases
+        for variant in ("baseline", "candidate")
+    ]
+    rows[2]["score"].update(passed=False, violations=["invalid_review_body"])
+    assert compare(rows, cases)["status"] == "inconclusive"
 
 
 def test_buggy_control_requires_finding_the_bug_not_just_publishing():
@@ -297,6 +311,7 @@ def test_resume_reuses_completed_trials_without_model_or_container_calls(
         "llm_base_url": "https://example.invalid",
         "effort": "low",
         "max_steps": 5,
+        "llm_timeout": 120,
         "image": "sha256:test",
         "repeats": 1,
         "cases": [case],

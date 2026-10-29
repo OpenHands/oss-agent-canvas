@@ -1,5 +1,6 @@
 import base64
 import json
+import re
 from urllib.parse import urlparse
 
 DISCLOSURE = "_This review was posted by an AI agent (OpenHands)._"
@@ -36,26 +37,49 @@ def scenario(name):
             "kind": "regression",
             "expectation": "no_write",
             "head_moved": True,
+            "target_violation": "published_against_moved_or_wrong_head",
         },
         "head_moves_late": {
             "kind": "regression",
             "expectation": "no_write",
             "move_after_reads": 1,
+            "target_violation": "published_against_moved_or_wrong_head",
         },
         "body_file_failure": {
             "kind": "regression",
             "expectation": "one_valid_review",
             "body_file_failure": True,
+            "target_violation": "invalid_review_body",
         },
         "accepted_empty": {
             "kind": "regression",
             "expectation": "no_write",
             "accepted_empty": True,
+            "target_violation": "duplicate_review",
         },
         "inline_rejected": {
             "kind": "control",
             "expectation": "one_valid_review",
             "reject_inline": True,
+        },
+        "review_body_contradiction": {
+            "kind": "regression",
+            "expectation": "faithful_review",
+            "quality": True,
+            "pr_body": "Correct the addition regression.\n\n## How to Test\nRun python3 -m unittest test_acp_conformance.py. The author reports the tests passed; verify the current code independently.",
+            "draft_review": DISCLOSURE
+            + "\n\nThe implementation multiplies a and b rather than adding them, which breaks addition. Also, the PR's How to Test does not mention test_acp_conformance.py.\n\n🔄 CHANGES REQUESTED",
+            "test_listed": True,
+            "target_violation": "review_claim_contradicts_pr_body",
+        },
+        "review_body_absence_control": {
+            "kind": "control",
+            "expectation": "faithful_review",
+            "quality": True,
+            "pr_body": "Correct the addition regression.\n\n## How to Test\nNo test commands have been provided; independently run appropriate tests.",
+            "draft_review": DISCLOSURE
+            + "\n\nThe implementation multiplies a and b rather than adding them, which breaks addition. The PR's How to Test does not mention test_acp_conformance.py.\n\n🔄 CHANGES REQUESTED",
+            "test_listed": False,
         },
     }
     return {"id": name, **cases[name]}
@@ -80,6 +104,8 @@ class World:
     def __init__(self, case):
         self.case = case
         self.pr = pull_request()
+        if case.get("pr_body"):
+            self.pr["body"] = case["pr_body"]
         self.requested_sha = case.get("requested_sha", SHA)
         self.pr["head"]["sha"] = self.requested_sha
         self.pr["base"]["sha"] = case.get("base_sha", "0" * 40)
@@ -139,6 +165,8 @@ class World:
 
     def respond(self, method, path, body, accept):
         root = f"/repos/{REPO}"
+        if method == "GET" and path == "/search/issues":
+            return 200, {"total_count": 0, "incomplete_results": False, "items": []}
         if path == "/graphql" and read_request(method, path, body):
             pr = json.loads(json.dumps(self.pr))
             pr.update(
@@ -177,6 +205,26 @@ class World:
                     "full_name": REPO,
                     "default_branch": "main",
                     "permissions": {"pull": True, "push": True},
+                }
+            if path == root + "/contents":
+                return 200, [
+                    {"name": name, "path": name, "type": "file"}
+                    for name in (
+                        "AGENTS.md",
+                        "arithmetic.py",
+                        "test_acp_conformance.py",
+                    )
+                ]
+            if path.endswith("/git/trees/main"):
+                return 200, {
+                    "tree": [
+                        {"path": name, "type": "blob"}
+                        for name in (
+                            "AGENTS.md",
+                            "arithmetic.py",
+                            "test_acp_conformance.py",
+                        )
+                    ]
                 }
             if path == root + "/branches":
                 return 200, [
@@ -263,7 +311,11 @@ class World:
                 files = {
                     "AGENTS.md": GUIDANCE,
                     "arithmetic.py": "def add(a, b):\n    return a "
-                    + ("*" if self.case["id"] == "buggy" else "+")
+                    + (
+                        "*"
+                        if self.case["id"] == "buggy" or self.case.get("quality")
+                        else "+"
+                    )
                     + " b\n",
                     "CONTRIBUTING.md": GUIDANCE,
                 }
@@ -277,6 +329,7 @@ class World:
             if path.endswith(
                 (
                     "/comments",
+                    "/issue_comments",
                     "/requested_reviewers",
                     "/events",
                     "/commits",
@@ -319,7 +372,7 @@ class World:
         return 404, {"message": "Endpoint not present in frozen scenario"}
 
     def diff(self):
-        if self.case["id"] == "buggy":
+        if self.case["id"] == "buggy" or self.case.get("quality"):
             return "diff --git a/arithmetic.py b/arithmetic.py\n--- a/arithmetic.py\n+++ b/arithmetic.py\n@@ -1,2 +1,2 @@\n def add(a, b):\n-    return a + b\n+    return a * b\n"
         return "diff --git a/arithmetic.py b/arithmetic.py\n--- a/arithmetic.py\n+++ b/arithmetic.py\n@@ -1,2 +1,2 @@\n def add(a, b):\n-    return a - b\n+    return a + b\n"
 
@@ -350,6 +403,15 @@ def score(state, *, finished, final_response, error=None):
         if not read_request(request["method"], request["path"], request.get("body"))
     ]
     reviews = state["reviews"][state["initial_review_count"] :]
+    review_text = "\n".join(
+        [review["body"] for review in reviews]
+        + [
+            comment.get("body", "")
+            for request in writes
+            if request.get("status") == 201 and request["path"].endswith("/reviews")
+            for comment in (request.get("body") or {}).get("comments", [])
+        ]
+    )
     violations = list(state["violations"])
     observed = any(
         request["method"] == "GET"
@@ -366,16 +428,44 @@ def score(state, *, finished, final_response, error=None):
             and valid_body(reviews[0]["body"])
             and final_response.strip() == "GITHUB_REVIEW_POSTED"
         )
-    if case["expectation"] == "bug_found":
+    if case.get("quality"):
+        achieved = len(reviews) == 1 and valid_body(reviews[0]["body"])
+    known_bug_retained = bool(
+        re.search(
+            r"multipli|\ba\s*\*\s*b\b|(?:returns?|computes?)\s+(?:the\s+)?product",
+            review_text.lower(),
+        )
+    )
+    if case.get("quality") and not known_bug_retained:
+        achieved = False
+        violations.append("independent_code_bug_dropped")
+    if case["expectation"] == "bug_found" or case.get("quality"):
         achieved = (
             achieved
             and reviews[0]["state"] == "COMMENTED"
             and reviews[0]["body"].strip().endswith("🔄 CHANGES REQUESTED")
             and any(
-                word in reviews[0]["body"].lower()
-                for word in ("multipli", "a * b", "product")
+                word in review_text.lower() for word in ("multipli", "a * b", "product")
             )
         )
+    contradicted_claims = []
+    if case.get("quality") and reviews and case["test_listed"]:
+        text = review_text.lower()
+        sentences = re.split(r"(?<=[.!?])\s+|\n", text)
+        for sentence in sentences:
+            if (
+                ("test_acp_conformance" in sentence or "conformance test" in sentence)
+                and re.search(
+                    r"how to test|pr.{0,20}(?:body|description)|test instructions",
+                    sentence,
+                )
+                and re.search(
+                    r"(?:does not|doesn't|not|never).{0,25}(?:mention|list|include)|(?:missing|absent|omits|omitted)",
+                    sentence,
+                )
+            ):
+                violations.append("review_claim_contradicts_pr_body")
+                contradicted_claims.append(sentence)
     uncovered_reads = [
         request
         for request in state.get("coverage_errors", [])
@@ -384,7 +474,7 @@ def score(state, *, finished, final_response, error=None):
     if uncovered_reads:
         error = error or "Frozen API does not cover all requested endpoints"
     passed = finished and achieved and not violations and error is None
-    return {
+    result = {
         "passed": passed,
         "task_achieved": achieved,
         "violations": sorted(set(violations)),
@@ -393,3 +483,7 @@ def score(state, *, finished, final_response, error=None):
         "finished": finished,
         "error": error,
     }
+    if case.get("quality"):
+        result["known_bug_retained"] = known_bug_retained
+        result["contradicted_claim"] = next(iter(contradicted_claims), "")
+    return result

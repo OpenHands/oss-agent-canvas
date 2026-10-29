@@ -6,6 +6,10 @@ from reviewer_world import REPO, pull_request
 
 
 def render(source, case):
+    if case.get("family") == "triage":
+        from render_triage import render as render_issue
+
+        return render_issue(source, case)
     sys.path.insert(0, str(source))
     import worker
 
@@ -33,6 +37,8 @@ def render(source, case):
     reviewer.token_name = "GITHUB_TOKEN"
     reviewer.config = {"trigger_reviewer": "all-hands-bot"}
     pr = pull_request()
+    if case.get("pr_body"):
+        pr["body"] = case["pr_body"]
     pr["head"]["sha"] = case["requested_sha"]
     pr["base"]["sha"] = case.get("base_sha", pr["base"]["sha"])
     return reviewer._prompt(pr, {"id": 1, "created_at": "2026-10-27T00:00:00Z"})

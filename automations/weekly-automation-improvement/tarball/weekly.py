@@ -14,7 +14,7 @@ from common import encode, read_json, redact, timestamp, write_json
 from events import collect_events, hydrate_events
 from laminar import Laminar
 from patches import command, load_source, propose_fix
-from sources import github_auth, repository_index, resolve_source
+from sources import github_auth, native_request, repository_index, resolve_source
 from triage import definition_key, triage
 
 
@@ -35,6 +35,26 @@ def load_environment(config):
                 os.environ[name] = values[name]
     os.environ["LMNR_BASE_URL"] = config["laminar_base_url"]
     os.environ["LLM_BASE_URL"] = config["llm_base_url"]
+    comparison = config.get("comparative_validation", {})
+    profile_id = comparison.get("profile_id")
+    if profile_id:
+        if not re.fullmatch(r"[\w.-]+", profile_id):
+            raise ValueError("Invalid comparison profile ID")
+        profile = json.loads(
+            native_request(
+                os.environ.get("AGENT_SERVER_URL", ""),
+                "/api/profiles/" + profile_id,
+                expose_secrets=True,
+            )
+        )["config"]
+        if not profile.get("api_key"):
+            raise ValueError("Comparison profile has no model credential")
+        os.environ["COMPARISON_API_KEY"] = profile["api_key"]
+        comparison.update(
+            model=profile["model"],
+            base_url=profile["base_url"],
+            effort=profile.get("reasoning_effort") or "low",
+        )
 
 
 def existing_prs(repository, base_branch="main"):
@@ -140,10 +160,14 @@ def source_config(config, snapshot, output):
         "automation_ids": sorted(identifiers),
         "files": paths,
         "checks": [],
+        "require_improvement": config.get("require_improvement", True),
     }
     if len(identifiers) == 1:
-        comparison = config.get("comparative_validation", {}).get(
-            next(iter(identifiers))
+        configured = config.get("comparative_validation", {})
+        comparison = (
+            configured
+            if configured.get("command")
+            else configured.get(next(iter(identifiers)))
         )
         if comparison:
             value["comparative_validation"] = comparison
@@ -360,10 +384,51 @@ def investigate_topic(
             args.publication_automation_id, args.publication_week = automation_id, week
             args.publication_topic = topic
             publication = propose_fix(args, report, snapshot)
+            feedback = comparison_feedback(args.output)
+            if (
+                not publication.get("pr_url")
+                and feedback
+                and config.get("revise_failed_repair", True)
+            ):
+                state["topic_weeks"].pop(key, None)
+                save_state(state_path, state)
+                previous_patch = proposal["patch"]
+                snapshot = snapshot | {"repair_feedback": feedback}
+                revision_input = output / "snapshot-revision.json"
+                write_json(revision_input, snapshot)
+                args.input, args.output = revision_input, output / "revision"
+                args.publish_draft = False
+                analysis.run(args)
+                revised = read_json(args.output / "report.json")
+                if (
+                    not revised.get("errors")
+                    and revised.get("proposals")
+                    and revised["proposals"][0]["patch"]
+                    and revised["proposals"][0]["patch"] != previous_patch
+                ):
+                    report, proposal = revised, revised["proposals"][0]
+                    args.publish_draft = True
+                    state["topic_weeks"][key] = {
+                        "topic": topic,
+                        "status": "reserved",
+                        "report": str(args.output / "report.json"),
+                    }
+                    save_state(state_path, state)
+                    publication = propose_fix(args, report, snapshot)
+                    result["repair_revision"] = {
+                        "feedback": feedback,
+                        "report": str(args.output / "report.json"),
+                    }
+                    result["analysis_report"] = str(args.output / "report.json")
             result["publication"] = publication
             result["behavioral_evaluation"] = publication.get("comparison", {}).get(
                 "status", "not_performed"
             )
+            if not publication.get("pr_url"):
+                result["status"] = "deferred_validation"
+                state["topic_weeks"].pop(key, None)
+                save_state(state_path, state)
+                return result
             for finding_id in proposal["finding_ids"]:
                 updates[by_id[finding_id]["signal_event_id"]] = {
                     "status": "draft_pr",
@@ -386,6 +451,35 @@ def investigate_topic(
         for event_id in updates:
             state["backlog"].pop(event_id, None)
     return result
+
+
+def comparison_feedback(output):
+    path = output / "comparison/runs/comparison.json"
+    if not path.exists():
+        return None
+    report = read_json(path)
+    if any(
+        row["score"]["error"] or not row["score"]["finished"] for row in report["runs"]
+    ):
+        return None
+    failed = [
+        row
+        for row in report["runs"]
+        if row["variant"] == "candidate" and not row["score"]["passed"]
+    ]
+    if not failed:
+        return None
+    return {
+        "previous_attempt": str(path),
+        "failed_cases": [
+            {
+                "case_id": row["case_id"],
+                "violations": row["score"]["violations"],
+                "final_priority": row["score"].get("final_priority"),
+            }
+            for row in failed
+        ],
+    }
 
 
 def investigate(
@@ -499,7 +593,7 @@ def investigate(
                         context,
                         budget,
                     )
-                    if not dry_run:
+                    if not dry_run and outcome["status"] != "deferred_validation":
                         state["topic_weeks"][key] = {
                             "status": "completed",
                             "topic": topic,
@@ -513,7 +607,14 @@ def investigate(
                     if isinstance(outcome.get("publication"), dict) and outcome[
                         "publication"
                     ].get("pr_url"):
-                        report = read_json(directory / "analysis/report.json")
+                        report = read_json(
+                            Path(
+                                outcome.get(
+                                    "analysis_report",
+                                    directory / "analysis/report.json",
+                                )
+                            )
+                        )
                         proposal = report["proposals"][0]
                         scoped_prs.append(
                             {
@@ -588,6 +689,11 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget=None):
     )
     state.setdefault("topic_weeks", {})
     github_auth(config)
+    validation_reports = []
+    if not dry_run and config.get("validate_existing_repairs", False):
+        from validate_repairs import validate
+
+        validation_reports = validate(config, state_dir / "repair-validation")
     prs = existing_prs(config["repository"], config.get("base_branch", "main"))
     recover_topic_slots(state, prs, week)
     args = arguments(config, output / "collection", limit, seed)
@@ -602,6 +708,7 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget=None):
         "collection_errors": inventory["collection_errors"],
         "automations": [],
         "publication": "disabled" if dry_run else "per_topic",
+        "existing_repair_validation": validation_reports,
     }
     records = update_backlog(state, inventory, prs)
     if not dry_run:
@@ -673,6 +780,12 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget=None):
         for item in summary["automations"]
     ):
         summary["status"] = "budget_exhausted"
+    if summary["status"] == "completed" and any(
+        topic["status"] == "deferred_validation"
+        for automation in summary["automations"]
+        for topic in automation.get("topics", [])
+    ):
+        summary["status"] = "validation_incomplete"
     summary["budget"] = budget.snapshot() if budget else None
     summary["pending_events"] = len(state["backlog"])
     write_json(output / "weekly-report.json", redact(summary))

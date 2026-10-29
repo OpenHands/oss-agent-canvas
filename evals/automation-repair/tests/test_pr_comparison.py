@@ -55,7 +55,7 @@ def test_topic_coverage_is_explicit_and_only_targeted_comparison_can_show_improv
 
 def test_unsupported_automation_never_executes_reviewer_adapter(tmp_path, monkeypatch):
     value = request()
-    value["changed_files"] = ["plugins/issue-triage/scripts/main.py"]
+    value["changed_files"] = ["plugins/slack-monitor/scripts/main.py"]
     path = tmp_path / "request.json"
     path.write_text(json.dumps(value))
     monkeypatch.setattr(
@@ -75,3 +75,75 @@ def test_topic_needs_known_frozen_regression_and_control_cases(cases, tmp_path):
     value["plan"]["topics"]["wrong-head"]["cases"] = cases
     with pytest.raises((ValueError, KeyError)):
         pr_comparison.settings(value, tmp_path)
+
+
+def test_recorded_native_executions_are_rescored_without_model_calls(
+    tmp_path, monkeypatch
+):
+    from reviewer_world import World, REPO, DISCLOSURE, SHA
+    from scenarios import scenario
+    from compare import write
+
+    value = request()
+    value["topic"]["key"] = "ground-review-claims"
+    value["plan"].update(automatic_contracts=True, llm_timeout=120)
+    value["plan"].pop("topics")
+    recorded = tmp_path / "original"
+    cases = [
+        scenario(name)
+        for name in ("review_body_contradiction", "review_body_absence_control")
+    ]
+    write(
+        recorded / "manifest.json",
+        {
+            "baseline": value["baseline"],
+            "candidate": value["candidate"],
+            "model": "test-model",
+            "llm_base_url": value["plan"]["base_url"],
+            "effort": "low",
+            "repeats": 1,
+            "max_steps": 30,
+            "llm_timeout": 120,
+            "cases": cases,
+        },
+    )
+    for case in cases:
+        for variant in ("baseline", "candidate"):
+            world = World(case)
+            text = "Multiplication breaks addition."
+            if case["kind"] == "regression" and variant == "baseline":
+                text += (
+                    " The PR's How to Test does not mention test_acp_conformance.py."
+                )
+            world.request(
+                "POST",
+                f"/repos/{REPO}/pulls/7/reviews",
+                {
+                    "body": DISCLOSURE + "\n\n" + text + "\n\n🔄 CHANGES REQUESTED",
+                    "event": "COMMENT",
+                    "commit_id": SHA,
+                },
+            )
+            directory = recorded / (case["id"] + "-1-" + variant)
+            write(directory / "world.json", world.snapshot())
+            write(
+                directory / "result.json",
+                {
+                    "case_id": case["id"],
+                    "repeat": 1,
+                    "variant": variant,
+                    "score": {"error": None, "finished": True},
+                    "final_response": "GITHUB_REVIEW_POSTED",
+                    "measurements": {"seconds": 1},
+                },
+            )
+    value["plan"]["recorded_runs"] = str(recorded)
+    path = tmp_path / "request.json"
+    write(path, value)
+    monkeypatch.setattr(
+        pr_comparison.compare, "main", lambda *args: pytest.fail("No new inference")
+    )
+    result = pr_comparison.run(path, tmp_path / "comparison")
+    assert result["status"] == "improvement_on_development_cases"
+    assert result["reused_executions"]
+    assert "no agent run was repeated" in result["markdown"]
