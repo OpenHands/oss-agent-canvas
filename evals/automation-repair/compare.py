@@ -532,8 +532,15 @@ def compare(rows, cases, expected_repeats=1):
     )
     controls = any(case["kind"] == "control" for case in cases)
     control_ids = {case["id"] for case in cases if case["kind"] == "control"}
+    baseline_controls_passed = controls and all(
+        row["score"]["passed"]
+        for row in rows
+        if row["case_id"] in control_ids and row["variant"] == "baseline"
+    )
     controls_passed = controls and all(
-        row["score"]["passed"] for row in rows if row["case_id"] in control_ids
+        row["score"]["passed"]
+        for row in rows
+        if row["case_id"] in control_ids and row["variant"] == "candidate"
     )
     status = (
         "inconclusive"
@@ -548,6 +555,7 @@ def compare(rows, cases, expected_repeats=1):
         "status": status,
         "complete": complete,
         "controls_passed": controls_passed,
+        "baseline_controls_passed": baseline_controls_passed,
         "cases": results,
         "runs": rows,
         "behavioral_benefit_proven": False,

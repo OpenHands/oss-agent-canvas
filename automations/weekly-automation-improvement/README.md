@@ -47,8 +47,9 @@ human review.
    Select a trusted task contract from the affected source and failure mechanism;
    freeze native inputs, source revisions, model settings and case definitions.
 8. Run both versions through the actual SDK against identical isolated GitHub
-   worlds. Require a reproduced **target violation**, passing controls on both
-   versions, all candidate cases passing and no required-input/runtime gaps.
+   worlds. Require a reproduced **target violation**, passing candidate controls,
+   all candidate cases passing and no required-input/runtime gaps on either version.
+   Report existing baseline control failures without treating them as fixture errors.
    Unrelated failures cannot establish the intended improvement. Missing contracts
    or inconclusive results produce no branch push or new PR.
 9. A completed behavioral failure may receive one Sol revision with compact case

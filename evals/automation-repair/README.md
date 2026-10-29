@@ -31,13 +31,16 @@ checkpoints derived from observed failures. They do not reproduce the entire
 historical production environment or establish a statistical failure-rate reduction.
 
 Improvement requires a baseline execution with the **specific target violation**,
-a paired passing candidate, passing controls on both versions, complete execution
+a paired passing candidate, passing candidate controls, complete execution
 and all candidate checks passing. An unrelated formatting failure does not prove a
 factual-accuracy fix. Runtime/provider failures, absent required inputs and
 unreproduced failures remain inconclusive. The narrow priority contract requires
 observation of the complete current issue and checks the verified final labels;
 unsupported optional research reads are retained as warnings. Unsupported writes
 remain failures. Reviewer contracts require complete read coverage.
+Completed baseline behavioral failures remain visible; they do not invalidate an
+otherwise sound execution. Candidate control failures or missing inputs and
+execution errors on either version still block acceptance.
 
 Reports compare expected behavior and observed outcomes side by side, including
 labels, violations, retained code findings, timing, tokens and estimated cost.
@@ -145,6 +148,10 @@ zero agent reexecutions. It cannot invent missing API responses or turn provider
 failures into passes. The trusted runner can also adopt `recorded_runs` after
 checking pinned source/model/endpoint/timeouts, cases and input values, then rescore
 all executions. This supports publication recovery without repeated inference.
+For recovery, a trusted source configuration can set `prepared_candidate_revision`
+to the retained candidate commit and `recorded_runs` to its completed comparison.
+The publisher checks its parent and complete diff against the frozen proposal,
+then reuses that exact commit; a changed patch or base rejects recovery.
 
 Recorded earlier results remain retained:
 [evidence-gated publication and live verification status](VALIDATION_END_TO_END.md),

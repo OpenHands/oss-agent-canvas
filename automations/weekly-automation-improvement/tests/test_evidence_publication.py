@@ -15,11 +15,17 @@ def source(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "repair_value,expected,configured",
-    [(4, True, True), (5, False, True), (4, False, False)],
+    "repair_value,expected,configured,prepared_value",
+    [
+        (4, True, True, None),
+        (5, False, True, None),
+        (4, False, False, None),
+        (4, True, True, 4),
+        (4, False, True, 5),
+    ],
 )
 def test_real_comparison_gates_publication_and_attaches_recorded_evidence(
-    source, tmp_path, monkeypatch, repair_value, expected, configured
+    source, tmp_path, monkeypatch, repair_value, expected, configured, prepared_value
 ):
     checkout, path, config = source
     runner = tmp_path / "compare.py"
@@ -39,6 +45,13 @@ def test_real_comparison_gates_publication_and_attaches_recorded_evidence(
     if not configured:
         config.pop("require_improvement")
         config.pop("comparative_validation")
+    if prepared_value is not None:
+        (checkout / "value.py").write_text(f"VALUE = {prepared_value}\n")
+        command(["git", "commit", "-am", "Prepared repair"], checkout)
+        config["prepared_candidate_revision"] = command(
+            ["git", "rev-parse", "HEAD"], checkout
+        )
+        command(["git", "reset", "--hard", config["revision"]], checkout)
     path.write_text(json.dumps(config))
     command(
         ["git", "remote", "add", "origin", "https://github.com/Example/automation.git"],
@@ -83,7 +96,15 @@ def test_real_comparison_gates_publication_and_attaches_recorded_evidence(
     monkeypatch.setattr(patches, "command", github)
     report = fix_report(PATCH.replace("+VALUE = 4", f"+VALUE = {repair_value}"))
     report["findings"][0]["trace_urls"] = ["https://example.test/trace"]
+    if prepared_value is not None and prepared_value != repair_value:
+        with pytest.raises(ValueError, match="Prepared candidate differs"):
+            patches.propose_fix(args, report, {"source": load_source(path)})
+        assert not pushed and not created
+        assert not (args.output / "candidate").exists()
+        return
     result = patches.propose_fix(args, report, {"source": load_source(path)})
+    if prepared_value is not None:
+        assert result["candidate_revision"] == config["prepared_candidate_revision"]
     assert bool(created) == bool(pushed) == expected
     if configured:
         assert (args.output / "executions.txt").read_text() == "one comparison"

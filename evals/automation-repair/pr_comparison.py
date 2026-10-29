@@ -105,8 +105,12 @@ def run(request_path, output):
                 args.case_file = output / "captured-inputs.json"
                 compare.write(args.case_file, inputs)
         recorded = request["plan"].get("recorded_runs")
+        previous_status = None
         if recorded:
             original = Path(recorded).resolve()
+            previous = original / "comparison.json"
+            if previous.exists():
+                previous_status = json.loads(previous.read_text())["status"]
             manifest = json.loads((original / "manifest.json").read_text())
             for name in (
                 "baseline",
@@ -145,6 +149,7 @@ def run(request_path, output):
             target_topic_exercised=targeted,
             contract=contract,
             reused_executions=bool(recorded),
+            previous_comparison_status=previous_status,
             manifest_sha256=digest(args.output / "manifest.json"),
             comparison_sha256=digest(args.output / "comparison.json"),
         )
@@ -159,6 +164,13 @@ def run(request_path, output):
             )
             + f"Baseline: `{request['baseline']}`. Repaired: `{request['candidate']}`.\n\n"
             + summarize(args.output)
+            + (
+                f"\nRescoring changed the verdict from **{previous_status}** to **{receipt['status']}**. Raw executions were unchanged; the current acceptance rule is stated above.\n"
+                if previous_status
+                in ("inconclusive", "regressed", "improvement_on_development_cases")
+                and previous_status != receipt["status"]
+                else ""
+            )
             + (
                 "\nThis candidate was revised using earlier failed development-case feedback. These are development results, not independent held-out validation.\n"
                 if request.get("development_feedback_used")

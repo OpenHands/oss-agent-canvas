@@ -157,17 +157,23 @@ def test_final_message_uses_native_sdk_message_and_finish_events():
     )
 
 
-def test_failed_baseline_controls_cannot_establish_improvement():
+@pytest.mark.parametrize("baseline_error", [None, "Missing required input"])
+def test_baseline_control_failures_are_visible_and_execution_gaps_still_block(
+    baseline_error,
+):
     cases = [scenario("healthy"), scenario("head_moved")]
     rows = [
-        row("healthy", "baseline", False),
+        row("healthy", "baseline", False, error=baseline_error),
         row("healthy", "candidate", True),
         row("head_moved", "baseline", False),
         row("head_moved", "candidate", True),
     ]
     result = compare(rows, cases)
-    assert not result["controls_passed"]
-    assert result["status"] == "inconclusive"
+    assert result["controls_passed"]
+    assert not result["baseline_controls_passed"]
+    assert result["status"] == (
+        "inconclusive" if baseline_error else "improvement_on_development_cases"
+    )
 
 
 def test_unrelated_baseline_failure_is_not_evidence_of_the_target_fix():

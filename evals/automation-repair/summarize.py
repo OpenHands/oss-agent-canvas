@@ -52,6 +52,7 @@ def summarize(root):
         [
             "",
             "A strict pass requires the task-specific outcome and preservation checks, with a completed, error-free execution.",
+            "Candidate controls must pass. Completed baseline behavioral failures remain visible; required-input and execution errors on either version block acceptance.",
             "",
             "| Recorded violation | Baseline runs | Candidate runs |",
             "|---|---:|---:|",

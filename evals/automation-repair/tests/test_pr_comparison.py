@@ -140,6 +140,7 @@ def test_recorded_native_executions_are_rescored_without_model_calls(
                 },
             )
     value["plan"]["recorded_runs"] = str(recorded)
+    write(recorded / "comparison.json", {"status": "inconclusive"})
     if changed_budget:
         value["plan"]["max_run_seconds"] = 420
     path = tmp_path / "request.json"
@@ -155,3 +156,4 @@ def test_recorded_native_executions_are_rescored_without_model_calls(
     assert result["status"] == "improvement_on_development_cases"
     assert result["reused_executions"]
     assert "no agent run was repeated" in result["markdown"]
+    assert "Rescoring changed the verdict" in result["markdown"]

@@ -382,7 +382,23 @@ def _propose_fix(args, report, snapshot):
             "Configured checkout origin differs from the publication repository"
         )
     command(["git", "add", "--", *changed], candidate)
-    command(["git", "commit", "-m", proposal["title"][:120]], candidate)
+    prepared = config.get("prepared_candidate_revision")
+    if prepared:
+        if (
+            not re.fullmatch(r"[0-9a-f]{40}", prepared)
+            or command(["git", "rev-list", "--parents", "-n", "1", prepared], candidate)
+            != prepared + " " + source["revision"]
+            or command(
+                ["git", "diff", source["revision"], prepared, "--binary"],
+                candidate,
+                strip=False,
+            )
+            != expected_diff
+        ):
+            raise ValueError("Prepared candidate differs from the frozen patch or base")
+        command(["git", "reset", "--hard", prepared], candidate)
+    else:
+        command(["git", "commit", "-m", proposal["title"][:120]], candidate)
     if (
         command(
             ["git", "diff", source["revision"], "HEAD", "--binary"],
