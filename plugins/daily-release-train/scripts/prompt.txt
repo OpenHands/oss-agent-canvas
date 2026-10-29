@@ -25,6 +25,28 @@ it runs in `dry_run` mode (the config default).
   never merge a PR with failing or pending required checks, a merge conflict,
   or an unresolved `needs-*-release` dependency (see Blockers).
 
+## Efficiency contract (hard requirements — a run must finish in ~25 minutes)
+
+The automation service caps a run at 30 minutes. Work API-first and stop
+gathering once you can classify each stage; an incomplete deep-dive that
+never posts the summary is a failed run.
+
+- Do **not** read workflow files, clone-browse, or investigate individual
+  unrelated PRs/issues. You already have the release mechanics in this
+  prompt. The only file content you may need is
+  `config/defaults.json` in OpenHands/OpenHands (fetch it via the GitHub
+  API, not by browsing the clone).
+- Use `gh` / GitHub API calls with `--json`/`--jq` so output stays small.
+  One batched shell command per repo per stage is the norm; keep each
+  command's output under ~40 lines.
+- Budget: at most ~5 minutes of investigation per stage in `dry_run`
+  (no waiting on CI in dry_run — just report current check states).
+  In `live`, waiting on CI/publishers is expected, but poll with sleeps
+  inside a single shell command rather than many agent turns.
+- Post the Slack summary even if a stage is ambiguous — ambiguity is a
+  blocker to report, not a reason to keep digging. Post it by minute ~20
+  at the latest, then finish.
+
 ## Credentials (registered secrets on this VM — use these names)
 
 - `GITHUB_TOKEN` — GitHub identity `openhands-bot`. Use it for all GitHub API
