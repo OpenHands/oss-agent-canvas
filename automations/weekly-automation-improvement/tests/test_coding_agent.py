@@ -130,14 +130,18 @@ def test_sdk_initialization_failure_cleans_worktree(source, tmp_path, monkeypatc
     assert "closed" not in captured
 
 
+@pytest.mark.parametrize(
+    "cause", ["workflow", "configuration", "infrastructure", "provider", "unknown"]
+)
 def test_identical_new_tests_execute_production_code_on_both_revisions(
-    source, tmp_path
+    source, tmp_path, cause
 ):
     _, path, config = source
     config["editable_roots"] = ["tests/"]
     path.write_text(json.dumps(config))
     extra = 'diff --git a/tests/test_value.py b/tests/test_value.py\nnew file mode 100644\n--- /dev/null\n+++ b/tests/test_value.py\n@@ -0,0 +1,3 @@\n+import runpy\n+value = runpy.run_path("value.py")["VALUE"]\n+assert value == 4\n'
     report = fix_report(PATCH + extra)
+    report["findings"][0]["cause"] = cause
     report["proposals"][0]["checks"] = [
         {
             "name": "target",

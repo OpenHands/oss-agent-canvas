@@ -250,8 +250,6 @@ def _propose_fix(args, report, snapshot):
         for finding in report["findings"]
         if finding["id"] in proposal["finding_ids"]
     ]
-    if any(finding["cause"] != "workflow" for finding in findings):
-        raise ValueError("Only workflow findings may produce source-change PRs")
     if any(
         finding["automation_id"] not in source["automation_ids"] for finding in findings
     ):

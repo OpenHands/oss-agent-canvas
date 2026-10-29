@@ -612,7 +612,14 @@ def test_private_report_preserves_exact_agent_patch(source, tmp_path, monkeypatc
     patch = PATCH + "\n" + "a" * 64
     proposal = fix_report(patch)["proposals"][0].copy()
     proposal.pop("patch")
-    proposal["checks"] = []
+    checks = [
+        {
+            "name": "selector",
+            "argv": ["python", "-k", "arbitrary_long_validation_selector_" * 3],
+            "baseline": "fail",
+        }
+    ]
+    proposal["checks"] = checks
     monkeypatch.setattr(app, "call_model", lambda *a: ({"findings": [candidate()]}, {}))
     monkeypatch.setattr(
         app,
@@ -622,6 +629,7 @@ def test_private_report_preserves_exact_agent_patch(source, tmp_path, monkeypatc
     app.run(args)
     report = json.loads((args.output / "report.json").read_text())
     assert report["proposals"][0]["patch"] == patch
+    assert report["proposals"][0]["checks"] == checks
     assert (args.output / "report.json").stat().st_mode & 0o077 == 0
 
 
@@ -662,3 +670,15 @@ def test_evidence_checksums_survive_without_exposing_hex_credentials(monkeypatch
     assert value["api_key"] == "[REDACTED]"
     assert value["apiKey"] == "[REDACTED]"
     assert value["text"] == f"{checksum} [REDACTED]"
+
+
+def test_long_test_selectors_survive_without_allowing_worker_credentials(monkeypatch):
+    from common import redact
+
+    selector = "test_transient_then_success_reuses_conversation_without_new_prompt"
+    assert redact(["python", "-k", selector])[-1] == selector
+    assert redact("def " + selector + "(self):") == "def " + selector + "(self):"
+    monkeypatch.setenv("PRIVATE_API_KEY", selector)
+    assert redact(selector) == "[REDACTED]"
+    assert redact({"api_key": selector})["api_key"] == "[REDACTED]"
+    assert redact("xY" * 32) == "[REDACTED]"

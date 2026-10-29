@@ -347,3 +347,57 @@ def test_topic_rejections_are_typed_and_preserve_separate_issue_dispositions(
         report = json.loads((args.output / "report.json").read_text())
         assert not report["errors"]
         assert report["rejected_findings"][0]["disposition"] == disposition
+
+
+@pytest.mark.parametrize("content", ["", "New execution content"])
+def test_late_empty_conversation_wrapper_does_not_invalidate_unchanged_execution(
+    content,
+):
+    value = frozen()
+    case = value["samples"][0]
+    case["spans"].append(
+        case["spans"][0]
+        | {
+            "ref": "s2",
+            "span_id": str(uuid.UUID(int=91)),
+            "name": "conversation",
+            "span_type": "DEFAULT",
+            "input": "",
+            "output": content,
+            "end_time": "2026-10-22T01:00:00Z",
+        }
+    )
+    if content:
+        with pytest.raises(ValueError, match="Trace changed"):
+            findings(value, case)
+    else:
+        result, measurement = findings(value, case)
+        assert result["findings"] and measurement["late_lifecycle_span_refs"] == ["s2"]
+
+
+def test_partial_preflight_never_starts_expensive_coding(tmp_path, monkeypatch):
+    value = frozen()
+    other = copy.deepcopy(value["samples"][0])
+    other.update(
+        case_id="c2",
+        conversation_id=str(uuid.UUID(int=92)),
+        collection_error="Unavailable original trace",
+    )
+    value["samples"].append(other)
+    path = tmp_path / "snapshot.json"
+    path.write_text(json.dumps(value))
+    monkeypatch.setattr(
+        app,
+        "coding_coordinate",
+        lambda *a: pytest.fail("Do not code a repair that cannot be published"),
+    )
+    monkeypatch.setattr(
+        app,
+        "call_model",
+        lambda *a: pytest.fail("Do not spend inference on failed preflight"),
+    )
+    with pytest.raises(ValueError, match="Partial analysis"):
+        app.run(arguments(tmp_path / "analysis", input=path))
+    report = json.loads((tmp_path / "analysis/report.json").read_text())
+    assert report["findings"] and report["errors"][0]["case_id"] == "c2"
+    assert not report["proposals"]

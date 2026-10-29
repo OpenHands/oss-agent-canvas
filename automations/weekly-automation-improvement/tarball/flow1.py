@@ -109,6 +109,7 @@ def findings(snapshot, sample):
         raise ValueError(
             "Flow-1 run has no recorded model usage; skipped analysis is not clean"
         )
+    late_lifecycle = []
     for span in sample["spans"]:
         if (
             span["trace_id"] in expected
@@ -116,6 +117,14 @@ def findings(snapshot, sample):
             and timestamp(span["end_time"])
             > timestamp(latest[span["trace_id"]]["updated_at"])
         ):
+            if (
+                span["name"] == "conversation"
+                and span["span_type"] == "DEFAULT"
+                and not span.get("input")
+                and not span.get("output")
+            ):
+                late_lifecycle.append(span["ref"])
+                continue
             raise ValueError(
                 "Trace changed after Flow-1 analysis; refresh its Signal run"
             )
@@ -191,6 +200,7 @@ def findings(snapshot, sample):
         "llm_profile_id": definition["llmProfileId"],
         "runs": list(latest.values()),
         "event_ids": sorted(event_ids),
+        "late_lifecycle_span_refs": late_lifecycle,
         "reported_cost_usd": None,
         "estimated_cost_usd": estimated_cost(runs, snapshot.get("flow1_pricing")),
         "pricing": snapshot.get("flow1_pricing"),

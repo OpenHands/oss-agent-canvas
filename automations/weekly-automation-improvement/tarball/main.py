@@ -373,7 +373,7 @@ def run(args):
         except (ValueError, OSError, KeyError, TypeError, StopIteration) as error:
             errors.append({"case_id": sample["case_id"], "error": str(error)})
     proposals, rejections = [], []
-    if findings:
+    if findings and not errors and not rejected:
         context = {
             "findings": findings,
             "cases": [
@@ -544,6 +544,7 @@ def run(args):
         report["proposals"], clean["proposals"], strict=True
     ):
         sanitized["patch"] = original["patch"]
+        sanitized["checks"] = original["checks"]
     clean["snapshot_sha256"] = report["snapshot_sha256"]
     clean["selection"]["population_sha256"] = snapshot["selection"]["population_sha256"]
     write_json(args.output / "report.json", clean)

@@ -21,23 +21,37 @@ Regression coverage includes new files and renames, retryable preparation
 failures, uncertain-write recovery, exhausted budgets, interrupted accounting,
 process-group timeout cleanup, and preservation of existing evidence.
 
-The fresh unsteered weekly VM run started at `2026-10-29T22:32:05Z`, using
-staged worker/evaluator capsule `weekly-unattended-dc4b328b74c2` and normal
-`weekly.run` configuration/state. It selected the provider-outage lead and opened
-[issue #67](https://github.com/OpenHands/oss-agent-canvas/issues/67), without an
-injected diagnosis or patch. Its coding/validation attempt is still in progress;
-no new repair PR or unattended success is claimed here.
+The first unsteered weekly VM run started at `2026-10-29T22:32:05Z`, using
+capsule `weekly-unattended-dc4b328b74c2` and normal weekly configuration/state. It
+selected the provider-outage lead and opened [issue #67](https://github.com/OpenHands/oss-agent-canvas/issues/67)
+without an injected diagnosis or patch. The native coding attempt finished in
+3025.6 seconds at $5.6447 SDK-estimated cost. It produced a candidate but no PR:
+analysis treated late-closing empty parent spans as stale execution, and detected
+that only after coding. The run was stopped while its second topic was starting.
+
+The live run also exposed redaction of long test selectors and a hard category
+veto on provider findings. These are corrected: private operational check arrays
+are preserved exactly, test selectors remain readable in redacted artifacts,
+known empty conversation-wrapper timing updates are recorded separately from
+real execution changes, and failed preflight prevents expensive coding. Cause
+labels remain unverified leads; source scope and executed evidence govern repair
+acceptance.
+
+The unchanged candidate was revalidated with actual SDK 1.56.0 and corrected
+runtime context: two regression commands failed before and passed after; four
+control commands passed on both. The independent review rejected the candidate's
+blocking 1200-second waits against a 1200-second outer automation budget and its
+sequential-dispatch implications. The patch, original metadata, runtime settings,
+preflight and paired results are indexed in issue #67 for a subsequent attempt.
+No new accepted repair or successful unattended publication is claimed.
 
 A separate live existing-PR check on #66 preserved its complete three-file
 manifest, including the added helper and test, and reached the trusted evaluator.
-That adapter explicitly declined unsupported historical execution, recorded zero
-new inference cost, and left the existing PR evidence unchanged.
+That adapter declined unsupported historical execution, recorded zero new
+inference cost, and left existing PR evidence unchanged.
 
-Inspection of the in-progress retry candidate identified a missing operational
-constraint: the automation's 1200-second timeout was absent from the coding brief.
-Source discovery now retains deployed timeout/trigger settings for the coder and
-reviewer, and the coding brief includes its own deadline/shared budget. These
-changes apply to future attempts; the running capsule remains unchanged.
+Source discovery now retains deployed timeout/trigger settings for both coder
+and reviewer, and the coding brief includes its own deadline/shared budget.
 
 ## Qualified reporting repair: PR #66
 

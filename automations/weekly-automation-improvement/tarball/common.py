@@ -10,7 +10,7 @@ import urllib.parse
 import urllib.request
 
 SECRET = re.compile(
-    r"(?P<protocol_marker><!-- triage-source:[a-f0-9]{64} -->)|\bsk-[\w-]{8,}|gh[pousr]_[\w]{15,}|github_pat_[\w]{15,}|xox[baprs]-[\w-]+|Bearer\s+\S+|(?<![\w/.-])[A-Za-z0-9_-]{48,}(?![\w/.-])"
+    r"(?P<protocol_marker><!-- triage-source:[a-f0-9]{64} -->)|\bsk-[\w-]{8,}|gh[pousr]_[\w]{15,}|github_pat_[\w]{15,}|xox[baprs]-[\w-]+|Bearer\s+\S+|(?P<opaque>(?<![\w/.-])[A-Za-z0-9_-]{48,}(?![\w/.-]))"
 )
 
 ASSIGNMENT = re.compile(
@@ -45,6 +45,8 @@ def redact(value):
             lambda match: match[0]
             if match.lastgroup == "protocol_marker"
             or re.fullmatch(r"[a-f0-9]{64}", match[0])
+            or match.lastgroup == "opaque"
+            and re.fullmatch(r"test_[a-z0-9_]+", match[0])
             else "[REDACTED]",
             value,
         )
