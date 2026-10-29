@@ -74,7 +74,9 @@ def install_sdk(monkeypatch, execute):
 def test_native_agent_captures_actual_large_multifile_diff_and_budget(
     source, tmp_path, monkeypatch
 ):
-    checkout, path, _ = source
+    checkout, path, config = source
+    config["runtime"] = {"automation": {"timeout": 1200, "trigger": {"type": "event"}}}
+    path.write_text(json.dumps(config))
     output = tmp_path / "repair"
     output.mkdir()
 
@@ -99,6 +101,8 @@ def test_native_agent_captures_actual_large_multifile_diff_and_budget(
     assert captured["llm"]["model"] == "openai/gpt-6.1-sol"
     assert captured["instance"].max_budget_per_run == 8
     assert measurement["tools"] == ["terminal", "file_editor", "browser", "task"]
+    brief = json.loads((output / "coding-agent/context.json").read_text())
+    assert brief["snapshot"]["source"]["runtime"] == config["runtime"]
     assert args.budget.cost == 0.12 and captured["closed"]
     assert (checkout / "value.py").read_text() == "VALUE = 3\n"
     assert not (output / "coding-worktree").exists()
@@ -328,3 +332,30 @@ def test_brief_removes_duplicate_traces_without_losing_originals(
     assert json.loads(Path(brief["snapshot_path"]).read_text()) == original
     assert json.loads(Path(brief["inventory_path"]).read_text()) == {}
     assert "targeted JSON extraction" in captured["prompt"]
+
+
+def test_independent_review_receives_operational_constraints(tmp_path, monkeypatch):
+    runtime = {"automation": {"timeout": 1200, "trigger": {"type": "event"}}}
+    captured = []
+
+    def review(args, model, prompt, context, *rest):
+        captured.append((prompt, context))
+        return {
+            "supported": False,
+            "public_safe": True,
+            "reason": "Missing timeout margin",
+        }, {}
+
+    monkeypatch.setattr(patches, "call_model", review)
+    result = patches.review_checks(
+        arguments(tmp_path, coordinator="sol"),
+        {"patch": ""},
+        [],
+        [],
+        [],
+        [],
+        {"source": {"runtime": runtime}},
+    )
+    assert not result["supported"]
+    assert captured[0][1]["runtime"] == runtime
+    assert "dispatch/concurrency" in captured[0][0]

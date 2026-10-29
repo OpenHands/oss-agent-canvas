@@ -801,6 +801,8 @@ def test_plugin_source_uses_declared_scope_without_tarball(tmp_path, monkeypatch
     }
     metadata = {
         "name": "Reviewer",
+        "timeout": 1200,
+        "trigger": {"type": "event"},
         "plugin_spec": {
             "plugin": plugin,
             "config": {"review_tone": "concise", "api_key": "private"},
@@ -826,6 +828,11 @@ def test_plugin_source_uses_declared_scope_without_tarball(tmp_path, monkeypatch
     sample = {"automation_id": str(uuid.UUID(int=1))}
     result = sources.resolve_source(config, sample, index)
     assert result["files"] == ["plugins/reviewer/scripts/worker.py"]
+    assert result["runtime"] == {
+        "timeout": 1200,
+        "keep_alive": None,
+        "trigger": {"type": "event"},
+    }
     assert "historical executed revision not verified" in result["provenance"]
     assert result["configuration"] == {
         "review_tone": "concise",

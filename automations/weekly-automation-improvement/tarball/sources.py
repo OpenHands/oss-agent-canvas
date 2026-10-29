@@ -101,6 +101,7 @@ def resolve_source(config, sample, index):
     identifier = str(uuid.UUID(sample["automation_id"]))
     base = config["automation_api_url"]
     metadata = json.loads(native_request(base, "/v1/" + identifier))
+    runtime = {key: metadata.get(key) for key in ("timeout", "keep_alive", "trigger")}
     if metadata.get("plugin_spec"):
         plugin = metadata["plugin_spec"]["plugin"]
         directory = plugin.get("repo_path", "")
@@ -122,6 +123,7 @@ def resolve_source(config, sample, index):
             "plugin": plugin,
             "configuration": redact(metadata["plugin_spec"].get("config", {})),
             "entrypoint": metadata.get("entrypoint"),
+            "runtime": runtime,
         }
     raw = native_request(base, "/v1/" + identifier + "/tarball")
     bundle = {}
@@ -173,4 +175,5 @@ def resolve_source(config, sample, index):
         "files": files,
         "matched_deployed_files": matched,
         "automation_name": metadata["name"],
+        "runtime": runtime,
     }

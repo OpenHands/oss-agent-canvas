@@ -21,13 +21,23 @@ Regression coverage includes new files and renames, retryable preparation
 failures, uncertain-write recovery, exhausted budgets, interrupted accounting,
 process-group timeout cleanup, and preservation of existing evidence.
 
-A fresh unsteered weekly VM execution is **pending**. Its launch attempt was
-blocked by gcloud reauthentication before any worker started. The private driver
-is `experiments/native-improver-20261029/run-weekly-unattended.py`: it stages the
-worker and trusted evaluator together, invokes `weekly.run` using the existing
-configuration/state, and supplies no finding diagnosis, repair patch or acceptance
-criteria. This is not a completed live validation or a replacement for the earlier
-PR #66 experiment described below.
+The fresh unsteered weekly VM run started at `2026-10-29T22:32:05Z`, using
+staged worker/evaluator capsule `weekly-unattended-dc4b328b74c2` and normal
+`weekly.run` configuration/state. It selected the provider-outage lead and opened
+[issue #67](https://github.com/OpenHands/oss-agent-canvas/issues/67), without an
+injected diagnosis or patch. Its coding/validation attempt is still in progress;
+no new repair PR or unattended success is claimed here.
+
+A separate live existing-PR check on #66 preserved its complete three-file
+manifest, including the added helper and test, and reached the trusted evaluator.
+That adapter explicitly declined unsupported historical execution, recorded zero
+new inference cost, and left the existing PR evidence unchanged.
+
+Inspection of the in-progress retry candidate identified a missing operational
+constraint: the automation's 1200-second timeout was absent from the coding brief.
+Source discovery now retains deployed timeout/trigger settings for the coder and
+reviewer, and the coding brief includes its own deadline/shared budget. These
+changes apply to future attempts; the running capsule remains unchanged.
 
 ## Qualified reporting repair: PR #66
 

@@ -88,6 +88,8 @@ def load_source(config_path):
     ):
         raise ValueError("Invalid editable source roots")
     extra = {"editable_roots": roots} if roots else {}
+    if config.get("runtime"):
+        extra["runtime"] = config["runtime"]
     return {
         "repository": repo,
         "revision": revision,
@@ -180,12 +182,14 @@ def review_checks(args, proposal, findings, checks, before, after, snapshot):
         "Reject missing imports/files/dependencies, setup or collection errors, commands merely checking source text, tests implementing their own repaired algorithm, assertions that encode an unjustified new policy, or a fix that does not address the recorded finding. "
         "Check that identical test assets and equivalent commands test actual baseline/candidate code. Tests may mock external effects but must invoke production logic. "
         "A narrow deterministic regression can be valid mechanism evidence without population-wide or historical LLM replay proof. Do not demand unsupported statistical proof. "
+        "Check runtime constraints and caller behavior: a fix must fit the outer automation timeout including overhead and preserve dispatch/concurrency behavior or provide explicit evidence for the tradeoff. Fast fixtures alone cannot establish that a newly blocking scan fits its deadline. "
         "Also verify the proposed public patch/title/hypothesis contains no private original task, customer data, raw trace, credentials or private artifact dumps. Synthetic fixtures and existing public source are allowed. Set public_safe=false if sensitive material would be published. "
         "Explain the conclusion and any missing evidence precisely without repeating private data. Never equate a nonzero exit alone with reproduction.",
         {
             "findings": findings,
             "proposal": proposal,
             "checks": checks,
+            "runtime": snapshot.get("source", {}).get("runtime", {}),
             "baseline": before,
             "candidate": after,
             "baseline_source": {

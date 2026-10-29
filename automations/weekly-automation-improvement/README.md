@@ -243,6 +243,9 @@ worker with access appropriate for the source and evidence being inspected.
 Configure `repair_agent` for effort, iteration and conversation time limits.
 The SDK receives the remaining run budget. The example allows $15 and three
 hours for the whole invocation; these are configurable resource limits.
+The coding brief includes its deadline and shared budget. Source discovery
+preserves the deployed automation's timeout and trigger settings for both the
+coder and evidence reviewer, including checks on blocking calls and scan latency.
 Projected samples retain their 1,000-span/2 MB bounds, and the agent can page
 through the original data. There are no file-count or patch-size restrictions.
 

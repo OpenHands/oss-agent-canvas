@@ -147,6 +147,10 @@ def source_config(config, snapshot, output):
         "checks": [],
         "require_improvement": config.get("require_improvement", True),
         "validation_sample_size": config.get("validation_sample_size", 5),
+        "runtime": {
+            sample["automation_id"]: sample["source_resolution"].get("runtime", {})
+            for sample in samples
+        },
     }
     if len(identifiers) == 1:
         configured = config.get("comparative_validation", {})
