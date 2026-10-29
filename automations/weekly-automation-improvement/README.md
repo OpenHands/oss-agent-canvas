@@ -38,6 +38,39 @@ has its own source snapshot, evidence, patch and publication reservation. Existi
 PRs block duplicates; failed publication releases its reservation. Private receipts
 and candidate bundles support recovery without silently rerolling failed cases.
 
+## Issue as the shared brief
+
+Each selected repair topic gets one issue in the same repository as its repair PR.
+The issue uses fixed sections: **Goal**, **Problem and impact**, **Scope and source**,
+**Evidence**, **Validation**, and **Attempts and decisions**. Existing topic issues
+are reused. Human additions are preserved; a closed issue is not silently reopened.
+
+The public issue contains source/trace links and immutable evidence catalogs. Original
+tasks, approved source, proposals, failed patches, replay prompts, tool events, final
+state and comparison results stay private in
+`state_dir/issue-evidence/<owner>/<repository>/<topic>/<content-hash>.json`.
+Files are secret-redacted, content-checked and owner-only. Catalogs expose references,
+never raw private content. They survive cleanup of temporary repair worktrees.
+
+Sol receives the issue brief and can use `read_issue(section, offset)`,
+`read_issue_comment(comment_id, offset)` and `read_issue_artifact(reference, offset)`.
+These page through the named issue and that topic's private files; they provide no
+arbitrary filesystem access. Existing Laminar evidence tools remain available.
+A revision reads the same issue, including the previous attempt's replay artifacts.
+The PR links back to its issue. Dry runs create only local previews.
+
+The worker uses its existing GitHub credential, Laminar key and local file access.
+Set optional `evidence_location` to an authenticated worker link/SSH instructions so
+standalone agents know where files live. An agent outside the worker needs authorized
+VM access; public GitHub access alone cannot retrieve private evidence. These files
+are stored on the current worker, not a separate artifact service; retain its state
+directory when replacing the VM.
+
+[Example issue #61](https://github.com/OpenHands/oss-agent-canvas/issues/61) is linked
+from [repair #60](https://github.com/OpenHands/oss-agent-canvas/pull/60). A live Sol
+canary followed the issue catalog and read the original private instructions and
+frozen source for $0.0263271. This verifies context access, not repair quality.
+
 ## Configure and run
 
 Copy [weekly.example.json](weekly.example.json) outside git. Configure the project,

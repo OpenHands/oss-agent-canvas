@@ -336,6 +336,10 @@ def inventory(records):
 
 
 def prepare_grouped(configured_source, tmp_path, monkeypatch, records):
+    import topic_issue
+    from test_topic_issue import GitHub
+
+    monkeypatch.setattr(topic_issue, "command", GitHub())
     _, _, source = configured_source
     config = configuration(tmp_path) | {"publish_drafts": True}
     monkeypatch.setenv("LMNR_PROJECT_API_KEY", "test")
@@ -571,6 +575,23 @@ def test_one_repair_revision_keeps_failed_evidence_and_only_consumes_proven_find
             previous = Path(snapshot["repair_feedback"]["previous_attempt"])
             assert previous.exists()
             assert snapshot["repair_feedback"]["previous_patch"] == PATCH
+            central = snapshot["repair_issue"]
+            assert central["url"].startswith(
+                "https://github.com/Example/automation/issues/"
+            )
+            catalog = args.evidence_reader.execute(
+                "read_issue_comment",
+                {"comment_id": central["records"][-1]["id"], "offset": 0},
+            )["content"]
+            reference = next(
+                line.split("`")[1]
+                for line in catalog.splitlines()
+                if "reported_harm-1-candidate/events.json" in line
+            )
+            replay = args.evidence_reader.execute(
+                "read_issue_artifact", {"reference": reference, "offset": 0}
+            )
+            assert "Actual rejected write from the failed attempt" in replay["content"]
             failure = snapshot["repair_feedback"]["failed_cases"][0]
             if semantic_failure:
                 assert failure["assessment"]["reason"] == "Priority ignores real loss"
@@ -594,6 +615,11 @@ def test_one_repair_revision_keeps_failed_evidence_and_only_consumes_proven_find
             }
         path = args.output / "comparison/runs/comparison.json"
         path.parent.mkdir(parents=True)
+        replay = path.parent / "reported_harm-1-candidate"
+        replay.mkdir()
+        (replay / "events.json").write_text(
+            json.dumps([{"result": "Actual rejected write from the failed attempt"}])
+        )
         path.write_text(
             json.dumps(
                 {

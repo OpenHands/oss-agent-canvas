@@ -102,7 +102,16 @@ def test_real_comparison_gates_publication_and_attaches_recorded_evidence(
         assert not pushed and not created
         assert not (args.output / "candidate").exists()
         return
-    result = patches.propose_fix(args, report, {"source": load_source(path)})
+    result = patches.propose_fix(
+        args,
+        report,
+        {
+            "source": load_source(path),
+            "repair_issue": {"url": "https://github.com/Example/automation/issues/10"},
+        },
+    )
+    if bodies:
+        assert "https://github.com/Example/automation/issues/10" in bodies[0]
     if prepared_value is not None:
         assert result["candidate_revision"] == config["prepared_candidate_revision"]
     assert bool(created) == bool(pushed) == expected

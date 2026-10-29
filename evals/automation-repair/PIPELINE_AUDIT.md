@@ -7,8 +7,8 @@ conservative interpretation. Passing harness tests does not establish repair qua
 
 This read-only audit was performed by a separate agent against the consolidated
 implementation and retained executions. It ran no new inference. Three small
-feedback/reporting fixes were implemented afterward; broader recommendations below
-are not implemented or presented as successful experiments.
+feedback/reporting fixes and the issue-based evidence handoff were implemented afterward.
+The stronger proposer and calibration experiment below remain recommendations.
 
 ## Data: a historical incident is not a reproducible current failure
 
@@ -68,12 +68,14 @@ The audit identified three defects now fixed in the existing implementation:
   reproduced**, while qualification remains **inconclusive**. No SDK/model rerun
   was used for this correction.
 
-One handoff gap remains: the repair/revision agent cannot retrieve the frozen replay
-artifacts through its current Laminar-only tools. It receives critique, checks and
-the previous patch, but cannot inspect replay tool events/final state using the
-host artifact path. This audit does not claim that adding the previous patch supplies
-all necessary context. A future coding agent needs access to those existing artifacts;
-this does not require another agent or another grading stage.
+The audit also identified missing access to frozen replay artifacts. The subsequent
+issue-based handoff now exposes a sectioned issue, catalogs and scoped private-file
+reads to the existing repair agent. Original instructions, source, failed patches,
+replay prompts, tool events and final state are retrievable through those references.
+A live Sol canary followed issue #61 to private original instructions and source.
+This resolves artifact retrieval in the updated prototype, while the restricted
+coding/edit interface remains a separate capability limit. No extra agent or grading
+stage was added.
 
 The latest fixed-candidate canaries did not exercise the weekly revision path.
 Its missing feedback is confirmed by code and integration tests, not a demonstrated
@@ -117,10 +119,11 @@ The proposed context handoff is a structured issue per actionable repair topic:
 problem/impact, evidence with source/run links, repair hypothesis and unknowns,
 validation plan, and attempts/results. The same Sol coding agent can investigate,
 implement and record its work there. Referenced raw artifacts must be readable through
-its actual tools; an issue link or host path alone does not provide access. This is
-a recommendation, not an implemented issue-orchestration subsystem.
+its actual tools; an issue link or host path alone does not provide access. The sectioned issue and retrieval tools are now implemented in the existing workflow;
+the stronger coding worktree remains a recommendation.
 
-The post-audit implementation passes 255 tests, including semantic-feedback revision
-with an unrelated unfinished control and baseline-only reproduction reporting.
+The implementation now passes 261 tests, including semantic-feedback revision,
+issue-linked private evidence retrieval, pagination, redaction and baseline-only
+reproduction reporting.
 The stronger proposer and four-candidate experiment remain next work. Production
 schedules, deployments and the production ledger were not changed.

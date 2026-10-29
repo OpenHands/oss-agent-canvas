@@ -73,6 +73,31 @@ completion. On these same artifacts and Sol judgments, target reproduction is no
 qualification stays inconclusive. No SDK or model execution was repeated; retained
 correction receipt: `consolidation/canary-reporting-correction.json`.
 
+## Issue-linked context access
+
+The updated worker creates/reuses a sectioned issue in the repair repository and
+links its PR back to it. [Issue #61](https://github.com/OpenHands/oss-agent-canvas/issues/61)
+indexes the retained #60 inputs and eight-attempt comparison with 47 private files.
+Public records contain references and controlled status/source metadata, without
+raw private tasks, prompts, source snapshots or run logs.
+
+A real Sol 6.1 canary on the OSS VM read the issue's Evidence section, its frozen
+context catalog, then paged through the private original-context artifact. It
+correctly recovered the frozen baseline and presence of original task instructions.
+Four evidence reads cost **$0.0263271 proxy-reported** in **11.649 seconds**. Audit
+records separate the model's four reads from the three preceding deterministic
+access checks. This demonstrates retrieval, not an improved repair or a fresh
+end-to-end repair-generation experiment. Existing #60 stays draft/unqualified.
+
+Artifacts: `automation-issue-context-20261029/4ff79e853537`. Two preceding setup
+failures (null optional app URL; unsupported `gh --slurp` on the VM's gh 2.23)
+remain retained; neither called Sol or reran an automation. Pagination now works
+with concatenated JSON pages on that installed CLI. All 47 catalogued replay files were subsequently read and integrity-checked using
+the worker account; files are 0600 and the evidence directory is 0700. The public
+[access-verification record](https://github.com/OpenHands/oss-agent-canvas/issues/61#issuecomment-6503187388)
+references the private model/tool audits. No extra key, cloud storage, deployment
+or new model stage was needed.
+
 ## Other calibration and checks
 
 The #59 factual-error incident is supported by its original trace, but the baseline
@@ -82,7 +107,7 @@ A one-off Sol policy check correctly recognized SDK issue #6295 as actual workfl
 pain (medium/high, approximately $0.003), correcting the earlier Luna label. This is
 a calibration check, not an added labeling stage or a repair-quality benchmark.
 
-**255 tests pass** after the independent pipeline audit and feedback/reporting fixes;
+**261 tests pass** after the audit fixes and issue-linked context handoff;
 Ruff, formatting and whitespace checks pass. The [independent audit](PIPELINE_AUDIT.md)
 identifies remaining repair-generation and calibration limits. The earlier bounded
 correctness review did not establish general pipeline quality. Historical

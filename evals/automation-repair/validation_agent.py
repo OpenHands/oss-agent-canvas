@@ -173,6 +173,7 @@ def assess(request, root, report, cases, output=None):
     }
     context = {
         "repair_topic": request.get("topic"),
+        "repair_issue": request.get("repair_issue"),
         "historical_findings": request.get("findings", []),
         "inputs": [],
         "repository_guidance": {

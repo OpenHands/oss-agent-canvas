@@ -14,8 +14,13 @@ def test_related_comments_are_fully_captured_and_cached(monkeypatch):
     def run(argv, **kwargs):
         calls.append(argv)
         if "/comments?" in argv[2]:
-            assert "--paginate" in argv and "--slurp" in argv
+            assert "--paginate" in argv and "--slurp" not in argv
             value = [[{"id": i} for i in range(100)], [{"id": 100}]]
+            return SimpleNamespace(
+                returncode=0,
+                stdout="\n".join(json.dumps(page) for page in value),
+                stderr="",
+            )
         else:
             value = {"number": 1, "body": "Original body"}
         return SimpleNamespace(returncode=0, stdout=json.dumps(value), stderr="")

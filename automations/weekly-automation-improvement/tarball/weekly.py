@@ -17,6 +17,7 @@ from laminar import Laminar
 from patches import command, load_source, propose_fix
 from sources import github_auth, native_request, repository_index, resolve_source
 from triage import definition_key, triage
+from topic_issue import TopicIssue, IssueReader
 
 
 def save_state(path, state):
@@ -344,6 +345,15 @@ def investigate_topic(
     snapshot["aggregation"] = aggregation
     snapshot["topic"] = topic
     snapshot["existing_improvement_prs"] = prs
+    snapshot["issue_evidence_dir"] = str(
+        (
+            Path(config["state_dir"]).expanduser()
+            / "issue-evidence"
+            / config["repository"]
+            / topic["id"]
+        ).resolve()
+    )
+    snapshot["evidence_location"] = config.get("evidence_location")
     if config.get("comparative_validation"):
         from cohorts import prepare, collect
 
@@ -364,19 +374,29 @@ def investigate_topic(
             "sample_size": cohort["sample_size"],
             "complete": cohort["complete"],
         }
+    issue = TopicIssue.ensure(snapshot, output / "issue", preview=dry_run)
+    result["issue_url"] = issue.value["html_url"]
+    if issue.value["state"] != "open":
+        result["status"] = "topic_issue_closed"
+        return result
+    issue.frozen(snapshot)
+    snapshot["repair_issue"] = issue.refresh()
     frozen = output / "snapshot-with-source.json"
     write_json(frozen, snapshot)
     args.input, args.source_config = frozen, path
     args.output = output / "analysis"
     from raw_evidence import EvidenceReader
 
-    args.evidence_reader = EvidenceReader(
-        Laminar(args), automation_id, inventory, output / "evidence"
+    args.evidence_reader = IssueReader(
+        EvidenceReader(Laminar(args), automation_id, inventory, output / "evidence"),
+        issue,
+        output / "evidence",
     )
     args.max_evidence_reads = config.get("max_evidence_reads", 8)
     analysis.run(args)
     report = read_json(args.output / "report.json")
     if report.get("errors"):
+        issue.attempt(args.output, report)
         raise ValueError(
             "Topic analysis incomplete; retain findings for another attempt"
         )
@@ -418,7 +438,7 @@ def investigate_topic(
             args.publish_draft = True
             args.publication_automation_id, args.publication_week = automation_id, week
             args.publication_topic = topic
-            publication = propose_fix(args, report, snapshot)
+            publication = propose_with_evidence(args, report, snapshot, issue)
             feedback = comparison_feedback(args.output)
             if (
                 not publication.get("pr_url")
@@ -429,7 +449,10 @@ def investigate_topic(
                 save_state(state_path, state)
                 previous_patch = proposal["patch"]
                 feedback = feedback | {"previous_patch": previous_patch}
-                snapshot = snapshot | {"repair_feedback": feedback}
+                snapshot = snapshot | {
+                    "repair_feedback": feedback,
+                    "repair_issue": issue.refresh(),
+                }
                 revision_input = output / "snapshot-revision.json"
                 write_json(revision_input, snapshot)
                 args.input, args.output = revision_input, output / "revision"
@@ -450,12 +473,14 @@ def investigate_topic(
                         "report": str(args.output / "report.json"),
                     }
                     save_state(state_path, state)
-                    publication = propose_fix(args, report, snapshot)
+                    publication = propose_with_evidence(args, report, snapshot, issue)
                     result["repair_revision"] = {
                         "feedback": feedback,
                         "report": str(args.output / "report.json"),
                     }
                     result["analysis_report"] = str(args.output / "report.json")
+                else:
+                    issue.attempt(args.output, revised)
             result["publication"] = publication
             result["behavioral_evaluation"] = publication.get("comparison", {}).get(
                 "status", "not_performed"
@@ -474,18 +499,39 @@ def investigate_topic(
                 }
         elif proposal["patch"]:
             args.check_draft = True
-            result["patch_check"] = propose_fix(args, report, snapshot)
+            result["patch_check"] = propose_with_evidence(args, report, snapshot, issue)
         else:
+            issue.attempt(args.output, report)
             for finding_id in proposal["finding_ids"]:
                 updates[by_id[finding_id]["signal_event_id"]] = {
                     "status": "diagnostic_only",
                     "topic_id": topic["id"],
                     "week": week,
                 }
+    else:
+        issue.attempt(args.output, report)
     if not dry_run:
         state["events"].update(updates)
         for event_id in updates:
             state["backlog"].pop(event_id, None)
+    return result
+
+
+def propose_with_evidence(args, report, snapshot, issue):
+    try:
+        result = propose_fix(args, report, snapshot)
+    except Exception as error:
+        issue.attempt(
+            args.output,
+            report,
+            {
+                "status": "failed",
+                "error": redact(str(error)),
+                "detail": redact(getattr(error, "stderr", None)),
+            },
+        )
+        raise
+    issue.attempt(args.output, report, result)
     return result
 
 

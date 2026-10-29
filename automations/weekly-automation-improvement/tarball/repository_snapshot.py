@@ -7,7 +7,7 @@ from pathlib import PurePosixPath
 from urllib.parse import quote
 
 from common import write_json
-from patches import command
+from patches import command, json_pages
 
 
 def capture(repository, output):
@@ -124,7 +124,7 @@ def capture_reads(native, cache):
         for endpoint in (root, root + "/comments"):
             if endpoint not in cache:
                 result = subprocess.run(
-                    ["gh", "api", endpoint + "?per_page=100", "--paginate", "--slurp"]
+                    ["gh", "api", endpoint + "?per_page=100", "--paginate"]
                     if endpoint.endswith("/comments")
                     else ["gh", "api", endpoint],
                     capture_output=True,
@@ -133,9 +133,11 @@ def capture_reads(native, cache):
                 )
                 if result.returncode and "HTTP 404" not in result.stderr:
                     raise ValueError("Related GitHub context could not be captured")
-                value = json.loads(result.stdout)
-                if endpoint.endswith("/comments") and not result.returncode:
-                    value = [item for page in value for item in page]
+                value = (
+                    json_pages(result.stdout)
+                    if endpoint.endswith("/comments") and not result.returncode
+                    else json.loads(result.stdout)
+                )
                 cache[endpoint] = {
                     "status": 404 if result.returncode else 200,
                     "body": value,

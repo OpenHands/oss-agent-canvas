@@ -67,6 +67,22 @@ def command(argv, cwd=None, strip=True, **kwargs):
     return output.strip() if strip else output
 
 
+def github_pages(endpoint, request=command):
+    return json_pages(request(["gh", "api", "--paginate", endpoint]))
+
+
+def json_pages(text):
+    pending = text.strip()
+    decoder, rows = json.JSONDecoder(), []
+    while pending:
+        page, end = decoder.raw_decode(pending)
+        if not isinstance(page, list):
+            raise ValueError("Expected a GitHub collection page")
+        rows.extend(page)
+        pending = pending[end:].lstrip()
+    return rows
+
+
 def load_source(config_path):
     config = read_json(config_path)
     repo = config["repository"]
@@ -516,6 +532,13 @@ def _propose_fix(args, report, snapshot):
         aggregation = report["aggregation"]
         body += f"\n\nAutomation backlog reviewed: {aggregation['total_events']} findings across {aggregation['affected_conversations']} distinct conversations. These counts are not validated failure rates.\n"
     body = "\n".join(markers) + "\n\n" + body
+    if (snapshot.get("repair_issue") or {}).get("url"):
+        body = (
+            "Investigation and evidence: "
+            + snapshot["repair_issue"]["url"]
+            + "\n\n"
+            + body
+        )
     body += "\n\n" + section(
         redact(verified["markdown"])
         if verified

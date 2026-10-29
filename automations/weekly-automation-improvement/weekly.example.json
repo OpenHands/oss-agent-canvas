@@ -32,5 +32,6 @@
   "max_inference_cost_usd": 1.0,
   "max_run_seconds": 7200,
   "max_evidence_reads": 8,
-  "validation_sample_size": 5
+  "validation_sample_size": 5,
+  "evidence_location": "Authenticated worker access: gcloud compute ssh YOUR_VM --project=YOUR_PROJECT --zone=YOUR_ZONE"
 }
