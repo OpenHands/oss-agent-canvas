@@ -148,6 +148,8 @@ def evidence_context(sample, findings=None):
         visible = [span for index, span in enumerate(visible) if index in selected]
     return {
         "case_id": sample["case_id"],
+        "conversation_id": sample["conversation_id"],
+        "trace_ids": sample.get("trace_ids", []),
         "automation_id": sample["automation_id"],
         "source_resolution": sample.get("source_resolution"),
         "automation_name": sample["automation_name"],
