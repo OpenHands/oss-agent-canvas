@@ -1,0 +1,74 @@
+{
+  "name": "github-issue-resolver-openhands",
+  "version": "0.1.0",
+  "description": "Executable automation plugin for GitHub Issue Resolver: OpenHands/OpenHands for @all-hands-bot.",
+  "author": {
+    "name": "OpenHands",
+    "email": "contact@all-hands.dev"
+  },
+  "homepage": "https://github.com/OpenHands/oss-agent-canvas",
+  "repository": "https://github.com/OpenHands/oss-agent-canvas",
+  "license": "MIT",
+  "keywords": [
+    "automation",
+    "github-issue-resolver-openhands"
+  ],
+  "automation": {
+    "schema_version": "openhands.automation.plugin.v1",
+    "entrypoint": {
+      "runner": "script",
+      "working_dir": "scripts",
+      "command": "python3 main.py"
+    },
+    "runtime": {
+      "plugins": []
+    },
+    "config_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repo": {
+          "type": "string",
+          "default": "OpenHands/OpenHands"
+        },
+        "bot_username": {
+          "type": "string",
+          "default": "all-hands-bot"
+        },
+        "draft_pr": {
+          "type": "boolean",
+          "default": true
+        },
+        "max_concurrent_resolutions": {
+          "type": "integer",
+          "default": 2
+        },
+        "max_active_age_seconds": {
+          "type": "integer",
+          "default": 10800
+        },
+        "max_creation_attempts": {
+          "type": "integer",
+          "default": 3
+        },
+        "branch_prefix": {
+          "type": "string",
+          "default": "openhands/issue-"
+        },
+        "openhands_url": {
+          "type": "string",
+          "default": "https://oss-agent-canvas.ngrok.dev"
+        },
+        "http_timeout_seconds": {
+          "type": "integer",
+          "default": 30
+        }
+      }
+    },
+    "suggested_trigger": {
+      "type": "cron",
+      "schedule": "*/5 * * * *",
+      "timezone": "UTC"
+    }
+  }
+}

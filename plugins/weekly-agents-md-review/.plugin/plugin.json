@@ -1,0 +1,82 @@
+{
+  "name": "weekly-agents-md-review",
+  "version": "0.1.0",
+  "description": "Executable automation plugin for Weekly AGENTS.md relevance review (multi-repo): extensions, OpenHands, software-agent-sdk, automation, enterprise.",
+  "author": {
+    "name": "OpenHands",
+    "email": "contact@all-hands.dev"
+  },
+  "homepage": "https://github.com/OpenHands/oss-agent-canvas",
+  "repository": "https://github.com/OpenHands/oss-agent-canvas",
+  "license": "MIT",
+  "keywords": [
+    "automation",
+    "weekly-agents-md-review"
+  ],
+  "automation": {
+    "schema_version": "openhands.automation.plugin.v1",
+    "entrypoint": {
+      "runner": "script",
+      "working_dir": "scripts",
+      "command": "env .venv/bin/python main.py",
+      "setup_script": "scripts/setup.sh"
+    },
+    "runtime": {
+      "plugins": []
+    },
+    "config_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repos": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string",
+                "default": "https://github.com/OpenHands/extensions"
+              },
+              "ref": {
+                "type": "string",
+                "default": "main"
+              }
+            },
+            "additionalProperties": false,
+            "default": {
+              "url": "https://github.com/OpenHands/extensions",
+              "ref": "main"
+            }
+          },
+          "default": [
+            {
+              "url": "https://github.com/OpenHands/extensions",
+              "ref": "main"
+            },
+            {
+              "url": "https://github.com/OpenHands/OpenHands",
+              "ref": "main"
+            },
+            {
+              "url": "https://github.com/OpenHands/software-agent-sdk",
+              "ref": "main"
+            },
+            {
+              "url": "https://github.com/OpenHands/automation",
+              "ref": "main"
+            },
+            {
+              "url": "https://github.com/OpenHands/enterprise",
+              "ref": "main"
+            }
+          ]
+        }
+      }
+    },
+    "suggested_trigger": {
+      "type": "cron",
+      "schedule": "0 12 * * 1",
+      "timezone": "UTC"
+    }
+  }
+}

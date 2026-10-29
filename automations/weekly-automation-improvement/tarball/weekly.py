@@ -339,6 +339,12 @@ def investigate_topic(
     write_json(frozen, snapshot)
     args.input, args.source_config = frozen, path
     args.output = output / "analysis"
+    from raw_evidence import EvidenceReader
+
+    args.evidence_reader = EvidenceReader(
+        Laminar(args), automation_id, inventory, output / "evidence"
+    )
+    args.max_evidence_reads = config.get("max_evidence_reads", 8)
     analysis.run(args)
     report = read_json(args.output / "report.json")
     if report.get("errors"):
