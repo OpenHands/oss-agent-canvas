@@ -67,6 +67,12 @@ runtime outcome remains unknown rather than a behavioral regression. No paired f
 was demonstrated, so **#60 stays draft and unqualified**. The corrected replay and
 one-agent review work end to end without claiming that this prompt repair helps.
 
+A later reporting-only correction keeps baseline reproduction independent of candidate
+completion. On these same artifacts and Sol judgments, target reproduction is now
+**not reproduced** (both baseline runs chose medium), rather than unknown. The
+qualification stays inconclusive. No SDK or model execution was repeated; retained
+correction receipt: `consolidation/canary-reporting-correction.json`.
+
 ## Other calibration and checks
 
 The #59 factual-error incident is supported by its original trace, but the baseline
@@ -76,8 +82,10 @@ A one-off Sol policy check correctly recognized SDK issue #6295 as actual workfl
 pain (medium/high, approximately $0.003), correcting the earlier Luna label. This is
 a calibration check, not an added labeling stage or a repair-quality benchmark.
 
-**249 tests pass**; Ruff, formatting and whitespace checks pass. Independent review
-found no further material defect in the bounded implementation review. Historical
+**255 tests pass** after the independent pipeline audit and feedback/reporting fixes;
+Ruff, formatting and whitespace checks pass. The [independent audit](PIPELINE_AUDIT.md)
+identifies remaining repair-generation and calibration limits. The earlier bounded
+correctness review did not establish general pipeline quality. Historical
 execution currently covers issue triage; reviewer fixtures remain mechanism tests,
 not substitutes for a historical reviewer adapter. No production schedule, deployment
 or weekly-ledger replacement is part of this work. Generated repair PRs remain draft.

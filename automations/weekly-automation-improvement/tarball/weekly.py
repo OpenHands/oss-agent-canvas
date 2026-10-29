@@ -428,6 +428,7 @@ def investigate_topic(
                 state["topic_weeks"].pop(key, None)
                 save_state(state_path, state)
                 previous_patch = proposal["patch"]
+                feedback = feedback | {"previous_patch": previous_patch}
                 snapshot = snapshot | {"repair_feedback": feedback}
                 revision_input = output / "snapshot-revision.json"
                 write_json(revision_input, snapshot)
@@ -493,14 +494,62 @@ def comparison_feedback(output):
     if not path.exists():
         return None
     report = read_json(path)
-    if any(
-        row["score"]["error"] or not row["score"]["finished"] for row in report["runs"]
-    ):
-        return None
+    if "assessment" in report:
+        assessment = report["assessment"]
+        kinds = {case["case_id"]: case["kind"] for case in report["cases"]}
+        candidates = {
+            (row["case_id"], row.get("repeat", 1)): row["score"]
+            for row in report["runs"]
+            if row["variant"] == "candidate"
+        }
+        failed = []
+        for observation in assessment["observations"]:
+            semantic = observation.get("semantic") or {}
+            if observation["valid"] and (
+                observation["new_violations"]
+                or semantic.get("regression") is True
+                or (
+                    semantic.get("candidate_success") is False
+                    and (
+                        kinds[observation["case_id"]] == "regression"
+                        or semantic.get("baseline_success") is True
+                    )
+                )
+                or (
+                    not observation["candidate_conformance"]
+                    and (
+                        observation["baseline_conformance"]
+                        or kinds[observation["case_id"]] == "regression"
+                    )
+                )
+            ):
+                score = candidates[(observation["case_id"], observation["repeat"])]
+                failed.append(
+                    {
+                        "case_id": observation["case_id"],
+                        "repeat": observation["repeat"],
+                        "violations": score["violations"],
+                        "introduced_violations": observation["new_violations"],
+                        "final_priority": score.get("final_priority"),
+                        "assessment": semantic,
+                    }
+                )
+        return (
+            {
+                "previous_attempt": str(path),
+                "failed_cases": failed,
+                "unresolved_pairs": assessment["invalid_pairs"],
+            }
+            if failed
+            else None
+        )
     failed = [
         row
         for row in report["runs"]
-        if row["variant"] == "candidate" and not row["score"]["passed"]
+        if row["variant"] == "candidate"
+        and row["score"]["finished"]
+        and not row["score"]["error"]
+        and not row["score"]["passed"]
     ]
     if report.get("control_acceptance") == "no_new_violations":
         controls = {

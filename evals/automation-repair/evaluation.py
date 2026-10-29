@@ -12,40 +12,51 @@ def assess(report, cases, repeats=1, semantic=None, unchanged=False):
     observations, fixes, regressions, gaps, missing = [], [], [], [], []
     historical = any(case.get("semantic_required") for case in cases)
     controls = []
+    reproductions = []
     for case in cases:
         for repeat in range(1, repeats + 1):
             base = indexed.get((case["id"], repeat, "baseline"))
             candidate = indexed.get((case["id"], repeat, "candidate"))
             identity = {"case_id": case["id"], "repeat": repeat}
+            review = reviews.get((case["id"], repeat))
+            context_valid = not historical or (
+                case.get("repository_snapshot", {}).get("archive_path")
+                and review
+                and review.get("context_sufficient") is True
+            )
+            baseline_valid = bool(
+                context_valid
+                and base
+                and base["score"]["finished"]
+                and not base["score"]["error"]
+                and not base["score"].get("invalid_replay_responses")
+            )
+            target = case.get("target_violation")
+            reproduced = None
+            if baseline_valid:
+                if review:
+                    reproduced = review["target_reproduced"]
+                elif target:
+                    reproduced = target in base["score"]["violations"]
+            if case["kind"] == "regression":
+                reproductions.append(reproduced)
             if not base or not candidate:
                 missing.append(identity)
                 continue
-            valid = all(
-                row["score"]["finished"]
-                and not row["score"]["error"]
-                and not row["score"].get("invalid_replay_responses")
-                for row in (base, candidate)
+            valid = bool(
+                baseline_valid
+                and candidate["score"]["finished"]
+                and not candidate["score"]["error"]
+                and not candidate["score"].get("invalid_replay_responses")
             )
-            if historical and not case.get("repository_snapshot", {}).get(
-                "archive_path"
-            ):
-                valid = False
-            review = reviews.get((case["id"], repeat))
-            if historical and (
-                not review or review.get("context_sufficient") is not True
-            ):
-                valid = False
             if not valid:
                 gaps.append(identity)
-            target = case.get("target_violation")
-            reproduced = target in base["score"]["violations"] if target else None
             fixed = (
                 bool(reproduced and target not in candidate["score"]["violations"])
                 if target
                 else None
             )
             if review:
-                reproduced = review["target_reproduced"]
                 fixed = (
                     review["target_fixed"]
                     and review["baseline_success"] is False
@@ -70,9 +81,10 @@ def assess(report, cases, repeats=1, semantic=None, unchanged=False):
             )
             observation = identity | {
                 "valid": valid,
+                "baseline_valid": baseline_valid,
                 "baseline_conformance": base["score"]["passed"],
                 "candidate_conformance": candidate["score"]["passed"],
-                "target_reproduced": reproduced if valid else None,
+                "target_reproduced": reproduced,
                 "target_fixed": fixed if valid else None,
                 "new_violations": new_violations if valid else [],
                 "semantic": review,
@@ -131,16 +143,9 @@ def assess(report, cases, repeats=1, semantic=None, unchanged=False):
         "status": status,
         "mechanism_supported": bool(fixes) and not historical and not unchanged,
         "target_reproduced": True
-        if any(item["target_reproduced"] is True for item in observations)
+        if any(value is True for value in reproductions)
         else None
-        if missing
-        or gaps
-        or any(
-            item["target_reproduced"] is None
-            for item in observations
-            if next(case["kind"] for case in cases if case["id"] == item["case_id"])
-            == "regression"
-        )
+        if any(value is None for value in reproductions) or not reproductions
         else False,
         "target_fixed_pairs": fixes,
         "observed_regressions": regressions,

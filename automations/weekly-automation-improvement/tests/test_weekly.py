@@ -555,8 +555,9 @@ def test_repair_feedback_requires_a_completed_behavioral_failure(
 
 
 @pytest.mark.parametrize("revised_passes", [False, True])
+@pytest.mark.parametrize("semantic_failure", [False, True])
 def test_one_repair_revision_keeps_failed_evidence_and_only_consumes_proven_findings(
-    configured_source, tmp_path, monkeypatch, revised_passes
+    configured_source, tmp_path, monkeypatch, revised_passes, semantic_failure
 ):
     records = [record()]
     config, calls = prepare_grouped(configured_source, tmp_path, monkeypatch, records)
@@ -569,9 +570,15 @@ def test_one_repair_revision_keeps_failed_evidence_and_only_consumes_proven_find
             snapshot = json.loads(args.input.read_text())
             previous = Path(snapshot["repair_feedback"]["previous_attempt"])
             assert previous.exists()
-            assert snapshot["repair_feedback"]["failed_cases"][0]["violations"] == [
-                "incorrect_priority"
-            ]
+            assert snapshot["repair_feedback"]["previous_patch"] == PATCH
+            failure = snapshot["repair_feedback"]["failed_cases"][0]
+            if semantic_failure:
+                assert failure["assessment"]["reason"] == "Priority ignores real loss"
+                assert snapshot["repair_feedback"]["unresolved_pairs"] == [
+                    {"case_id": "control", "repeat": 1}
+                ]
+            else:
+                assert failure["violations"] == ["incorrect_priority"]
             path = args.output / "report.json"
             value = json.loads(path.read_text())
             value["proposals"][0]["patch"] += "\n"
@@ -606,6 +613,44 @@ def test_one_repair_revision_keeps_failed_evidence_and_only_consumes_proven_find
                 }
             )
         )
+        if semantic_failure:
+            comparison = json.loads(path.read_text())
+            comparison["runs"][0]["score"].update(passed=True, violations=[])
+            comparison["runs"].append(
+                {
+                    "case_id": "control",
+                    "variant": "candidate",
+                    "score": {
+                        "finished": False,
+                        "error": "Step limit",
+                        "passed": False,
+                    },
+                }
+            )
+            comparison["cases"] = [
+                {"case_id": "reported_harm", "kind": "regression"},
+                {"case_id": "control", "kind": "control"},
+            ]
+            comparison["assessment"] = {
+                "invalid_pairs": [{"case_id": "control", "repeat": 1}],
+                "observations": [
+                    {
+                        "case_id": "reported_harm",
+                        "repeat": 1,
+                        "valid": True,
+                        "baseline_conformance": True,
+                        "candidate_conformance": True,
+                        "new_violations": [],
+                        "semantic": {
+                            "baseline_success": False,
+                            "candidate_success": False,
+                            "regression": False,
+                            "reason": "Priority ignores real loss",
+                        },
+                    }
+                ],
+            }
+            path.write_text(json.dumps(comparison))
         return {
             "status": "improvement_not_demonstrated",
             "comparison": {"status": "inconclusive"},

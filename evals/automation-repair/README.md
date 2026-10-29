@@ -6,6 +6,9 @@ settings, runs baseline/candidate code, and publishes **Before / After Evidence*
 only when the target improvement is demonstrated. The full pipeline is reviewed in
 [#49](https://github.com/OpenHands/oss-agent-canvas/pull/49).
 
+[Independent audit of data, repairs and evaluator calibration](PIPELINE_AUDIT.md) explains
+why the current examples do not establish a generally successful self-improvement loop.
+
 ## One validation stage
 
 Freeze the original tasks and a pinned repository snapshot, run the baseline and

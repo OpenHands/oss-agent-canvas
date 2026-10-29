@@ -198,6 +198,40 @@ def test_execution_reader_cannot_read_arbitrary_paths(tmp_path):
         )
 
 
+@pytest.mark.parametrize("reproduced", [False, True])
+@pytest.mark.parametrize("candidate_present", [False, True])
+def test_candidate_incompletion_does_not_erase_baseline_reproduction(
+    reproduced, candidate_present
+):
+    case = {
+        "id": "negative-1",
+        "kind": "regression",
+        "semantic_required": True,
+        "repository_snapshot": {"archive_path": "/pinned"},
+    }
+    executions = rows(case["id"])
+    if candidate_present:
+        executions[1]["score"].update(finished=False, passed=False, error="Step limit")
+    else:
+        executions.pop()
+    judgments = [
+        {
+            "case_id": case["id"],
+            "context_sufficient": True,
+            "baseline_success": not reproduced,
+            "candidate_success": None,
+            "target_reproduced": reproduced,
+            "target_fixed": None,
+            "regression": None,
+        }
+    ]
+    result = assess({"runs": executions}, [case], semantic=judgments)
+    assert result["target_reproduced"] is reproduced
+    assert result["status"] == "inconclusive"
+    assert not result["target_fixed_pairs"]
+    assert not result["experiment_valid"]
+
+
 def test_cross_repository_rest_and_graphql_reads_cannot_use_another_repository():
     case = scenario("reported_paid_harm") | {
         "native_payload": {"repository": "Owner/A", "task": {"issue": {"number": 7}}},
