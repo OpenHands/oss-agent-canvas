@@ -608,7 +608,7 @@ def test_model_payload_redaction_preserves_json_and_sanitizes_structured_audits(
     monkeypatch.setenv("LLM_BASE_URL", "https://proxy.example.test")
     context = {
         "credentials": "private-context-value",
-        "body": 'api_key="example-credential-long"\nUse the task.',
+        "body": 'api_key=os.getenv("LLM_API_KEY")\nUse the task.',
     }
     result = {
         "credentials": "private-result-value",
