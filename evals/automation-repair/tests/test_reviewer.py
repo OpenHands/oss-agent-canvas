@@ -288,8 +288,9 @@ def test_comparison_lock_prevents_duplicate_execution(tmp_path):
         pass
 
 
+@pytest.mark.parametrize("changed_budget", [False, True])
 def test_resume_reuses_completed_trials_without_model_or_container_calls(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, changed_budget
 ):
     import json
     from types import SimpleNamespace
@@ -311,6 +312,7 @@ def test_resume_reuses_completed_trials_without_model_or_container_calls(
         "llm_base_url": "https://example.invalid",
         "effort": "low",
         "max_steps": 5,
+        "max_run_seconds": 180,
         "llm_timeout": 120,
         "image": "sha256:test",
         "repeats": 1,
@@ -355,10 +357,14 @@ def test_resume_reuses_completed_trials_without_model_or_container_calls(
         base_url="https://example.invalid",
         effort="low",
         max_steps=5,
-        max_run_seconds=180,
+        max_run_seconds=420 if changed_budget else 180,
         repeats=1,
         resume=True,
     )
+    if changed_budget:
+        with pytest.raises(ValueError, match="max_run_seconds"):
+            runner.main(args)
+        return
     runner.main(args)
     report = json.loads((output / "comparison.json").read_text())
     assert report["complete"]

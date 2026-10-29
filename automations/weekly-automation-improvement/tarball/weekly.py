@@ -666,6 +666,8 @@ def investigate(
         if any(item["status"] == "failed" for item in result["topics"])
         else "budget_exhausted"
         if exhausted
+        else "validation_incomplete"
+        if any(item["status"] == "deferred_validation" for item in result["topics"])
         else "completed"
         if result["topics"]
         else "no_promising_findings",
@@ -780,7 +782,7 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget=None):
         for item in summary["automations"]
     ):
         summary["status"] = "budget_exhausted"
-    if summary["status"] == "completed" and any(
+    if summary["status"] not in ("partial_failure", "budget_exhausted") and any(
         topic["status"] == "deferred_validation"
         for automation in summary["automations"]
         for topic in automation.get("topics", [])

@@ -150,17 +150,20 @@ def run_locked(request_path, command):
         return {"status": "stale_pr", "comparison_status": receipt["status"]}
     body = replace_section(current["body"], redact(receipt["markdown"]))
     payload = {"body": body}
-    if receipt["status"] == "improvement_on_development_cases":
-        body = body.replace(
-            "**UNEVALUATED PROPOSAL:** behavioral evaluation has not been performed. The checks below only establish that the patch applies within the approved source scope.",
-            "**Development comparison recorded:** see Before / After Evidence for executed checks, exact source revisions and limitations.",
-        ).replace(
-            "This proposal has not been validated.",
-            "The original plan is superseded by the executed development comparison below.",
-        )
-        payload["body"] = body
-        if current.get("title", "").startswith("[Unevaluated] "):
-            payload["title"] = "[Evidence] " + current["title"][len("[Unevaluated] ") :]
+    supported = receipt["status"] == "improvement_on_development_cases"
+    body = body.replace(
+        "**UNEVALUATED PROPOSAL:** behavioral evaluation has not been performed. The checks below only establish that the patch applies within the approved source scope.",
+        "**Development comparison recorded:** see Before / After Evidence for executed checks, exact source revisions and limitations."
+        if supported
+        else f"**Comparison status: {receipt['status']}.** Improvement has not been demonstrated; see Before / After Evidence.",
+    ).replace(
+        "This proposal has not been validated.",
+        "The original plan is superseded by the recorded comparison below.",
+    )
+    payload["body"] = body
+    if current.get("title", "").startswith("[Unevaluated] "):
+        prefix = "Evidence" if supported else receipt["status"].capitalize()
+        payload["title"] = f"[{prefix}] " + current["title"][len("[Unevaluated] ") :]
     body_path = root / "pr-body-with-evidence.md"
     body_path.write_text(body)
     body_path.chmod(0o600)

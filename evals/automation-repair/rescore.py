@@ -57,6 +57,18 @@ def rescore(source, output):
                 "comparison_scorer_sha256": hashlib.sha256(
                     Path(__file__).with_name("compare.py").read_bytes()
                 ).hexdigest(),
+                "scoring_sha256": {
+                    name: hashlib.sha256(
+                        Path(__file__).with_name(name).read_bytes()
+                    ).hexdigest()
+                    for name in (
+                        "compare.py",
+                        "reviewer_world.py",
+                        "triage_world.py",
+                        "scenarios.py",
+                        "rescore.py",
+                    )
+                },
                 "source_receipts": receipts,
                 "reason": "Recompute task scores and comparison acceptance from retained executions",
                 "agent_reexecutions": 0,

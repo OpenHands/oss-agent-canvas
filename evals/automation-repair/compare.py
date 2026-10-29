@@ -631,6 +631,7 @@ def run_comparison(args):
             "llm_base_url",
             "effort",
             "max_steps",
+            "max_run_seconds",
             "image",
             "repeats",
             "cases",

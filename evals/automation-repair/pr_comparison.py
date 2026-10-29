@@ -92,7 +92,7 @@ def run(request_path, output):
         )
     ):
         receipt["markdown"] = (
-            "**Not evaluated:** the available execution adapter covers PR-reviewer source only. "
+            "**Not evaluated:** no trusted execution contract covers this repair. "
             "No behavioral improvement is demonstrated for this repair."
         )
     else:
@@ -115,6 +115,7 @@ def run(request_path, output):
                 "effort",
                 "repeats",
                 "max_steps",
+                "max_run_seconds",
             ):
                 if manifest[name] != getattr(args, name):
                     raise ValueError(

@@ -494,11 +494,16 @@ def test_dry_run_does_not_publish_or_change_backlog(
     assert [call[0] for call in calls] == ["luna", "sol", "check"]
 
 
+@pytest.mark.parametrize("collection_gap", [False, True])
 def test_unproven_repair_stays_pending_without_a_publication_reservation(
-    configured_source, tmp_path, monkeypatch
+    configured_source, tmp_path, monkeypatch, collection_gap
 ):
     records = [record()]
     config, calls = prepare_grouped(configured_source, tmp_path, monkeypatch, records)
+    if collection_gap:
+        collected = inventory(records)
+        collected["collection_errors"] = [{"error": "A different trace is missing"}]
+        monkeypatch.setattr(weekly, "collect_events", lambda *a, **k: collected)
     monkeypatch.setattr(
         weekly,
         "propose_fix",
@@ -509,6 +514,7 @@ def test_unproven_repair_stays_pending_without_a_publication_reservation(
     )
     result = weekly.run(config)
     assert result["status"] == "validation_incomplete"
+    assert result["automations"][0]["status"] == "validation_incomplete"
     state = json.loads((Path(config["state_dir"]) / "state.json").read_text())
     assert records[0]["event"]["id"] in state["backlog"]
     assert not state["topic_weeks"]

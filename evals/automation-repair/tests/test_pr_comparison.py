@@ -77,8 +77,9 @@ def test_topic_needs_known_frozen_regression_and_control_cases(cases, tmp_path):
         pr_comparison.settings(value, tmp_path)
 
 
+@pytest.mark.parametrize("changed_budget", [False, True])
 def test_recorded_native_executions_are_rescored_without_model_calls(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, changed_budget
 ):
     from reviewer_world import World, REPO, DISCLOSURE, SHA
     from scenarios import scenario
@@ -103,6 +104,7 @@ def test_recorded_native_executions_are_rescored_without_model_calls(
             "effort": "low",
             "repeats": 1,
             "max_steps": 30,
+            "max_run_seconds": 180,
             "llm_timeout": 120,
             "cases": cases,
         },
@@ -138,11 +140,17 @@ def test_recorded_native_executions_are_rescored_without_model_calls(
                 },
             )
     value["plan"]["recorded_runs"] = str(recorded)
+    if changed_budget:
+        value["plan"]["max_run_seconds"] = 420
     path = tmp_path / "request.json"
     write(path, value)
     monkeypatch.setattr(
         pr_comparison.compare, "main", lambda *args: pytest.fail("No new inference")
     )
+    if changed_budget:
+        with pytest.raises(ValueError, match="max_run_seconds"):
+            pr_comparison.run(path, tmp_path / "comparison")
+        return
     result = pr_comparison.run(path, tmp_path / "comparison")
     assert result["status"] == "improvement_on_development_cases"
     assert result["reused_executions"]

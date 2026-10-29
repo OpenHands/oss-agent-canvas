@@ -104,7 +104,9 @@ def summarize(root):
             ]
             if violations:
                 outcome += ": " + ", ".join(violations)
-            if "write_attempts" in score and "accepted_reviews" in score:
+            if "final_priority" in score:
+                outcome += f"; {score['write_attempts']} writes attempted"
+            elif "write_attempts" in score and "accepted_reviews" in score:
                 outcome += f"; {score['write_attempts']} writes attempted, {score['accepted_reviews']} reviews accepted"
             if "final_priority" in score:
                 outcome += "; final priority: " + score["final_priority"]

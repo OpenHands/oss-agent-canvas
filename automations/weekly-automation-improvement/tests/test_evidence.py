@@ -119,6 +119,43 @@ def test_failed_comparison_is_retained_without_reroll(tmp_path):
     assert (tmp_path / "comparison-failure.json").read_bytes() == first
 
 
+def test_inconclusive_comparison_replaces_only_owned_unevaluated_notice(tmp_path):
+    path, value = request(tmp_path)
+    output = tmp_path / "comparison"
+    output.mkdir()
+    (output / "evidence.json").write_text(
+        json.dumps(
+            value
+            | {
+                "status": "inconclusive",
+                "markdown": "Target behavior was not reproduced.",
+                "request_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    )
+    notice = "**UNEVALUATED PROPOSAL:** behavioral evaluation has not been performed. The checks below only establish that the patch applies within the approved source scope."
+    payloads = []
+
+    def command(argv):
+        if argv[:3] == ["gh", "api", "repos/example/repo/pulls/1"]:
+            return json.dumps(
+                {
+                    "head": {"sha": value["candidate"]},
+                    "body": "Maintainer notes\n\n" + notice,
+                    "title": "[Unevaluated] Repair",
+                    "state": "open",
+                }
+            )
+        payloads.append(json.loads((tmp_path / "pr-evidence-update.json").read_text()))
+        return ""
+
+    evidence.run(path, command)
+    assert payloads[0]["title"] == "[Inconclusive] Repair"
+    assert "Maintainer notes" in payloads[0]["body"]
+    assert notice not in payloads[0]["body"]
+    assert "Improvement has not been demonstrated" in payloads[0]["body"]
+
+
 def test_runner_timeout_interrupts_and_reaps_the_process(tmp_path):
     with pytest.raises(ValueError, match="timed out"):
         evidence.execute(
