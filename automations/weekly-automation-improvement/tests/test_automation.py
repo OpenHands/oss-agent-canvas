@@ -597,3 +597,48 @@ def test_new_untracked_files_in_patch_are_rejected_before_checks(
     extra = "diff --git a/injected.py b/injected.py\nnew file mode 100644\n--- /dev/null\n+++ b/injected.py\n@@ -0,0 +1 @@\n+print('unexpected helper')\n"
     with pytest.raises(ValueError, match="allowlist"):
         propose_fix(args, fix_report(PATCH + extra), {"source": load_source(path)})
+
+
+def test_model_payload_redaction_preserves_json_and_sanitizes_structured_audits(
+    tmp_path, monkeypatch
+):
+    common = importlib.import_module("common")
+    monkeypatch.setenv("LITELLM_API_KEY", "transport-only-credential")
+    monkeypatch.setenv("LLM_BASE_URL", "https://proxy.example.test")
+    context = {
+        "credentials": "private-context-value",
+        "body": 'api_key="example-credential-long"\nUse the task.',
+    }
+    result = {
+        "credentials": "private-result-value",
+        "quote": 'api_key="example-credential-long"',
+    }
+
+    def respond(request, timeout):
+        sent = json.loads(request.data)
+        assert json.loads(sent["input"][-1]["content"]) == common.redact(context)
+        assert "private-context-value" not in request.data.decode()
+        response = io.BytesIO(
+            json.dumps(
+                {
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "name": "report",
+                            "arguments": json.dumps(result),
+                        }
+                    ]
+                }
+            ).encode()
+        )
+        response.headers = {}
+        return response
+
+    monkeypatch.setattr(common.urllib.request, "urlopen", respond)
+    actual, _ = common.call_model(
+        arguments(tmp_path), "small", "Inspect", context, "roundtrip", app.ANALYSIS
+    )
+    assert actual == common.redact(result)
+    audit = json.loads((tmp_path / "responses/roundtrip.json").read_text())
+    assert json.loads(audit["output"][0]["arguments"]) == common.redact(result)
+    assert "private-result-value" not in json.dumps(audit)
