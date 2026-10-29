@@ -75,6 +75,8 @@ import sys
 import time
 from datetime import datetime, timezone
 
+from run_report import publish_report, snapshot_repositories
+
 # Detect execution mode based on AGENT_SERVER_URL presence
 agent_server_url = os.environ.get("AGENT_SERVER_URL", "").rstrip("/")
 IS_LOCAL_MODE = bool(agent_server_url)
@@ -432,10 +434,13 @@ This automation was triggered by a webhook event:
         conversation.update_secrets({"AUTOMATION_SESSION_URL": session_url})
         print(f"  session URL: {session_url}")
 
+    before = snapshot_repositories(workspace, repo_dirs)
+    run_completed = False
     try:
         print(f"  sending prompt: {USER_PROMPT[:80]}...")
         conversation.send_message(USER_PROMPT)
         conversation.run()
+        run_completed = True
 
         # Wait for the stream to settle
         while time.time() - last_event_time["ts"] < 2.0:
@@ -445,7 +450,17 @@ This automation was triggered by a webhook event:
         print(f"  cost: {cost}")
         print(f"  events received: {len(received_events)}")
     finally:
-        conversation.close()
+        execution_failed = sys.exc_info()[0] is not None
+        try:
+            # A client timeout can leave the server running. Do not feed it a new turn.
+            if run_completed:
+                publish_report(workspace, conversation, received_events, before, repo_dirs)
+        except RuntimeError:
+            if not execution_failed:
+                raise
+            print("Runner activity report delivery not confirmed", file=sys.stderr)
+        finally:
+            conversation.close()
 
     print("  conversation completed successfully")
 
