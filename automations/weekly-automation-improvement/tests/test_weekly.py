@@ -548,6 +548,84 @@ def test_repair_feedback_requires_a_completed_behavioral_failure(
         assert feedback["failed_cases"][0]["final_priority"] == "priority:low"
 
 
+@pytest.mark.parametrize("revised_passes", [False, True])
+def test_one_repair_revision_keeps_failed_evidence_and_only_consumes_proven_findings(
+    configured_source, tmp_path, monkeypatch, revised_passes
+):
+    records = [record()]
+    config, calls = prepare_grouped(configured_source, tmp_path, monkeypatch, records)
+    original = weekly.analysis.run
+    attempts = []
+
+    def analyze(args):
+        original(args)
+        if args.output.name == "revision":
+            snapshot = json.loads(args.input.read_text())
+            previous = Path(snapshot["repair_feedback"]["previous_attempt"])
+            assert previous.exists()
+            assert snapshot["repair_feedback"]["failed_cases"][0]["violations"] == [
+                "incorrect_priority"
+            ]
+            path = args.output / "report.json"
+            value = json.loads(path.read_text())
+            value["proposals"][0]["patch"] += "\n"
+            path.write_text(json.dumps(value))
+
+    def publish(args, report, snapshot):
+        attempts.append(args.output)
+        if len(attempts) == 2 and revised_passes:
+            return {
+                "status": "evidence_supported_draft",
+                "pr_url": "https://github.com/Example/automation/pull/1",
+                "comparison": {"status": "improvement_on_development_cases"},
+            }
+        path = args.output / "comparison/runs/comparison.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "runs": [
+                        {
+                            "case_id": "reported_harm",
+                            "variant": "candidate",
+                            "score": {
+                                "passed": False,
+                                "finished": True,
+                                "error": None,
+                                "violations": ["incorrect_priority"],
+                                "final_priority": "priority:low",
+                            },
+                        }
+                    ]
+                }
+            )
+        )
+        return {
+            "status": "improvement_not_demonstrated",
+            "comparison": {"status": "inconclusive"},
+        }
+
+    monkeypatch.setattr(weekly.analysis, "run", analyze)
+    monkeypatch.setattr(weekly, "propose_fix", publish)
+    result = weekly.run(config)
+    assert len(attempts) == 2
+    assert attempts[0].name == "analysis" and attempts[1].name == "revision"
+    assert (attempts[0] / "comparison/runs/comparison.json").exists()
+    assert len([call for call in calls if call[0] == "sol"]) == 2
+    state = json.loads((Path(config["state_dir"]) / "state.json").read_text())
+    if revised_passes:
+        assert result["status"] == "completed"
+        assert state["events"][records[0]["event"]["id"]]["status"] == "draft_pr"
+        assert not state["backlog"]
+        assert {row["status"] for row in state["topic_weeks"].values()} == {
+            "completed"
+        }
+    else:
+        assert result["status"] == "validation_incomplete"
+        assert records[0]["event"]["id"] in state["backlog"]
+        assert not state["events"] and not state["topic_weeks"]
+
+
 def test_dry_run_cannot_backfill_or_publish_existing_pr_evidence(
     configured_source, tmp_path, monkeypatch
 ):

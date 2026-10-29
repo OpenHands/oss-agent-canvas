@@ -51,7 +51,7 @@ def summarize(root):
     lines.extend(
         [
             "",
-            "A strict pass includes the publication contract and final response; finding a bug alone does not pass.",
+            "A strict pass requires the task-specific outcome and preservation checks, with a completed, error-free execution.",
             "",
             "| Recorded violation | Baseline runs | Candidate runs |",
             "|---|---:|---:|",
