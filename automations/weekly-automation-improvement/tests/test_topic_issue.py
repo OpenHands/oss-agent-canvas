@@ -240,6 +240,12 @@ def test_failed_execution_context_is_published_without_a_receipt(tmp_path, monke
     (requests / "coordinator.json").write_text(
         json.dumps({"input": "Exact private repair prompt"})
     )
+    (tmp_path / "analysis/comparison/budget.json").write_text(
+        json.dumps({"reported_inference_cost_usd": 0.3, "complete": False})
+    )
+    (tmp_path / "analysis/baseline-0-check.json").write_text(
+        json.dumps({"exit_code": 124})
+    )
     issue.attempt(tmp_path / "analysis", {"proposals": [], "errors": []})
     bodies = "\n".join(item["body"] for item in github.comments)
     assert (
@@ -247,6 +253,7 @@ def test_failed_execution_context_is_published_without_a_receipt(tmp_path, monke
         and "Original task and exact policy" not in bodies
     )
     assert "negative-1-1-candidate/events.json" in bodies
+    assert "comparison/budget.json" in bodies and "baseline-0-check.json" in bodies
     assert (
         "requests/coordinator.json" in bodies
         and "Exact private repair prompt" not in bodies

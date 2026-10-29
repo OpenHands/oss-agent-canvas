@@ -55,7 +55,7 @@ def execute(argv, log, timeout):
         except subprocess.TimeoutExpired:
             os.killpg(process.pid, signal.SIGINT)
             try:
-                process.wait(timeout=60)
+                process.wait(timeout=1)
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
@@ -77,7 +77,7 @@ def validate_receipt(receipt, request):
         raise ValueError("Comparison receipt does not match the repair revisions")
 
 
-def evaluate(request_path):
+def evaluate(request_path, budget=None):
     request = read_json(request_path)
     root = request_path.parent
     output = root / "comparison"
@@ -93,6 +93,7 @@ def evaluate(request_path):
         or not 30 <= timeout <= 7200
     ):
         raise ValueError("Configure a trusted comparison command and bounded timeout")
+    launched = False
     try:
         failure_path = root / "comparison-failure.json"
         if failure_path.exists():
@@ -100,6 +101,16 @@ def evaluate(request_path):
                 "Previous comparison failed; retain it rather than rerolling"
             )
         if not receipt_path.exists():
+            if budget:
+                timeout = budget.timeout(timeout)
+                write_json(
+                    root / "comparison-budget.json",
+                    {
+                        "max_inference_cost_usd": budget.maximum_cost - budget.cost,
+                        "max_run_seconds": timeout,
+                    },
+                )
+            launched = True
             execute(
                 [
                     *argv,
@@ -129,10 +140,20 @@ def evaluate(request_path):
         }
         if not failure_path.exists():
             write_json(failure_path, receipt)
+    finally:
+        if budget and launched:
+            path = output / "budget.json"
+            try:
+                usage = read_json(path)
+                budget.record(usage["reported_inference_cost_usd"])
+                if usage.get("complete") is not True or usage["unknown_cost_requests"]:
+                    budget.record(None)
+            except (OSError, ValueError, KeyError, TypeError):
+                budget.record(None)
     return receipt
 
 
-def run_locked(request_path, command):
+def run_locked(request_path, command, budget=None):
     request = read_json(request_path)
     if not request.get("pr_url"):
         request["pr_url"] = read_json(
@@ -146,7 +167,13 @@ def run_locked(request_path, command):
     endpoint = f"repos/{match[1]}/pulls/{match[2]}"
     root = request_path.parent
     receipt_path = root / "comparison/evidence.json"
-    receipt = evaluate(request_path)
+    receipt = evaluate(request_path, budget=budget)
+    if receipt.get("execution_supported") is False:
+        return {
+            "status": receipt["status"],
+            "published": False,
+            "reason": "unsupported_execution_contract",
+        }
     current = json.loads(command(["gh", "api", endpoint]))
     if current["head"]["sha"] != request["candidate"] or current["state"] != "open":
         return {"status": "stale_pr", "comparison_status": receipt["status"]}
@@ -208,13 +235,13 @@ def run_locked(request_path, command):
     }
 
 
-def run(request_path, command):
+def run(request_path, command, budget=None):
     with (request_path.parent / ".comparison.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        return run_locked(request_path, command)
+        return run_locked(request_path, command, budget=budget)
 
 
-def after_publication(config, source, snapshot, results, output, command):
+def after_publication(config, source, snapshot, results, output, command, budget=None):
     plan = config.get("comparative_validation")
     if not plan:
         return {"status": "not_configured", "published": False}
@@ -232,7 +259,7 @@ def after_publication(config, source, snapshot, results, output, command):
                 raise ValueError("Comparison is already linked to another PR")
         else:
             write_json(link_path, {"pr_url": results["pr_url"]})
-        return run(path, command)
+        return run(path, command, budget=budget)
     snapshot_path = output / "comparison-snapshot.json"
     write_json(snapshot_path, {"samples": snapshot.get("samples", [])})
     request = {
@@ -243,6 +270,7 @@ def after_publication(config, source, snapshot, results, output, command):
         "baseline": source["revision"],
         "candidate": results["candidate_revision"],
         "changed_files": results["changed_files"],
+        "changed_file_manifest": results.get("changed_file_manifest", []),
         "topic": snapshot.get("topic"),
         "repair_issue": snapshot.get("repair_issue"),
         "findings": snapshot.get("comparison_findings", []),
@@ -259,7 +287,7 @@ def after_publication(config, source, snapshot, results, output, command):
     }
     write_json(path, request)
     try:
-        return run(path, command)
+        return run(path, command, budget=budget)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         return {
             "status": "inconclusive",
@@ -268,7 +296,9 @@ def after_publication(config, source, snapshot, results, output, command):
         }
 
 
-def before_publication(config, source, snapshot, results, proposal, findings, output):
+def before_publication(
+    config, source, snapshot, results, proposal, findings, output, budget=None
+):
     plan = config.get("comparative_validation")
     if not plan:
         return {
@@ -303,7 +333,7 @@ def before_publication(config, source, snapshot, results, proposal, findings, ou
     }
     path = output / "comparison-request.json"
     write_json(path, request)
-    return evaluate(path)
+    return evaluate(path, budget=budget)
 
 
 if __name__ == "__main__":

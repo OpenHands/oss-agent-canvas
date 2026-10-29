@@ -4,6 +4,7 @@ import fcntl
 import json
 import os
 import re
+import subprocess
 import tarfile
 import uuid
 from pathlib import Path
@@ -257,7 +258,7 @@ def published_for(prs, automation_id, week, topic):
     return None
 
 
-def recover_topic_slots(state, prs, week):
+def recover_topic_slots(state, prs, week, config=None):
     for pr in prs:
         if week_key(timestamp(pr["createdAt"])) != week:
             continue
@@ -272,18 +273,35 @@ def recover_topic_slots(state, prs, week):
             r"<!-- automation-improvement-topic-key: ([a-z0-9-]{1,40}) -->", body
         )
         if automation and topic:
-            state["topic_weeks"].setdefault(
-                week + "/" + automation[1] + "/" + topic[1],
-                {
-                    "status": "completed",
-                    "topic": {
-                        "id": topic[1],
-                        "key": key[1] if key else "",
-                        "title": pr.get("title", ""),
-                    },
-                    "pr_url": pr["url"],
+            state["topic_weeks"][week + "/" + automation[1] + "/" + topic[1]] = {
+                "status": "completed",
+                "topic": {
+                    "id": topic[1],
+                    "key": key[1] if key else "",
+                    "title": pr.get("title", ""),
                 },
-            )
+                "pr_url": pr["url"],
+            }
+    if config:
+        for key, slot in list(state["topic_weeks"].items()):
+            branch = slot.get("branch")
+            if (
+                not key.startswith(week + "/")
+                or slot["status"] != "reserved"
+                or not branch
+            ):
+                continue
+            if not re.fullmatch(r"automation/improve-[0-9a-f]{20}", branch):
+                continue
+            try:
+                remote = command(
+                    ["git", "ls-remote", "--heads", "origin", "refs/heads/" + branch],
+                    config["checkout"],
+                )
+                if not remote:
+                    state["topic_weeks"].pop(key)
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                slot["recovery_error"] = redact(str(error))[:500]
 
 
 def investigate_topic(
@@ -413,12 +431,17 @@ def investigate_topic(
         proposal = report["proposals"][0]
         if proposal["patch"] and config.get("publish_drafts", False) and not dry_run:
             key = week + "/" + automation_id + "/" + topic["id"]
-            state["topic_weeks"][key] = {
-                "topic": topic,
-                "status": "reserved",
-                "report": str(args.output / "report.json"),
-            }
-            save_state(state_path, state)
+
+            def reserve(branch):
+                state["topic_weeks"][key] = {
+                    "topic": topic,
+                    "status": "reserved",
+                    "branch": branch,
+                    "report": str(args.output / "report.json"),
+                }
+                save_state(state_path, state)
+
+            args.reserve_publication = reserve
             args.publish_draft = True
             args.publication_automation_id, args.publication_week = automation_id, week
             args.publication_topic = topic
@@ -451,12 +474,6 @@ def investigate_topic(
                 ):
                     report, proposal = revised, revised["proposals"][0]
                     args.publish_draft = True
-                    state["topic_weeks"][key] = {
-                        "topic": topic,
-                        "status": "reserved",
-                        "report": str(args.output / "report.json"),
-                    }
-                    save_state(state_path, state)
                     publication = propose_with_evidence(args, report, snapshot, issue)
                     result["repair_revision"] = {
                         "feedback": feedback,
@@ -664,7 +681,7 @@ def investigate(
     completed = [
         value["topic"]
         for key, value in state["topic_weeks"].items()
-        if key.startswith(prefix)
+        if key.startswith(prefix) and value["status"] == "completed"
     ]
     result = {
         "automation_id": automation_id,
@@ -719,7 +736,9 @@ def investigate(
             if not dry_run and (key in state["topic_weeks"] or tracked):
                 outcome = {
                     "topic": topic,
-                    "status": "topic_already_completed_or_tracked",
+                    "status": "publication_reserved"
+                    if not tracked and state["topic_weeks"][key]["status"] == "reserved"
+                    else "topic_already_completed_or_tracked",
                     "pr_url": tracked["url"]
                     if tracked
                     else state["topic_weeks"][key].get("pr_url"),
@@ -833,7 +852,10 @@ def investigate(
         else "budget_exhausted"
         if exhausted
         else "validation_incomplete"
-        if any(item["status"] == "deferred_validation" for item in result["topics"])
+        if any(
+            item["status"] in ("deferred_validation", "publication_reserved")
+            for item in result["topics"]
+        )
         else "completed"
         if result["topics"]
         else "no_promising_findings",
@@ -861,9 +883,11 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget=None):
     if not dry_run and config.get("validate_existing_repairs", False):
         from validate_repairs import validate
 
-        validation_reports = validate(config, state_dir / "repair-validation")
+        validation_reports = validate(
+            config, state_dir / "repair-validation", budget=budget
+        )
     prs = existing_prs(config["repository"], config.get("base_branch", "main"))
-    recover_topic_slots(state, prs, week)
+    recover_topic_slots(state, prs, week, config)
     args = arguments(config, output / "collection", limit, seed)
     args.output.mkdir(mode=0o700)
     inventory = collect_events(Laminar(args), set(), aggregate=True)
@@ -955,6 +979,18 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget=None):
     ):
         summary["status"] = "validation_incomplete"
     summary["budget"] = budget.snapshot() if budget else None
+    summary["pending_publications"] = [
+        {"key": key, "branch": value.get("branch"), "report": value.get("report")}
+        for key, value in state["topic_weeks"].items()
+        if key.startswith(week + "/") and value["status"] == "reserved"
+    ]
+    if (
+        summary["status"] not in ("partial_failure", "budget_exhausted")
+        and summary["pending_publications"]
+    ):
+        summary["status"] = "validation_incomplete"
+    if any(item["status"] == "deferred_budget" for item in validation_reports):
+        summary["status"] = "budget_exhausted"
     summary["pending_events"] = len(state["backlog"])
     write_json(output / "weekly-report.json", redact(summary))
     return summary

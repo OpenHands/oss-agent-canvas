@@ -345,9 +345,16 @@ class TopicIssue:
                     )
         if (output / "validation.json").exists():
             artifacts["validation.json"] = read_json(output / "validation.json")
-        for name in ("paired-evidence-review.json", "paired-review-failure.json"):
+        for name in (
+            "paired-evidence-review.json",
+            "paired-review-failure.json",
+            "comparison-budget.json",
+            "comparison/budget.json",
+        ):
             if (output / name).exists():
                 artifacts[name] = read_json(output / name)
+        for path in sorted(output.glob("*-check.json")):
+            artifacts[path.name] = read_json(path)
         receipt = output / "comparison/evidence.json"
         if (output / "paired-checks.json").exists():
             receipt = output / "paired-checks.json"

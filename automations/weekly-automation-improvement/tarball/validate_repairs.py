@@ -6,14 +6,15 @@ import uuid
 from pathlib import Path
 
 from common import read_json, redact, write_json
+from budget import BudgetExhausted, RunBudget
 from evidence import after_publication, run
 from laminar import Laminar, META, object_value
-from patches import command, load_source
+from patches import command, github_pages
 from sources import github_auth
 from weekly import arguments, load_environment
 
 
-def historical_cohort(config, body, revision, files, output):
+def historical_cohort(config, body, revision, output):
     from cohorts import prepare, collect, topic_records
     from events import collect_events
 
@@ -44,19 +45,8 @@ def historical_cohort(config, body, revision, files, output):
             if record["owner"]["automation_id"] == owner[1]
         ]
         records = topic_records(records, marked)
-        source_path = output / "source.json"
-        write_json(
-            source_path,
-            {
-                "repository": config["repository"],
-                "checkout": config["checkout"],
-                "revision": revision,
-                "files": files,
-                "automation_ids": [owner[1]],
-            },
-        )
         value = collect(client, inventory, owner[1], records, size=size)
-        value = prepare(value, load_source(source_path), output / "context")
+        value = prepare(value, {"revision": revision}, output / "context")
         write_json(path, value)
     return {
         "path": str(path.resolve()),
@@ -100,7 +90,8 @@ def collect_snapshot(config, body, output):
     return redact({"samples": samples})
 
 
-def validate(config, output, numbers=()):
+def validate(config, output, numbers=(), budget=None):
+    budget = budget or RunBudget(config)
     load_environment(config)
     github_auth(config)
     if not config.get("comparative_validation", {}).get("command"):
@@ -133,6 +124,17 @@ def validate(config, output, numbers=()):
             for label in item.get("labels", [])
         ):
             continue
+        try:
+            budget.check()
+        except BudgetExhausted as error:
+            reports.append(
+                {
+                    "number": item["number"],
+                    "status": "deferred_budget",
+                    "error": str(error),
+                }
+            )
+            break
         pr = json.loads(
             command(["gh", "api", f"repos/{repository}/pulls/{item['number']}"])
         )
@@ -154,7 +156,7 @@ def validate(config, output, numbers=()):
         try:
             request_path = directory / "comparison-request.json"
             if request_path.exists():
-                result = run(request_path, command)
+                result = run(request_path, command, budget=budget)
             else:
                 body = pr["body"] or ""
                 baseline = re.search(r"Baseline revision: ([0-9a-f]{40})", body)
@@ -163,18 +165,11 @@ def validate(config, output, numbers=()):
                 command(
                     ["git", "fetch", "origin", pr["head"]["ref"]], config["checkout"]
                 )
-                files = json.loads(
-                    command(
-                        [
-                            "gh",
-                            "api",
-                            f"repos/{repository}/pulls/{item['number']}/files?per_page=100",
-                        ]
-                    )
+                manifest = github_pages(
+                    f"repos/{repository}/pulls/{item['number']}/files?per_page=100",
+                    command,
                 )
-                if len(files) > 30:
-                    raise ValueError("Repair exceeds the approved source-file budget")
-                files = [entry["filename"] for entry in files]
+                files = [entry["filename"] for entry in manifest]
                 if config.get("legacy_development_fixtures", False):
                     snapshot = collect_snapshot(config, body, directory)
                 else:
@@ -186,7 +181,7 @@ def validate(config, output, numbers=()):
                     snapshot = {
                         "samples": [],
                         "validation_cohort": historical_cohort(
-                            config, body, revision, files, cohort_output
+                            config, body, revision, cohort_output
                         ),
                     }
                 topic = re.search(
@@ -218,11 +213,29 @@ def validate(config, output, numbers=()):
                         "pr_url": pr["html_url"],
                         "candidate_revision": pr["head"]["sha"],
                         "changed_files": files,
+                        "changed_file_manifest": [
+                            {
+                                key: entry[key]
+                                for key in ("filename", "status", "previous_filename")
+                                if key in entry
+                            }
+                            for entry in manifest
+                        ],
                     },
                     directory,
                     command,
+                    budget=budget,
                 )
             reports.append({"number": item["number"], **result})
+        except BudgetExhausted as error:
+            reports.append(
+                {
+                    "number": item["number"],
+                    "status": "deferred_budget",
+                    "error": str(error),
+                }
+            )
+            break
         except Exception as error:
             reports.append(
                 {

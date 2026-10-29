@@ -219,11 +219,26 @@ costs are recorded; an unknown/invalid cost stops further inference. Timeouts an
 failed requests are not silently retried. Deferred topics stay in the backlog,
 and reports distinguish budget exhaustion from "no actionable findings".
 
+Existing-PR comparisons share that budget with new repairs. Comparison runners
+read the remaining allowance from `comparison-budget.json` beside the request
+and write `comparison/budget.json` with reported spend, unknown-cost count and
+`complete: true` after accounting finishes. Missing or interrupted accounting
+stops further inference. Paired check timeouts use the remaining deadline and
+terminate their process groups when timed out.
+
+Publication reservations begin immediately before pushing a branch. Preparation
+failures remain retryable. An uncertain write is reconciled against existing PRs
+and its remote branch; unresolved reservations appear in `pending_publications`
+and keep the weekly report incomplete.
+
 The repair worker is a normal OpenHands SDK `Agent`/`Conversation` powered by
 `openai/gpt-6.1-sol`, with the default terminal, editor, browser, task tracker,
 context condenser and subagent tools. It works in an isolated Git worktree,
 can create/delete files, install dependencies and run tests. Code changes come
 from its actual Git diff. Repository scope and publication stay in the harness.
+The coder and its checks run under the worker identity; a Git worktree provides
+source separation, not an operating-system sandbox. Use a dedicated development
+worker with access appropriate for the source and evidence being inspected.
 
 Configure `repair_agent` for effort, iteration and conversation time limits.
 The SDK receives the remaining run budget. The example allows $15 and three

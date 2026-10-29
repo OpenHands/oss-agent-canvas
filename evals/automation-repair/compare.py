@@ -397,6 +397,9 @@ def final_message(events):
 
 
 def run_agent(args, sandbox, prompt, output):
+    budget = getattr(args, "budget", None)
+    if budget:
+        budget.check()
     from pydantic import SecretStr
     from openhands.sdk import LLM, Agent, Conversation, ToolDefinition
     from openhands.sdk.tool import Tool, ToolExecutor, register_tool
@@ -471,10 +474,14 @@ def run_agent(args, sandbox, prompt, output):
         callbacks=[lambda event: events.append(event.model_dump(mode="json"))],
         visualizer=None,
     )
+    if budget:
+        conversation.max_budget_per_run = budget.maximum_cost - budget.cost
     started = time.monotonic()
     error = None
     try:
-        with deadline(args.max_run_seconds):
+        with deadline(
+            budget.timeout(args.max_run_seconds) if budget else args.max_run_seconds
+        ):
             conversation.send_message(prompt)
             draft = sandbox.case.get("draft_review") or sandbox.case.get(
                 "draft_decision"
@@ -492,6 +499,14 @@ def run_agent(args, sandbox, prompt, output):
         error = type(exception).__name__ + ": " + str(exception)[:1000]
     finally:
         write(output / "events.json", events)
+        if budget:
+            metrics = llm.metrics.model_dump(mode="json")
+            cost = metrics.get("accumulated_cost")
+            budget.record(cost if cost and cost > 0 else None)
+            write(
+                args.output.parent / "budget.json",
+                budget.snapshot() | {"complete": False},
+            )
     status = str(conversation.state.execution_status.value)
     final_response = final_message(events)
     measurements = {
@@ -768,6 +783,9 @@ def run_comparison(args):
             )
             for case in cases:
                 for variant in order:
+                    budget = getattr(args, "budget", None)
+                    if budget:
+                        budget.check()
                     output = args.output / f"{case['id']}-{index + 1}-{variant}"
                     if args.resume and (output / "result.json").exists():
                         rows.append(json.loads((output / "result.json").read_text()))

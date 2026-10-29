@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -86,6 +87,23 @@ def settings(request, output):
 
 
 def run(request_path, output):
+    request = json.loads(request_path.read_text())
+    budget_path = request_path.parent / "comparison-budget.json"
+    if not budget_path.exists():
+        return run_comparison(request_path, output)
+    from validation_agent import worker_path
+
+    sys.path.insert(0, str(worker_path(request["plan"])))
+    from budget import RunBudget
+
+    budget = RunBudget(json.loads(budget_path.read_text()))
+    try:
+        return run_comparison(request_path, output, budget)
+    finally:
+        compare.write(output / "budget.json", budget.snapshot() | {"complete": True})
+
+
+def run_comparison(request_path, output, budget=None):
     os.umask(0o077)
     request = json.loads(request_path.read_text())
     output.mkdir(parents=True)
@@ -105,12 +123,14 @@ def run(request_path, output):
             not path.startswith((SOURCE, "plugins/issue-triage/")) for path in changed
         )
     ):
+        receipt["execution_supported"] = False
         receipt["markdown"] = (
             "**Not evaluated:** no trusted execution contract covers this repair. "
             "No behavioral improvement is demonstrated for this repair."
         )
     else:
         args, targeted = settings(request, output / "runs")
+        args.budget = budget
         if request.get("snapshot") and not args.native_cases:
             inputs = captured_inputs(
                 json.loads(Path(request["snapshot"]).read_text()), contract
@@ -173,6 +193,7 @@ def run(request_path, output):
                     report,
                     args.native_cases,
                     output=output,
+                    budget=budget,
                 )
                 report["assessment"] = assess(
                     report,

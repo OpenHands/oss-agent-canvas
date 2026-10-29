@@ -157,3 +157,37 @@ def test_recorded_native_executions_are_rescored_without_model_calls(
     assert result["reused_executions"]
     assert "no agent run was repeated" in result["markdown"]
     assert "Rescoring changed the verdict" in result["markdown"]
+
+
+def test_comparison_budget_survives_an_execution_failure(tmp_path, monkeypatch):
+    value = request()
+    path = tmp_path / "request.json"
+    path.write_text(json.dumps(value))
+    (tmp_path / "comparison-budget.json").write_text(
+        json.dumps({"max_inference_cost_usd": 0.5, "max_run_seconds": 30})
+    )
+
+    def run(args):
+        args.budget.record(0.3)
+        raise RuntimeError("execution failed after inference")
+
+    monkeypatch.setattr(pr_comparison.compare, "main", run)
+    with pytest.raises(RuntimeError, match="execution failed"):
+        pr_comparison.run(path, tmp_path / "comparison")
+    receipt = json.loads((tmp_path / "comparison/budget.json").read_text())
+    assert receipt["reported_inference_cost_usd"] == pytest.approx(0.3)
+    assert receipt["max_inference_cost_usd"] == 0.5 and receipt["complete"] is True
+
+
+def test_unsupported_adapter_reports_zero_new_inference_cost(tmp_path):
+    value = request()
+    value["changed_files"] = ["plugins/other/main.py"]
+    path = tmp_path / "request.json"
+    path.write_text(json.dumps(value))
+    (tmp_path / "comparison-budget.json").write_text(
+        json.dumps({"max_inference_cost_usd": 0.5, "max_run_seconds": 30})
+    )
+    pr_comparison.run(path, tmp_path / "comparison")
+    receipt = json.loads((tmp_path / "comparison/budget.json").read_text())
+    assert receipt["reported_inference_cost_usd"] == 0 and receipt["requests"] == 0
+    assert receipt["complete"] is True

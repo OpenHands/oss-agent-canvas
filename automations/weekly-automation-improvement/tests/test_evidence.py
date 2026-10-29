@@ -8,6 +8,7 @@ from test_automation import TARBALL
 
 sys.path.insert(0, str(TARBALL))
 import evidence
+from budget import BudgetExhausted, RunBudget
 
 
 def request(tmp_path, **overrides):
@@ -119,6 +120,50 @@ def test_failed_comparison_is_retained_without_reroll(tmp_path):
     assert (tmp_path / "comparison-failure.json").read_bytes() == first
 
 
+@pytest.mark.parametrize("complete", [True, False])
+def test_child_spend_is_counted_and_incomplete_receipts_stop_inference(
+    tmp_path, complete
+):
+    path, value = request(tmp_path)
+    runner = tmp_path / "runner.py"
+    runner.write_text(
+        runner.read_text()
+        + "\n(o/'budget.json').write_text(json.dumps({'reported_inference_cost_usd':0.6,'unknown_cost_requests':0,'complete':"
+        + repr(complete)
+        + "}))\n"
+    )
+    budget = RunBudget({"max_inference_cost_usd": 0.5})
+    assert (
+        evidence.evaluate(path, budget=budget)["status"]
+        == "improvement_on_development_cases"
+    )
+    assert budget.cost == pytest.approx(0.6)
+    assert budget.unknown == (0 if complete else 1)
+    with pytest.raises(BudgetExhausted):
+        budget.check()
+    requests = budget.requests
+    evidence.evaluate(path, budget=budget)
+    assert budget.requests == requests
+
+
+def test_missing_child_cost_is_unknown_and_expired_budget_never_launches(
+    tmp_path, monkeypatch
+):
+    path, value = request(tmp_path)
+    budget = RunBudget({})
+    evidence.evaluate(path, budget=budget)
+    assert budget.unknown == 1
+    second = tmp_path / "second"
+    second.mkdir()
+    path, _ = request(second)
+    monkeypatch.setattr(
+        evidence, "execute", lambda *a: pytest.fail("Do not start inference")
+    )
+    with pytest.raises(BudgetExhausted):
+        evidence.evaluate(path, budget=budget)
+    assert not (second / "comparison-failure.json").exists()
+
+
 def test_inconclusive_comparison_replaces_only_owned_unevaluated_notice(tmp_path):
     path, value = request(tmp_path)
     output = tmp_path / "comparison"
@@ -186,7 +231,7 @@ def test_hook_freezes_published_revisions_and_does_not_run_when_unconfigured(
     monkeypatch.setattr(
         evidence,
         "run",
-        lambda path, command: calls.append(json.loads(path.read_text()))
+        lambda path, command, **kwargs: calls.append(json.loads(path.read_text()))
         or {"status": "inconclusive"},
     )
     result = evidence.after_publication(
@@ -236,7 +281,7 @@ def test_prepublication_forwards_the_frozen_user_sized_cohort(tmp_path, monkeypa
     monkeypatch.setattr(
         evidence,
         "evaluate",
-        lambda path: captured.append(json.loads(path.read_text()))
+        lambda path, **kwargs: captured.append(json.loads(path.read_text()))
         or {"status": "inconclusive"},
     )
     cohort = {"path": "/private/cohort.json", "sha256": "fixed", "sample_size": 7}
@@ -322,3 +367,25 @@ def test_inconclusive_evidence_returns_a_ready_pr_to_draft(tmp_path):
 
     evidence.run(path, command)
     assert ["gh", "pr", "ready", value["pr_url"], "--undo"] in calls
+
+
+def test_unsupported_historical_adapter_cannot_replace_existing_evidence(tmp_path):
+    path, value = request(tmp_path)
+    output = tmp_path / "comparison"
+    output.mkdir()
+    receipt = {key: value[key] for key in ("baseline", "candidate")}
+    receipt.update(
+        status="inconclusive",
+        markdown="No adapter for this automation",
+        execution_supported=False,
+        request_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+    )
+    (output / "evidence.json").write_text(json.dumps(receipt))
+    result = evidence.run(
+        path, lambda *a: pytest.fail("Do not overwrite existing mechanism evidence")
+    )
+    assert result == {
+        "status": "inconclusive",
+        "published": False,
+        "reason": "unsupported_execution_contract",
+    }

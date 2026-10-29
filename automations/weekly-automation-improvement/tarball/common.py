@@ -147,7 +147,9 @@ def request_model(args, model, body, endpoint, name, *, redact_body=True):
         headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
+        with urllib.request.urlopen(
+            request, timeout=budget.timeout(60) if budget else 60
+        ) as response:
             raw = response.read(2_000_001)
             headers = {key.lower(): value for key, value in response.headers.items()}
     except urllib.error.HTTPError as error:

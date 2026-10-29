@@ -237,7 +237,7 @@ def test_publication_requires_review_and_preserves_historical_comparison(
             return "https://github.com/Example/automation/pull/2"
         return original(argv, cwd, **kwargs)
 
-    def historical(*args):
+    def historical(*args, **kwargs):
         calls.append("historical")
         return {"status": "inconclusive", "markdown": "Historical inconclusive"}
 

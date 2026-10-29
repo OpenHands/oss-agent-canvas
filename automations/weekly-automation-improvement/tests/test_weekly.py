@@ -166,7 +166,7 @@ def test_unevaluated_draft_publishes_without_behavioral_checks(
     pushed = []
     comparisons = []
 
-    def compare(config, source, snapshot, results, output, command):
+    def compare(config, source, snapshot, results, output, command, budget=None):
         assert results["pr_url"] == "https://github.com/Example/automation/pull/1"
         assert len(results["candidate_revision"]) == 40
         assert len(pushed) == 1
@@ -342,10 +342,14 @@ def prepare_grouped(configured_source, tmp_path, monkeypatch, records):
 
     monkeypatch.setattr(topic_issue, "command", GitHub())
     _, _, source = configured_source
-    config = configuration(tmp_path) | {"publish_drafts": True}
+    config = configuration(tmp_path) | {
+        "publish_drafts": True,
+        "checkout": source["checkout"],
+    }
     monkeypatch.setenv("LMNR_PROJECT_API_KEY", "test")
     monkeypatch.setattr(weekly, "github_auth", lambda c: None)
     monkeypatch.setattr(weekly, "existing_prs", lambda r, base="main": [])
+    monkeypatch.setattr(weekly, "command", lambda *a: "remote-branch-exists")
     monkeypatch.setattr(weekly, "collect_events", lambda *a, **k: inventory(records))
     calls = []
 
@@ -459,6 +463,7 @@ def test_uncertain_publication_blocks_only_its_automation(
 
     def publish(args, report, snapshot):
         if args.publication_automation_id == records[0]["owner"]["automation_id"]:
+            args.reserve_publication("automation/improve-" + "0" * 20)
             raise RuntimeError("connection lost during publication")
         return original(args, report, snapshot)
 
@@ -476,7 +481,8 @@ def test_uncertain_publication_blocks_only_its_automation(
         "reserved",
     ]
     again = weekly.run(config)
-    assert again["automations"][0]["status"] == "no_promising_findings"
+    assert again["status"] == "validation_incomplete"
+    assert again["pending_publications"]
     assert len([call for call in calls if call[0] == "sol"]) == 2
 
 
@@ -1011,6 +1017,7 @@ def test_failed_topic_does_not_block_other_topics_in_same_automation(
     def publish(args, report, snapshot):
         count.append(args.publication_topic["id"])
         if len(count) == 1:
+            args.reserve_publication("automation/improve-" + "0" * 20)
             raise RuntimeError("uncertain write")
         return original(args, report, snapshot)
 
@@ -1405,3 +1412,70 @@ def test_laminar_sdk_uses_reachable_http_transport(monkeypatch):
     import os
 
     assert os.environ["LMNR_FORCE_HTTP"] == "true"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ValueError("allowlist rejection"),
+        RuntimeError("reviewer HTTP failure"),
+        weekly.BudgetExhausted("run_time_threshold"),
+    ],
+)
+def test_failure_before_external_write_remains_retryable(
+    configured_source, tmp_path, monkeypatch, error
+):
+    config, calls = prepare_grouped(
+        configured_source, tmp_path, monkeypatch, [record()]
+    )
+    original = weekly.propose_fix
+    attempts = []
+
+    def publish(args, report, snapshot):
+        attempts.append(args.output)
+        if len(attempts) == 1:
+            raise error
+        return original(args, report, snapshot)
+
+    monkeypatch.setattr(weekly, "propose_fix", publish)
+    first = weekly.run(config)
+    state_path = Path(config["state_dir"]) / "state.json"
+    state = json.loads(state_path.read_text())
+    assert not state["topic_weeks"] and state["backlog"]
+    assert first["status"] in ("partial_failure", "budget_exhausted")
+    second = weekly.run(config)
+    assert second["status"] == "completed" and len(attempts) == 2
+    assert not json.loads(state_path.read_text())["backlog"]
+
+
+def test_uncertain_publication_recovers_matching_pr_or_absent_branch(monkeypatch):
+    from triage import topic_id
+
+    week = weekly.week_key(weekly.dt.datetime.now(weekly.dt.UTC))
+    automation = str(uuid.UUID(int=1))
+    identifier = topic_id(automation, "topic")
+    key = f"{week}/{automation}/{identifier}"
+    slot = {
+        "status": "reserved",
+        "topic": {"id": identifier},
+        "branch": "automation/improve-" + "a" * 20,
+    }
+    state = {"topic_weeks": {key: slot}}
+    pr = {
+        "createdAt": weekly.dt.datetime.now(weekly.dt.UTC).isoformat(),
+        "url": "https://github.com/example/repo/pull/1",
+        "body": f"<!-- automation-improvement-automation: {automation} -->\n<!-- automation-improvement-topic: {identifier} -->",
+    }
+    weekly.recover_topic_slots(state, [pr], week)
+    assert state["topic_weeks"][key]["status"] == "completed"
+    assert state["topic_weeks"][key]["pr_url"] == pr["url"]
+    state["topic_weeks"][key] = slot
+    monkeypatch.setattr(weekly, "command", lambda *a: "")
+    weekly.recover_topic_slots(state, [], week, {"checkout": "/existing"})
+    assert not state["topic_weeks"]
+    state["topic_weeks"][key] = slot
+    monkeypatch.setattr(
+        weekly, "command", lambda *a: "a" * 40 + "\trefs/heads/" + slot["branch"]
+    )
+    weekly.recover_topic_slots(state, [], week, {"checkout": "/existing"})
+    assert state["topic_weeks"][key]["status"] == "reserved"

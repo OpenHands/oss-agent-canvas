@@ -45,6 +45,10 @@ class RunBudget:
         except (TypeError, ValueError):
             self.unknown += 1
 
+    def timeout(self, maximum):
+        self.check()
+        return min(maximum, self.maximum_seconds - (time.monotonic() - self.started))
+
     def snapshot(self):
         return {
             "max_inference_cost_usd": self.maximum_cost,

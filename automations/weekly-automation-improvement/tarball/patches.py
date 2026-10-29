@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import shutil
+import signal
 from pathlib import Path
 
 from common import call_model, read_json, redact, topic_id, write_json
@@ -97,7 +98,7 @@ def load_source(config_path):
     }
 
 
-def run_checks(directory, checks, output, label):
+def run_checks(directory, checks, output, label, budget=None):
     results = []
     safe_env = {
         key: value
@@ -105,6 +106,7 @@ def run_checks(directory, checks, output, label):
         if key in ("PATH", "LANG", "LC_ALL", "TMPDIR", "VIRTUAL_ENV")
     }
     for index, check in enumerate(checks):
+        timeout = budget.timeout(120) if budget else 120
         argv = check["argv"]
         if (
             not isinstance(argv, list)
@@ -116,16 +118,22 @@ def run_checks(directory, checks, output, label):
         with path.open("x") as stream:
             path.chmod(0o600)
             try:
-                process = subprocess.run(
+                process = subprocess.Popen(
                     argv,
                     cwd=directory,
                     env=safe_env,
+                    stdin=subprocess.DEVNULL,
                     stdout=stream,
                     stderr=subprocess.STDOUT,
-                    timeout=120,
+                    start_new_session=True,
                 )
-                code = process.returncode
+                code = process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait()
                 code = 124
         with path.open(errors="replace") as stream:
             excerpt = stream.read(8000)
@@ -138,6 +146,9 @@ def run_checks(directory, checks, output, label):
                 "excerpt": redact(excerpt),
             }
         )
+        write_json(output / f"{label}-{index}-check.json", results[-1])
+        if budget:
+            budget.check()
     return results
 
 
@@ -406,8 +417,17 @@ def _propose_fix(args, report, snapshot):
         baseline_diff = command(
             ["git", "diff", "HEAD", "--binary"], baseline, strip=False
         )
-    before = run_checks(baseline, checks, args.output, "baseline") if checks else []
-    after = run_checks(candidate, checks, args.output, "candidate") if checks else []
+    budget = getattr(args, "budget", None)
+    before = (
+        run_checks(baseline, checks, args.output, "baseline", budget=budget)
+        if checks
+        else []
+    )
+    after = (
+        run_checks(candidate, checks, args.output, "candidate", budget=budget)
+        if checks
+        else []
+    )
     if (
         checks
         and command(["git", "diff", "HEAD", "--binary"], baseline, strip=False)
@@ -542,7 +562,14 @@ def _propose_fix(args, report, snapshot):
         }
         if config.get("comparative_validation"):
             historical = before_publication(
-                config, source, snapshot, results, proposal, findings, args.output
+                config,
+                source,
+                snapshot,
+                results,
+                proposal,
+                findings,
+                args.output,
+                budget=budget,
             )
             verified["historical_comparison"] = historical
             verified["markdown"] += (
@@ -562,7 +589,14 @@ def _propose_fix(args, report, snapshot):
         results["status"] = "evidence_supported_draft"
     elif config.get("require_improvement", True):
         verified = before_publication(
-            config, source, snapshot, results, proposal, findings, args.output
+            config,
+            source,
+            snapshot,
+            results,
+            proposal,
+            findings,
+            args.output,
+            budget=budget,
         )
         results["comparison"] = {"status": verified["status"]}
         results["behavioral_evaluation"] = verified["status"]
@@ -591,6 +625,11 @@ def _propose_fix(args, report, snapshot):
             "Improvement branch already exists without a tracked PR; inspect before retrying"
         )
     validate_public_patch(expected_diff)
+    if budget:
+        budget.check()
+    reserve = getattr(args, "reserve_publication", None)
+    if reserve:
+        reserve(branch)
     command(["git", "push", "origin", "HEAD:refs/heads/" + branch], candidate)
     links = sorted({url for finding in findings for url in finding["trace_urls"]})
     body = (
@@ -711,6 +750,7 @@ def _propose_fix(args, report, snapshot):
             results,
             args.output,
             command,
+            budget=budget,
         )
     write_json(args.output / "publication.json", results)
     return results

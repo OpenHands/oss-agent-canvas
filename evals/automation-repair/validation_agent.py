@@ -129,7 +129,7 @@ class Executions:
         }
 
 
-def assess(request, root, report, cases, output=None):
+def assess(request, root, report, cases, output=None, budget=None):
     output = output or root.parent
     sys.path.insert(0, str(worker_path(request["plan"])))
     from common import write_json
@@ -219,6 +219,7 @@ def assess(request, root, report, cases, output=None):
             )
         context["inputs"].append(item)
     args = SimpleNamespace(
+        budget=budget,
         output=output / "semantic-review",
         api="responses",
         effort="high",
