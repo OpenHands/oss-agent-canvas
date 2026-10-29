@@ -1,0 +1,98 @@
+{
+  "name": "daily-release-train",
+  "version": "0.1.0",
+  "description": "Executable automation plugin for the daily OpenHands release train: software-agent-sdk, automation, extensions, then OpenHands (Agent Canvas), with a Slack release/blocker summary.",
+  "author": {
+    "name": "OpenHands",
+    "email": "contact@all-hands.dev"
+  },
+  "homepage": "https://github.com/OpenHands/oss-agent-canvas",
+  "repository": "https://github.com/OpenHands/oss-agent-canvas",
+  "license": "MIT",
+  "keywords": [
+    "automation",
+    "daily-release-train",
+    "release"
+  ],
+  "automation": {
+    "schema_version": "openhands.automation.plugin.v1",
+    "entrypoint": {
+      "runner": "script",
+      "working_dir": "scripts",
+      "command": "env .venv/bin/python main.py",
+      "setup_script": "scripts/setup.sh"
+    },
+    "runtime": {
+      "plugins": []
+    },
+    "config_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["dry_run", "live"],
+          "default": "dry_run",
+          "description": "dry_run: inspect every release stage, make no GitHub mutations and no merges; the Slack summary is still posted, bannered as a dry run. live: perform the release train."
+        },
+        "slack_channel_id": {
+          "type": "string",
+          "default": "C06QT0AGY4W",
+          "description": "Slack channel ID for the release summary. Default is #proj-agent-canvas in the OpenHands workspace (team T06P212QSEA); post with SLACK_BOT_TOKEN_OPENHANDS_AI. NOTE: there is no channel literally named #agent-canvas; see README."
+        },
+        "slack_channel_name": {
+          "type": "string",
+          "default": "#proj-agent-canvas"
+        },
+        "sdk_version_bump": {
+          "type": "string",
+          "enum": ["minor", "patch"],
+          "default": "minor",
+          "description": "How to compute the next software-agent-sdk version when no rel-* release PR is already open. Recent cadence (1.58.x -> 1.59.0) is minor."
+        },
+        "max_wait_minutes": {
+          "type": "integer",
+          "default": 90,
+          "minimum": 10,
+          "maximum": 240,
+          "description": "Per-stage wait budget for CI / publishing workflows before declaring that stage blocked for this run."
+        },
+        "repos": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string",
+                "default": "https://github.com/OpenHands/software-agent-sdk"
+              }
+            },
+            "additionalProperties": false,
+            "default": {
+              "url": "https://github.com/OpenHands/software-agent-sdk"
+            }
+          },
+          "default": [
+            {
+              "url": "https://github.com/OpenHands/software-agent-sdk"
+            },
+            {
+              "url": "https://github.com/OpenHands/automation"
+            },
+            {
+              "url": "https://github.com/OpenHands/extensions"
+            },
+            {
+              "url": "https://github.com/OpenHands/OpenHands"
+            }
+          ]
+        }
+      }
+    },
+    "suggested_trigger": {
+      "type": "cron",
+      "schedule": "0 3 * * *",
+      "timezone": "America/New_York"
+    }
+  }
+}
