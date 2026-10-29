@@ -55,8 +55,17 @@ A fresh **N=1 diagnostic canary** refetches original task messages from Laminar 
 randomly downsamples one of the original five controls with seed `20261029`. It
 uses two repetitions, intact markers, the same pinned source snapshots and corrected
 API coverage. It does not replace the original N=5 experiment. Its artifacts are
-under `automation-simple-validation-20261029/canary-4470c6209387`; results will be
-recorded separately when execution completes.
+under `automation-simple-validation-20261029/canary-4470c6209387`.
+
+The canary completed all **eight planned execution attempts**: seven finished and
+one candidate reached its SDK step limit. Both control pairs were valid and passed
+on both versions. The negative baseline chose medium in both repetitions; the
+candidate completed one matching decision and one run made no writes before its
+step limit. Sol completed the assessment with eight optional reads in approximately
+56 seconds, **$0.2389 proxy-reported cost**. Context was sufficient; the incomplete
+runtime outcome remains unknown rather than a behavioral regression. No paired fix
+was demonstrated, so **#60 stays draft and unqualified**. The corrected replay and
+one-agent review work end to end without claiming that this prompt repair helps.
 
 ## Other calibration and checks
 
