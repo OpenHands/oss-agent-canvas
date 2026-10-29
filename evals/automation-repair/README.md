@@ -147,6 +147,7 @@ checking pinned source/model/endpoint/timeouts, cases and input values, then res
 all executions. This supports publication recovery without repeated inference.
 
 Recorded earlier results remain retained:
+[evidence-gated publication and live verification status](VALIDATION_END_TO_END.md),
 [initial prompt comparison](VALIDATION.md),
 [controlled publication and native integration](VALIDATION_CONTROLLED_PUBLICATION.md),
 [post-publication evidence update](VALIDATION_POST_PUBLICATION.md).
