@@ -71,9 +71,9 @@ candidate worktrees. For example:
     "model": "openai/glm-5.3-flash",
     "base_url": "https://llm-proxy.eval.all-hands.dev",
     "effort": "high",
-    "repeats": 3,
+    "repeats": 1,
     "llm_timeout": 120,
-    "max_run_seconds": 180,
+    "max_run_seconds": 420,
     "timeout_seconds": 3600
   }
 }

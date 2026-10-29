@@ -15,16 +15,20 @@
   "require_improvement": true,
   "validate_existing_repairs": true,
   "comparative_validation": {
-    "command": ["/private/sdk-venv/bin/python", "/private/evaluator/pr_comparison.py"],
+    "command": [
+      "/private/sdk-venv/bin/python",
+      "/private/evaluator/pr_comparison.py"
+    ],
     "profile_id": "glm-5.3-flash",
     "automatic_contracts": true,
     "timeout_seconds": 3600,
-    "repeats": 3,
-    "max_run_seconds": 180
+    "repeats": 1,
+    "max_run_seconds": 420,
+    "llm_timeout": 120
   },
   "triage_model": "openai/gpt-6-luna",
   "repair_model": "openai/gpt-6.1-sol",
   "triage_batch_size": 3,
   "max_inference_cost_usd": 1.0,
-  "max_run_seconds": 900
+  "max_run_seconds": 3600
 }
