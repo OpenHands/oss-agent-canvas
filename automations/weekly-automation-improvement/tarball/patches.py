@@ -413,12 +413,12 @@ def _propose_fix(args, report, snapshot):
             config, source, snapshot, results, proposal, findings, args.output
         )
         results["comparison"] = {"status": verified["status"]}
+        results["behavioral_evaluation"] = verified["status"]
         if verified["status"] != "improvement_on_development_cases":
             results["status"] = "improvement_not_demonstrated"
             write_json(args.output / "publication.json", results)
             return results
         results["status"] = "evidence_supported_draft"
-        results["behavioral_evaluation"] = verified["status"]
         current = command(
             [
                 "gh",

@@ -551,7 +551,7 @@ def compare(rows, cases, expected_repeats=1):
         "cases": results,
         "runs": rows,
         "behavioral_benefit_proven": False,
-        "scope": "AI-authored publication scenarios derived from observed failures; not historical full-trajectory replay or held-out quality evaluation",
+        "scope": "AI-authored task scenarios derived from observed failures; not historical full-trajectory replay or held-out quality evaluation",
     }
 
 

@@ -102,3 +102,4 @@ def test_real_comparison_gates_publication_and_attaches_recorded_evidence(
         assert result["comparison"]["published"]
     else:
         assert result["status"] == "improvement_not_demonstrated"
+        assert result["behavioral_evaluation"] == "inconclusive"
