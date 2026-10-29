@@ -16,6 +16,7 @@ source = source_fixture
 
 
 def install_sdk(monkeypatch, execute):
+    monkeypatch.setattr(coding_agent, "version", lambda name: "1.56.0")
     captured = {}
     agent = SimpleNamespace(
         tools=[
@@ -278,3 +279,49 @@ def test_failed_native_attempt_consumes_shared_budget(source, tmp_path, monkeypa
         (args.output / "coding-agent/measurement.json").read_text()
     )
     assert measurement["sdk_estimated_cost_usd"] == 0.12
+
+
+def test_issue_reads_do_not_require_laminar_credentials(tmp_path, monkeypatch, capsys):
+    import topic_issue
+    from test_topic_issue import GitHub, snapshot
+
+    monkeypatch.delenv("LMNR_PROJECT_API_KEY", raising=False)
+    monkeypatch.delenv("LMNR_BASE_URL", raising=False)
+    monkeypatch.setattr(topic_issue, "command", GitHub())
+    value = snapshot(tmp_path)
+    issue = topic_issue.TopicIssue.ensure(value, tmp_path / "issue")
+    value["repair_issue"] = issue.refresh()
+    context = tmp_path / "context.json"
+    context.write_text(json.dumps({"snapshot": value, "inventory": {}}))
+    coding_agent.evidence(context, "read_issue", {"section": "Goal", "offset": 0})
+    result = json.loads(capsys.readouterr().out)
+    assert result["content"].startswith("## Goal")
+
+
+def test_brief_removes_duplicate_traces_without_losing_originals(
+    source, tmp_path, monkeypatch
+):
+    _, path, _ = source
+    output = tmp_path / "repair"
+    output.mkdir()
+    original = {"source": load_source(path), "samples": [{"raw": "trace-" * 10000}]}
+    captured = install_sdk(
+        monkeypatch,
+        lambda wt: (output / "coding-agent/result.json").write_text(
+            '{"proposals":[],"rejections":[]}'
+        ),
+    )
+    args = arguments(output, source_config=path)
+    coding_agent.coordinate(
+        args,
+        {"source": original["source"], "cases": [{"original_task": "task"}]},
+        original,
+    )
+    brief_path = output / "coding-agent/context.json"
+    brief = json.loads(brief_path.read_text())
+    assert brief_path.stat().st_size < 4000
+    assert brief["context"]["cases"] == [{"original_task": "task"}]
+    assert brief["snapshot"]["source"]["files"] == ["value.py"]
+    assert json.loads(Path(brief["snapshot_path"]).read_text()) == original
+    assert json.loads(Path(brief["inventory_path"]).read_text()) == {}
+    assert "targeted JSON extraction" in captured["prompt"]
