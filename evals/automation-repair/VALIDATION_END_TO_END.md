@@ -1,4 +1,48 @@
-# Evidence-gated publication
+# Historical-cohort validation
+
+On 2026-10-29, the stronger user-configurable protocol selected **N=5** from live
+self-hosted Laminar: one available topic-linked negative conversation and five
+uniformly sampled non-negative conversations from the same automation. Selection
+was frozen with seed `20261029`; no selected input was replaced. Luna assigned
+expected outcomes without candidate code, candidate outputs or Signal labels.
+Both versions then executed each original native task: **12 executions**.
+
+The result for [PR #60](https://github.com/OpenHands/oss-agent-canvas/pull/60) is
+**inconclusive**. The original negative task passed on both versions, so the target
+failure did not reproduce. One control passed on both versions; another candidate
+execution did not finish. Other controls exposed readiness errors and unsupported
+write attempts (PUT on the issue endpoint and POST to a different issue).
+One control changed from an incorrect priority to an incorrect readiness decision;
+that is a new violation, not a pass. These results supersede the smaller checkpoint
+qualification below. The example remains a labeled draft; improvement is unproven.
+
+The report now has separate negative-input and random non-negative-input tables,
+linked to the selected Laminar traces. It compares all strict failures and reports
+new violations relative to paired controls. Existing failures are visible rather
+than assumed absent just because Flow-1 produced no Signal. Runtime or unmodeled
+mutation errors block acceptance. Current root repository guidance is pinned and
+shared, but complete historical implementations and linked discussions are not
+reconstructed. AI expectations and a small development cohort are not statistical
+proof. The candidate already existed before this backfill; no candidate outputs
+were used to assign these expectations.
+
+Private artifacts under `automation-cohort-validation-20261029`:
+
+- `077da19bb716`: frozen selection and successful native Sol `read_signal` canary
+  (one read, $0.0058095 proxy-reported cost).
+- `evaluation-935e73a6cbd7`: repository-guidance enrichment, independently frozen
+  expectations, original tasks and twelve retained executions.
+- `evidence-a431cc067f12`: current scorer receipt and PR-description update, reusing
+  every execution with zero additional inference. Relative-control acceptance is
+  disclosed in the report; no input, annotation or raw execution changed.
+
+The full worker/evaluator suite passes **227 tests**. Ruff and whitespace checks
+pass. N is a positive top-level `validation_sample_size`, default **5**, independently
+of repetitions. Historical execution currently supports issue-priority topics;
+reviewer-family adapters remain pending and cannot silently use three old fixtures.
+Production schedules, deployments and the weekly production ledger were unchanged.
+
+# Earlier checkpoint experiment (superseded qualification)
 
 On 2026-10-29, the prototype produced
 [repair PR #60](https://github.com/OpenHands/oss-agent-canvas/pull/60) with
@@ -101,7 +145,7 @@ were not reproduced, so its formatting-only advantage cannot establish the targe
 fix. The earlier incomplete/fixture-limited evidence on
 [#54](https://github.com/OpenHands/oss-agent-canvas/pull/54) remains retained.
 
-The full worker/comparison suite passes: **198 tests in 87.66 seconds**. Ruff and
+At that stage, the worker/comparison suite passed **198 tests in 87.66 seconds**. Ruff and
 whitespace checks pass. Integration tests exercise real Git/subprocess operations,
 publication gating, immutable receipt reuse, mismatched-commit rejection, retained
 candidate bundles, cleanup and a bounded Sol revision. Failed or inconclusive

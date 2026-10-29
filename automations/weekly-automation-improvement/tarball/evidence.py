@@ -151,19 +151,35 @@ def run_locked(request_path, command):
     body = replace_section(current["body"], redact(receipt["markdown"]))
     payload = {"body": body}
     supported = receipt["status"] == "improvement_on_development_cases"
-    body = body.replace(
-        "**UNEVALUATED PROPOSAL:** behavioral evaluation has not been performed. The checks below only establish that the patch applies within the approved source scope.",
-        "**Development comparison recorded:** see Before / After Evidence for executed checks, exact source revisions and limitations."
-        if supported
-        else f"**Comparison status: {receipt['status']}.** Improvement has not been demonstrated; see Before / After Evidence.",
-    ).replace(
-        "This proposal has not been validated.",
-        "The original plan is superseded by the recorded comparison below.",
+    body = (
+        body.replace(
+            "**Development comparison recorded:** see Before / After Evidence for executed checks, exact source revisions and limitations.",
+            "**Development comparison recorded:** see Before / After Evidence for executed checks, exact source revisions and limitations."
+            if supported
+            else f"**Comparison status: {receipt['status']}.** Improvement has not been demonstrated; see Before / After Evidence.",
+        )
+        .replace(
+            "**UNEVALUATED PROPOSAL:** behavioral evaluation has not been performed. The checks below only establish that the patch applies within the approved source scope.",
+            "**Development comparison recorded:** see Before / After Evidence for executed checks, exact source revisions and limitations."
+            if supported
+            else f"**Comparison status: {receipt['status']}.** Improvement has not been demonstrated; see Before / After Evidence.",
+        )
+        .replace(
+            "This proposal has not been validated.",
+            "The original plan is superseded by the recorded comparison below.",
+        )
     )
     payload["body"] = body
-    if current.get("title", "").startswith("[Unevaluated] "):
-        prefix = "Evidence" if supported else receipt["status"].capitalize()
-        payload["title"] = f"[{prefix}] " + current["title"][len("[Unevaluated] ") :]
+    for previous in (
+        "[Unevaluated] ",
+        "[Evidence] ",
+        "[Inconclusive] ",
+        "[Regressed] ",
+    ):
+        if current.get("title", "").startswith(previous):
+            prefix = "Evidence" if supported else receipt["status"].capitalize()
+            payload["title"] = f"[{prefix}] " + current["title"][len(previous) :]
+            break
     body_path = root / "pr-body-with-evidence.md"
     body_path.write_text(body)
     body_path.chmod(0o600)
@@ -216,6 +232,7 @@ def after_publication(config, source, snapshot, results, output, command):
         "topic": snapshot.get("topic"),
         "findings": snapshot.get("comparison_findings", []),
         "snapshot": str(snapshot_path.resolve()),
+        "cohort": snapshot.get("validation_cohort"),
         "trace_urls": sorted(
             {
                 url
@@ -243,6 +260,14 @@ def before_publication(config, source, snapshot, results, proposal, findings, ou
             "status": "inconclusive",
             "markdown": "No comparison runner configured.",
         }
+    cohort = snapshot.get("validation_cohort")
+    if "validation_sample_size" in config and (
+        not cohort or cohort["sample_size"] != config["validation_sample_size"]
+    ):
+        return {
+            "status": "inconclusive",
+            "markdown": "The configured historical validation cohort is missing or has the wrong N.",
+        }
     snapshot_path = output / "comparison-snapshot.json"
     write_json(snapshot_path, {"samples": snapshot.get("samples", [])})
     request = {
@@ -256,6 +281,7 @@ def before_publication(config, source, snapshot, results, proposal, findings, ou
         "findings": findings,
         "hypothesis": proposal["hypothesis"],
         "snapshot": str(snapshot_path.resolve()),
+        "cohort": cohort,
         "plan": plan,
         "development_feedback_used": bool(snapshot.get("repair_feedback")),
     }

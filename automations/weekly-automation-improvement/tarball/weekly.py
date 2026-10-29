@@ -15,7 +15,7 @@ from events import collect_events, hydrate_events
 from laminar import Laminar
 from patches import command, load_source, propose_fix
 from sources import github_auth, native_request, repository_index, resolve_source
-from triage import definition_key, triage
+from triage import definition_key, group_findings, triage
 
 
 def save_state(path, state):
@@ -161,6 +161,7 @@ def source_config(config, snapshot, output):
         "files": paths,
         "checks": [],
         "require_improvement": config.get("require_improvement", True),
+        "validation_sample_size": config.get("validation_sample_size", 5),
     }
     if len(identifiers) == 1:
         configured = config.get("comparative_validation", {})
@@ -177,6 +178,9 @@ def source_config(config, snapshot, output):
 
 
 def run(config, *, dry_run=False, limit=3, seed=None):
+    size = config.get("validation_sample_size", 5)
+    if type(size) is not int or size < 1:
+        raise ValueError("validation_sample_size must be a positive integer")
     if not 1 <= limit <= 3:
         raise ValueError("Select one to three representatives per topic")
     batch_size = config.get("triage_batch_size", 3)
@@ -310,6 +314,7 @@ def investigate_topic(
     topic,
     aggregation,
     budget=None,
+    validation_records=None,
 ):
     automation_id = records[0]["owner"]["automation_id"]
     args = arguments(config, output / "analysis", limit, seed)
@@ -335,6 +340,28 @@ def investigate_topic(
     snapshot["aggregation"] = aggregation
     snapshot["topic"] = topic
     snapshot["existing_improvement_prs"] = prs
+    if config.get("comparative_validation"):
+        from cohorts import annotate, collect
+
+        cohort = collect(
+            Laminar(args),
+            inventory,
+            automation_id,
+            validation_records or records,
+            config.get("validation_sample_size", 5),
+            seed,
+        )
+        cohort = annotate(
+            args, cohort, snapshot["source"], output / "validation-labels"
+        )
+        cohort_path = output / "validation-cohort.json"
+        write_json(cohort_path, cohort)
+        snapshot["validation_cohort"] = {
+            "path": str(cohort_path.resolve()),
+            "sha256": cohort["cohort_sha256"],
+            "sample_size": cohort["sample_size"],
+            "complete": cohort["complete"],
+        }
     frozen = output / "snapshot-with-source.json"
     write_json(frozen, snapshot)
     args.input, args.source_config = frozen, path
@@ -473,6 +500,15 @@ def comparison_feedback(output):
         for row in report["runs"]
         if row["variant"] == "candidate" and not row["score"]["passed"]
     ]
+    if report.get("control_acceptance") == "no_new_violations":
+        controls = {
+            case["case_id"] for case in report["cases"] if case["kind"] == "control"
+        }
+        failed = [
+            row
+            for row in failed
+            if row["case_id"] not in controls or row.get("introduced_violations")
+        ]
     if not failed:
         return None
     return {
@@ -598,6 +634,12 @@ def investigate(
                         topic,
                         context,
                         budget,
+                        validation_records=[
+                            record
+                            for group_id, members in group_findings(records)[1].items()
+                            if group_id in topic["group_ids"]
+                            for record in members
+                        ],
                     )
                     if not dry_run and outcome["status"] != "deferred_validation":
                         state["topic_weeks"][key] = {
@@ -805,7 +847,12 @@ def main():
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path.home() / ".config/automation-improvement/config.json",
+        default=Path(
+            os.environ.get(
+                "AUTOMATION_CONFIG_PATH",
+                str(Path.home() / ".config/automation-improvement/config.json"),
+            )
+        ),
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(

@@ -21,7 +21,7 @@
     ],
     "profile_id": "glm-5.3-flash",
     "automatic_contracts": true,
-    "timeout_seconds": 3600,
+    "timeout_seconds": 7200,
     "repeats": 1,
     "max_run_seconds": 420,
     "llm_timeout": 120
@@ -30,6 +30,7 @@
   "repair_model": "openai/gpt-6.1-sol",
   "triage_batch_size": 3,
   "max_inference_cost_usd": 1.0,
-  "max_run_seconds": 3600,
-  "max_evidence_reads": 8
+  "max_run_seconds": 7200,
+  "max_evidence_reads": 8,
+  "validation_sample_size": 5
 }

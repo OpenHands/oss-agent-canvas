@@ -46,3 +46,15 @@ def test_backfill_rejects_a_trace_owned_by_another_automation(tmp_path, monkeypa
     body = f"<!-- automation-improvement-automation: {AUTOMATION} -->\nhttps://example.test/traces/{TRACE}"
     with pytest.raises(ValueError, match="does not belong"):
         validate_repairs.collect_snapshot({}, body, tmp_path)
+
+
+@pytest.mark.parametrize("size,baseline", [(2, "a" * 40), (5, "b" * 40)])
+def test_cached_cohort_cannot_change_n_or_baseline(tmp_path, size, baseline):
+    (tmp_path / "cohort.json").write_text(
+        json.dumps({"sample_size": size, "baseline_revision": baseline})
+    )
+    body = f"<!-- automation-improvement-automation: {AUTOMATION} -->"
+    with pytest.raises(ValueError, match="Cached cohort"):
+        validate_repairs.historical_cohort(
+            {"validation_sample_size": 5}, body, "a" * 40, [], tmp_path
+        )

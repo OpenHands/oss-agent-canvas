@@ -36,7 +36,11 @@ def rescore(source, output):
             ).hexdigest()
     cases = []
     for case in manifest["cases"]:
-        target = scenario(case["id"]).get("target_violation")
+        target = (
+            case.get("target_violation")
+            if case.get("native_payload")
+            else scenario(case["id"]).get("target_violation")
+        )
         cases.append(case | ({"target_violation": target} if target else {}))
     report = compare(rows, cases, manifest["repeats"])
     if not report["complete"]:

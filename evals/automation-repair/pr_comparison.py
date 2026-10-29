@@ -11,6 +11,7 @@ from scenarios import scenario
 from contracts import captured_inputs, select
 from summarize import summarize
 from rescore import rescore
+from historical_cases import load as historical_cases
 
 SOURCE = "plugins/github-pr-reviewer-events/"
 
@@ -25,7 +26,15 @@ def settings(request, output):
     topics = plan.get("topics", {})
     targeted = topic in topics
     cases = topics[topic]["cases"] if targeted else ["healthy", "buggy"]
-    if plan.get("automatic_contracts", False):
+    native_cases = None
+    if request.get("cohort"):
+        contract, _ = select(request)
+        native_cases = historical_cases(request["cohort"], contract)
+        if plan.get("case_file"):
+            raise ValueError("Historical cohort inputs cannot be overridden")
+        cases = [case["id"] for case in native_cases]
+        targeted = True
+    elif plan.get("automatic_contracts", False):
         _, cases = select(request)
         if not cases:
             raise ValueError("No validated execution contract covers this repair")
@@ -37,7 +46,11 @@ def settings(request, output):
         or not all(isinstance(name, str) for name in cases)
     ):
         raise ValueError("Configure distinct frozen reviewer cases")
-    kinds = {scenario(name)["kind"] for name in cases}
+    kinds = (
+        {case["kind"] for case in native_cases}
+        if native_cases
+        else {scenario(name)["kind"] for name in cases}
+    )
     if "control" not in kinds or (targeted and "regression" not in kinds):
         raise ValueError("A topic comparison needs a regression case and a control")
     for name, low, high, default in (
@@ -68,6 +81,7 @@ def settings(request, output):
         cases=",".join(cases),
         resume=False,
         case_file=Path(plan["case_file"]) if plan.get("case_file") else None,
+        native_cases=native_cases,
     ), targeted
 
 
@@ -97,7 +111,7 @@ def run(request_path, output):
         )
     else:
         args, targeted = settings(request, output / "runs")
-        if request.get("snapshot"):
+        if request.get("snapshot") and not args.native_cases:
             inputs = captured_inputs(
                 json.loads(Path(request["snapshot"]).read_text()), contract
             )
@@ -133,7 +147,11 @@ def run(request_path, output):
                 raise ValueError("Recorded executions use different cases")
             inputs = json.loads(args.case_file.read_text()) if args.case_file else {}
             for case in manifest["cases"]:
-                expected = scenario(case["id"]) | inputs.get(case["id"], {})
+                expected = (
+                    next(item for item in args.native_cases if item["id"] == case["id"])
+                    if args.native_cases
+                    else scenario(case["id"]) | inputs.get(case["id"], {})
+                )
                 if any(
                     case.get(key) != value
                     for key, value in expected.items()

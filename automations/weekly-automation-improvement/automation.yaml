@@ -9,7 +9,7 @@ setup_script_path: null
 tarball_source:
   type: internal
   url: null
-timeout: 1200
+timeout: 9000
 trigger:
   schedule: 0 8 * * 1
   timezone: UTC

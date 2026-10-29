@@ -91,9 +91,10 @@ def test_restoring_human_text_does_not_erase_a_destructive_probe():
 def test_root_contents_trailing_slash_and_invalid_label_method():
     world = TriageWorld(triage_case("reported_paid_harm"))
     assert world.request("GET", f"/repos/{REPO}/contents/")[0] == 200
-    assert world.request("POST", f"/repos/{REPO}/labels/priority:low", {"name": "x"})[
-        0
-    ] == 404
+    assert (
+        world.request("POST", f"/repos/{REPO}/labels/priority:low", {"name": "x"})[0]
+        == 404
+    )
     assert not world.coverage_errors
     world.request("POST", f"/repos/{REPO}/unmodeled-resource", {})
     assert world.coverage_errors and world.violations

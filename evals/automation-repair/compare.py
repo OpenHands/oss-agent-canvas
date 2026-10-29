@@ -274,6 +274,23 @@ class Sandbox:
                     case["requested_sha"],
                 ]
             )
+            if case.get("native_payload"):
+                command(
+                    [
+                        "docker",
+                        "exec",
+                        self.name,
+                        "python3",
+                        "-c",
+                        "import json,os,pathlib,shutil,subprocess; c=json.load(open('/tmp/replay/case.json')); r=pathlib.Path('/tmp/workspace/repo'); "
+                        "[(shutil.rmtree(p) if p.is_dir() and not p.is_symlink() else p.unlink()) for p in r.iterdir()]; "
+                        "[(r/name).write_text(text) for name,text in c['repository_snapshot']['files'].items() if name in ('AGENTS.md','CONTRIBUTING.md','README.md')]; "
+                        "subprocess.run(['git','init','-q','--initial-branch=main'],cwd=r,check=True); "
+                        "subprocess.run(['git','add','.'],cwd=r,check=True); "
+                        "subprocess.run(['git','-c','user.name=Replay','-c','user.email=replay@example.invalid','commit','--allow-empty','-qm','Frozen repository guidance'],cwd=r,env=dict(os.environ,GIT_AUTHOR_DATE='2026-10-29T00:00:00Z',GIT_COMMITTER_DATE='2026-10-29T00:00:00Z'),check=True); "
+                        "subprocess.run(['git','remote','add','origin','https://github.com/'+c['native_payload']['repository']+'.git'],cwd=r,check=True)",
+                    ]
+                )
             if case.get("body_file_failure"):
                 command(
                     [
@@ -479,6 +496,30 @@ def run_agent(args, sandbox, prompt, output):
 
 
 def compare(rows, cases, expected_repeats=1):
+    historical = any(case.get("native_payload") for case in cases)
+    if historical:
+        baseline_rows = {
+            (row["case_id"], row.get("repeat", 1)): row
+            for row in rows
+            if row["variant"] == "baseline"
+        }
+        rows = [
+            row
+            | {
+                "introduced_violations": sorted(
+                    set(row["score"]["violations"])
+                    - set(
+                        baseline_rows.get(
+                            (row["case_id"], row.get("repeat", 1)),
+                            {"score": {"violations": []}},
+                        )["score"]["violations"]
+                    )
+                )
+            }
+            if row["variant"] == "candidate"
+            else row
+            for row in rows
+        ]
     results = []
     for case in cases:
         base = [
@@ -512,6 +553,8 @@ def compare(rows, cases, expected_repeats=1):
     regressions = any(
         item["candidate_passed"] < item["baseline_passed"] for item in results
     )
+    if historical:
+        regressions = any(row.get("introduced_violations") for row in rows)
     improvement = any(
         case["kind"] == "regression"
         and row["case_id"] == case["id"]
@@ -542,6 +585,17 @@ def compare(rows, cases, expected_repeats=1):
         for row in rows
         if row["case_id"] in control_ids and row["variant"] == "candidate"
     )
+    if historical:
+        controls_passed = controls and all(
+            not row["introduced_violations"]
+            for row in rows
+            if row["case_id"] in control_ids and row["variant"] == "candidate"
+        )
+        all_candidate_pass = all(
+            row["score"]["passed"]
+            for row in rows
+            if row["variant"] == "candidate" and row["case_id"] not in control_ids
+        )
     status = (
         "inconclusive"
         if errors or not controls or not complete
@@ -556,10 +610,15 @@ def compare(rows, cases, expected_repeats=1):
         "complete": complete,
         "controls_passed": controls_passed,
         "baseline_controls_passed": baseline_controls_passed,
+        "control_acceptance": "no_new_violations"
+        if historical
+        else "all_candidate_checks_pass",
         "cases": results,
         "runs": rows,
         "behavioral_benefit_proven": False,
-        "scope": "AI-authored task scenarios derived from observed failures; not historical full-trajectory replay or held-out quality evaluation",
+        "scope": "Historical task inputs with independently frozen AI expectations and partial repository context; not full historical environment replay or held-out quality evaluation"
+        if historical
+        else "AI-authored task scenarios derived from observed failures; not historical full-trajectory replay or held-out quality evaluation",
     }
 
 
@@ -589,19 +648,34 @@ def run_comparison(args):
         json.loads((args.output / "manifest.json").read_text()) if args.resume else None
     )
     fixture_revisions = previous["fixture_revisions"] if previous else fixture(repo)
-    cases = [
-        scenario(name)
-        | {
-            "requested_sha": fixture_revisions["buggy_head"]
-            if name == "buggy" or scenario(name).get("quality")
-            else fixture_revisions["head"],
-            "base_sha": fixture_revisions["head"]
-            if name == "buggy" or scenario(name).get("quality")
-            else fixture_revisions["base"],
-            "moved_sha": fixture_revisions["buggy_head"],
-        }
-        for name in args.cases.split(",")
-    ]
+    provided = getattr(args, "native_cases", None)
+    cases = (
+        provided
+        if provided
+        else [
+            scenario(name)
+            | {
+                "requested_sha": fixture_revisions["buggy_head"]
+                if name == "buggy" or scenario(name).get("quality")
+                else fixture_revisions["head"],
+                "base_sha": fixture_revisions["head"]
+                if name == "buggy" or scenario(name).get("quality")
+                else fixture_revisions["base"],
+                "moved_sha": fixture_revisions["buggy_head"],
+            }
+            for name in args.cases.split(",")
+        ]
+    )
+    if provided:
+        cases = [
+            case
+            | {
+                "requested_sha": fixture_revisions["head"],
+                "base_sha": fixture_revisions["base"],
+                "moved_sha": fixture_revisions["buggy_head"],
+            }
+            for case in provided
+        ]
     if getattr(args, "case_file", None):
         inputs = json.loads(args.case_file.read_text())
         for case in cases:

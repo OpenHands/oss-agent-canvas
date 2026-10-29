@@ -5,12 +5,72 @@ import re
 import uuid
 from pathlib import Path
 
-from common import read_json, redact
+from common import read_json, redact, write_json
 from evidence import after_publication, run
 from laminar import Laminar, META, object_value
-from patches import command
+from patches import command, load_source
 from sources import github_auth
 from weekly import arguments, load_environment
+
+
+def historical_cohort(config, body, revision, files, output):
+    from cohorts import annotate, collect
+    from events import collect_events
+    from triage import group_findings
+
+    owner = re.search(
+        r"<!-- automation-improvement-automation: ([0-9a-f-]{36}) -->", body
+    )
+    if not owner:
+        raise ValueError("Repair has no automation ownership marker")
+    size = config.get("validation_sample_size", 5)
+    path = output / "cohort.json"
+    if path.exists():
+        value = read_json(path, 32_000_000)
+        if value["sample_size"] != size:
+            raise ValueError("Cached cohort used a different N")
+        if value.get("baseline_revision") != revision:
+            raise ValueError("Cached cohort used a different baseline")
+    else:
+        args = arguments(config, output / "collection", 3, None)
+        args.output.mkdir(parents=True, mode=0o700)
+        client = Laminar(args)
+        inventory = collect_events(client, set(), aggregate=True)
+        marked = set(
+            re.findall(r"<!-- automation-improvement-event: ([0-9a-f-]{36}) -->", body)
+        )
+        records = [
+            record
+            for record in inventory["events"]
+            if record["owner"]["automation_id"] == owner[1]
+        ]
+        _, groups = group_findings(records)
+        records = [
+            record
+            for members in groups.values()
+            if any(record["event"]["id"] in marked for record in members)
+            for record in members
+        ]
+        source_path = output / "source.json"
+        write_json(
+            source_path,
+            {
+                "repository": config["repository"],
+                "checkout": config["checkout"],
+                "revision": revision,
+                "files": files,
+                "automation_ids": [owner[1]],
+            },
+        )
+        value = collect(client, inventory, owner[1], records, size=size)
+        value = annotate(args, value, load_source(source_path), output / "labels")
+        write_json(path, value)
+    return {
+        "path": str(path.resolve()),
+        "sha256": value["cohort_sha256"],
+        "sample_size": size,
+        "complete": value["complete"],
+    }
 
 
 def collect_snapshot(config, body, output):
@@ -90,7 +150,9 @@ def validate(config, output, numbers=()):
             for path in harness.glob("*.py")
         }
         fingerprint = hashlib.sha256(
-            json.dumps([plan, code], sort_keys=True).encode()
+            json.dumps(
+                [plan, code, config.get("validation_sample_size", 5)], sort_keys=True
+            ).encode()
         ).hexdigest()[:12]
         directory = output / (
             str(item["number"]) + "-" + pr["head"]["sha"] + "-" + fingerprint
@@ -120,7 +182,20 @@ def validate(config, output, numbers=()):
                 if len(files) > 30:
                     raise ValueError("Repair exceeds the approved source-file budget")
                 files = [entry["filename"] for entry in files]
-                snapshot = collect_snapshot(config, body, directory)
+                if config.get("legacy_development_fixtures", False):
+                    snapshot = collect_snapshot(config, body, directory)
+                else:
+                    cohort_output = (
+                        output
+                        / f"cohort-{item['number']}-{pr['head']['sha']}-N{config.get('validation_sample_size', 5)}"
+                    )
+                    cohort_output.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    snapshot = {
+                        "samples": [],
+                        "validation_cohort": historical_cohort(
+                            config, body, revision, files, cohort_output
+                        ),
+                    }
                 topic = re.search(
                     r"<!-- automation-improvement-topic-key: ([\w-]+) -->", body
                 )

@@ -205,3 +205,86 @@ def test_hook_freezes_published_revisions_and_does_not_run_when_unconfigured(
     assert calls[0]["baseline"] == "a" * 40
     assert calls[0]["candidate"] == "b" * 40
     assert calls[0]["topic"] == {"key": "wrong-head"}
+
+
+@pytest.mark.parametrize("cohort", [None, {"sample_size": 2}])
+def test_configured_n_requires_matching_prepublication_cohort(
+    tmp_path, monkeypatch, cohort
+):
+    monkeypatch.setattr(
+        evidence,
+        "evaluate",
+        lambda *a: pytest.fail("Missing cohort must block inference"),
+    )
+    result = evidence.before_publication(
+        {
+            "comparative_validation": {"command": ["runner"]},
+            "validation_sample_size": 7,
+        },
+        {},
+        {"validation_cohort": cohort},
+        {},
+        {},
+        [],
+        tmp_path,
+    )
+    assert result["status"] == "inconclusive"
+
+
+def test_prepublication_forwards_the_frozen_user_sized_cohort(tmp_path, monkeypatch):
+    captured = []
+    monkeypatch.setattr(
+        evidence,
+        "evaluate",
+        lambda path: captured.append(json.loads(path.read_text()))
+        or {"status": "inconclusive"},
+    )
+    cohort = {"path": "/private/cohort.json", "sha256": "fixed", "sample_size": 7}
+    evidence.before_publication(
+        {
+            "checkout": "/repo",
+            "comparative_validation": {"command": ["runner"]},
+            "validation_sample_size": 7,
+        },
+        {"repository": "example/repo", "revision": "a" * 40},
+        {"validation_cohort": cohort},
+        {"candidate_revision": "b" * 40, "changed_files": ["worker.py"]},
+        {"hypothesis": "Targeted fix"},
+        [],
+        tmp_path,
+    )
+    assert captured[0]["cohort"] == cohort
+
+
+def test_stronger_inconclusive_comparison_downgrades_old_evidence_title(tmp_path):
+    path, value = request(tmp_path)
+    output = tmp_path / "comparison"
+    output.mkdir()
+    (output / "evidence.json").write_text(
+        json.dumps(
+            value
+            | {
+                "status": "inconclusive",
+                "markdown": "Target not reproduced",
+                "request_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    )
+    payloads = []
+
+    def command(argv):
+        if argv[:3] == ["gh", "api", "repos/example/repo/pulls/1"]:
+            return json.dumps(
+                {
+                    "head": {"sha": value["candidate"]},
+                    "body": "**Development comparison recorded:** see Before / After Evidence for executed checks, exact source revisions and limitations.",
+                    "title": "[Evidence] Repair",
+                    "state": "open",
+                }
+            )
+        payloads.append(json.loads((tmp_path / "pr-evidence-update.json").read_text()))
+        return ""
+
+    evidence.run(path, command)
+    assert payloads[0]["title"] == "[Inconclusive] Repair"
+    assert "Improvement has not been demonstrated" in payloads[0]["body"]

@@ -8,10 +8,26 @@ only when the target improvement is demonstrated. This PR is stacked on
 
 ## Contracts and evidence
 
-- **Issue priority:** execute `IssueTriage._prompt` with the original author body
-  captured from native Laminar input, plus AI-authored unknown-amount and
-  speculative-risk cases. Inspect final GitHub labels, preservation of human text
-  and unrelated labels, and separation of priority from readiness.
+The normal weekly path freezes a historical cohort **before Sol sees the repair**.
+Top-level `validation_sample_size` defaults to **5**; users can set any positive
+integer within their time/cost budgets. Select up to N distinct topic-linked
+negative conversations and N uniformly random non-negative conversations from the
+same automation and detector window. Non-negative means completed Flow-1 analysis
+with no finding, not verified healthy. Unscored, failed and mixed-negative
+conversations are excluded from controls. Sampling seeds, eligible-frame hashes,
+selected identities and the complete evidence hash are retained. Missing selected
+inputs or fewer than N eligible controls make the cohort incomplete; no rerolls.
+
+- **Historical issue priority:** execute `IssueTriage._prompt` on each original
+  native task payload. Independently derive expected priority/readiness from the
+  frozen baseline policy, task data and pinned root repository guidance using Luna;
+  shuffle opaque input IDs and hide Signal classification, candidate code and
+  candidate outcomes. Unscorable expectations block acceptance. Inspect labels,
+  human-text/comment preservation and unrelated labels. Current root guidance is
+  shared across versions; complete historical repositories and linked discussions
+  are not reconstructed. This adapter supports priority topics only.
+- **Legacy issue-priority fixtures:** original author body plus AI-authored
+  unknown-amount and speculative-risk cases remain available for development.
 - **Review faithfulness:** execute the reviewer against a complete PR description
   and a reconstructed working draft. Detect explicit false test-absence claims
   while requiring retention of a known independent code bug. A genuine-absence
@@ -26,21 +42,25 @@ only when the target improvement is demonstrated. This PR is stacked on
 Contracts are selected by source family and failure mechanism, without a manual
 per-automation/topic mapping. Unsupported mechanisms stay pending. A suitable
 execution adapter and outcome checker are necessary for each additional family.
-These are AI-authored development scenarios. Some start from reconstructed draft
-checkpoints derived from observed failures. They do not reproduce the entire
-historical production environment or establish a statistical failure-rate reduction.
+Historical execution adapters for the reviewer contracts are not yet implemented.
+Their AI-authored fixtures remain available for explicit experiments using
+`legacy_development_fixtures: true`; they cannot satisfy the weekly N-input gate.
+Some fixtures start from reconstructed draft checkpoints. Neither mode reproduces
+the entire production environment or establishes a statistical failure-rate reduction.
 
 Improvement requires a baseline execution with the **specific target violation**,
-a paired passing candidate, passing candidate controls, complete execution
-and all candidate checks passing. An unrelated formatting failure does not prove a
+a paired passing candidate, complete execution and passing negative candidate cases.
+Historical controls must introduce **no new violations** relative to paired
+baseline executions; inherited failures remain visible. Legacy fixtures retain
+their stricter all-candidate-checks-pass rule. An unrelated formatting failure does not prove a
 factual-accuracy fix. Runtime/provider failures, absent required inputs and
 unreproduced failures remain inconclusive. The narrow priority contract requires
 observation of the complete current issue and checks the verified final labels;
 unsupported optional research reads are retained as warnings. Unsupported writes
 remain failures. Reviewer contracts require complete read coverage.
 Completed baseline behavioral failures remain visible; they do not invalidate an
-otherwise sound execution. Candidate control failures or missing inputs and
-execution errors on either version still block acceptance.
+otherwise sound execution. New control violations, missing inputs and execution
+errors on either version still block acceptance.
 
 Reports compare expected behavior and observed outcomes side by side, including
 labels, violations, retained code findings, timing, tokens and estimated cost.
@@ -63,6 +83,7 @@ candidate worktrees. For example:
 
 ```json
 {
+  "validation_sample_size": 5,
   "require_improvement": true,
   "validate_existing_repairs": true,
   "comparative_validation": {
@@ -74,7 +95,7 @@ candidate worktrees. For example:
     "repeats": 1,
     "llm_timeout": 120,
     "max_run_seconds": 420,
-    "timeout_seconds": 3600
+    "timeout_seconds": 7200
   }
 }
 ```
@@ -113,7 +134,8 @@ python3 automations/weekly-automation-improvement/tarball/validate_repairs.py \
 
 `--pr NUMBER` narrows that command for an experiment. It paginates open PRs;
 there is no PR-count quota. Cached receipts are keyed by head, settings and harness
-fingerprint. A changed head or closed PR rejects the description update. Existing
+fingerprint. The cohort is cached separately by PR/head/N, so a harness correction
+does not select a new favorable dataset. A changed head or closed PR rejects the description update. Existing
 text is preserved, except superseded pipeline-owned unevaluated notices when a
 comparison succeeds. Inconclusive results are visible and never promoted to passes.
 

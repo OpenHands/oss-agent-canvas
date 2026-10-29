@@ -42,14 +42,22 @@ human review.
    declines. Independent fixes and incidental cleanup cannot be bundled into
    another topic. An unrelated but potentially valid finding is deferred in the
    backlog; unsupported findings can be rejected.
-7. Apply the patch in a detached worktree and check approved file scope,
+7. Before proposing a patch, freeze up to `validation_sample_size` topic-linked
+   negative inputs and that many uniformly sampled non-negative inputs from the
+   same automation. The setting defaults to **5** and is a positive user-supplied
+   integer. A non-negative input must have completed Flow-1 analysis with no
+   finding; unscored traces are excluded. Freeze independent AI expectations from
+   the baseline policy and original tasks, without candidate code or Signal labels.
+   Failed selections are retained rather than replaced; insufficient controls block
+   publication. Apply the patch in a detached worktree and check approved file scope,
    whitespace and Python syntax. Commit locally and retain a private Git bundle.
    Select a trusted task contract from the affected source and failure mechanism;
    freeze native inputs, source revisions, model settings and case definitions.
 8. Run both versions through the actual SDK against identical isolated GitHub
-   worlds. Require a reproduced **target violation**, passing candidate controls,
-   all candidate cases passing and no required-input/runtime gaps on either version.
-   Report existing baseline control failures without treating them as fixture errors.
+   worlds. Require a reproduced **target violation**, passing negative candidate
+   cases, no new control violations and no required-input/runtime gaps on either
+   version. Existing control failures remain visible in both versions. The PR has
+   separate negative-input and random non-negative-input comparison tables.
    Unrelated failures cannot establish the intended improvement. Missing contracts
    or inconclusive results produce no branch push or new PR.
 9. A completed behavioral failure may receive one Sol revision with compact case
@@ -65,9 +73,11 @@ human review.
 The worker continues across Luna batches until no actionable topics remain or a
 resource threshold is reached. There is no total topic or PR-count quota. Dry runs
 perform analysis and mechanical checks without PR writes or backlog changes.
-The initial contracts cover issue-priority/readiness decisions, reviewer factual
-claims and reviewer publication. Other mechanisms cannot publish until an
-appropriate execution contract exists. This is development-case evidence, not a
+The historical-input adapter currently covers issue-priority/readiness decisions.
+Older reviewer factual-claim/publication fixtures remain available for explicit
+development experiments; they cannot satisfy the new historical-cohort gate.
+Other families cannot publish until an appropriate adapter and outcome checker
+exist. This is development-case evidence, not a
 general automation-quality benchmark. See the [comparison setup](../../evals/automation-repair/README.md).
 
 ## Configure and run
@@ -80,13 +90,17 @@ are configurable. `triage_batch_size` controls topics returned per Luna call
 (default three), not a total PR limit. The obsolete `max_topics_per_automation`
 setting no longer limits output. Configure the global `comparative_validation`
 runner and use `require_improvement: true` (the default). `validate_existing_repairs`
-refreshes descriptions for existing repair PRs. Keep the credentials file owner-only:
+refreshes descriptions for existing repair PRs. `validation_sample_size: 5` is the
+default number of distinct inputs per cohort, not repetitions. At most 2N inputs
+produce 4N agent executions per repetition. Increase execution budgets when raising
+N; timeouts remain inconclusive. Keep the credentials file owner-only:
 
 ```json
 {"LMNR_PROJECT_API_KEY":"...","LITELLM_API_KEY":"..."}
 ```
 
-The worker defaults to `~/.config/automation-improvement/config.json`. On the OSS
+The worker honors `AUTOMATION_CONFIG_PATH` and otherwise defaults to
+`~/.config/automation-improvement/config.json`. On the OSS
 VM it reads the configured GitHub secret through the native Agent Server session;
 elsewhere set `GH_TOKEN` privately. The Flow-1 Cloud key stays in Laminar's LLM
 profile. The worker only needs the SQL-capable self-hosted project key, proxy key

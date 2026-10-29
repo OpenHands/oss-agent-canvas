@@ -6,6 +6,63 @@ from collections import Counter
 from pathlib import Path
 
 
+def cohort_sections(report, cases):
+    size = next(iter(cases.values()))["historical_sample_size"]
+    lines = [
+        f"Sampling parameter **N={size}**. Each selected input is executed on both baseline and candidate. Non-negative inputs had completed Flow-1 analysis with no finding; they are not assumed healthy.",
+        "",
+    ]
+    for kind, heading in (
+        ("regression", "Negative Signal inputs"),
+        ("control", "Random non-negative inputs"),
+    ):
+        selected = [case for case in cases.values() if case["kind"] == kind]
+        lines.extend(
+            [
+                f"### {heading} ({len(selected)} inputs, N={size})",
+                "",
+                "| Input | Before passes | After passes | Result |",
+                "|---|---:|---:|---|",
+            ]
+        )
+        for case in selected:
+            rows = [row for row in report["runs"] if row["case_id"] == case["id"]]
+            baseline = [row for row in rows if row["variant"] == "baseline"]
+            candidate = [row for row in rows if row["variant"] == "candidate"]
+            passed = bool(candidate) and all(
+                row["score"]["passed"] for row in candidate
+            )
+            worsened = any(
+                row.get("introduced_violations", row["score"]["violations"])
+                for row in candidate
+            )
+            reproduced = any(
+                case.get("target_violation") in row["score"]["violations"]
+                for row in baseline
+            )
+            error = any(
+                row["score"]["error"] or not row["score"]["finished"] for row in rows
+            )
+            outcome = (
+                "Inconclusive"
+                if error or len(baseline) != len(candidate) or not candidate
+                else "Regression / failed check"
+                if not passed and (kind == "regression" or worsened)
+                else "No new violations; existing failures remain"
+                if not passed
+                else "Fixed reproduced target"
+                if kind == "regression" and reproduced
+                else "Not reproduced"
+                if kind == "regression"
+                else "Passed regression checks"
+            )
+            lines.append(
+                f"| [{case['id']}]({case['trace_url']}) | {sum(row['score']['passed'] for row in baseline)}/{len(baseline)} | {sum(row['score']['passed'] for row in candidate)}/{len(candidate)} | {outcome} |"
+            )
+        lines.append("")
+    return lines
+
+
 def summarize(root):
     report = json.loads((root / "comparison.json").read_text())
     manifest = json.loads((root / "manifest.json").read_text())
@@ -28,6 +85,9 @@ def summarize(root):
         "faithful_review": "Faithful description claims while retaining the known code bug",
     }
     cases = {case["id"]: case for case in manifest.get("cases", [])}
+    historical = any(case.get("native_payload") for case in cases.values())
+    if historical:
+        lines = lines[:4] + cohort_sections(report, cases)
     if any(
         case.get("draft_decision") or case.get("draft_review")
         for case in cases.values()
@@ -36,7 +96,7 @@ def summarize(root):
             "Mode: reconstructed draft checkpoints derived from observed failure mechanisms, with fresh native SDK execution in a frozen GitHub world. These test correction before writing; they do not replay the full historical environment.",
             "",
         ]
-    for case in report["cases"]:
+    for case in [] if historical else report["cases"]:
         rows = [row for row in report["runs"] if row["case_id"] == case["case_id"]]
         errors = sum(
             bool(row["score"]["error"]) or not row["score"]["finished"] for row in rows
@@ -52,7 +112,9 @@ def summarize(root):
         [
             "",
             "A strict pass requires the task-specific outcome and preservation checks, with a completed, error-free execution.",
-            "Candidate controls must pass. Completed baseline behavioral failures remain visible; required-input and execution errors on either version block acceptance.",
+            "Controls must introduce no new violations relative to their paired baseline; existing failures remain visible. Required-input and execution errors on either version block acceptance."
+            if historical
+            else "Candidate controls must pass. Completed baseline behavioral failures remain visible; required-input and execution errors on either version block acceptance.",
             "",
             "| Recorded violation | Baseline runs | Candidate runs |",
             "|---|---:|---:|",
@@ -156,7 +218,12 @@ def summarize(root):
     lines.extend(
         [
             "",
-            "These are AI-authored development scenarios with a synthetic repository and controlled GitHub state, not exact historical replays or a held-out quality benchmark. Missing required inputs, unsupported mutations and runtime/provider errors are inconclusive. The priority contract reports unsupported optional research reads separately: its checks use the observed complete issue and verified final labels. Reviewer contracts require complete read coverage. Small counts do not establish statistical improvement. No real GitHub review was posted; production was unchanged.",
+            (
+                "These are actual historical task inputs with AI-derived expectations frozen independently of candidate outputs. Both source versions execute in a controlled GitHub world with pinned current repository guidance. Historical repository state, all implementation files and accumulated conversation history are not fully reconstructed; this checks the priority/readiness/preservation contract, not general task quality."
+                if historical
+                else "These are AI-authored development scenarios with a synthetic repository and controlled GitHub state, not exact historical replays or a held-out quality benchmark."
+            )
+            + " Missing required inputs, unsupported mutations and runtime/provider errors are inconclusive. The priority contract reports unsupported optional research reads separately: its checks use the observed complete issue and verified final labels. Reviewer contracts require complete read coverage. Small counts do not establish statistical improvement. No real GitHub review was posted; production was unchanged.",
         ]
     )
     return "\n".join(lines) + "\n"
