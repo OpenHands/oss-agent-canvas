@@ -128,6 +128,7 @@ def run_agent(args, context, snapshot, worktree):
         "Validate on up to configured N negative and N random non-negative original inputs. You can construct an isolated replay using the supplied original task and captured external reads; you do not need a prebuilt evaluator adapter. Mock external writes. Keep original private inputs in private worker artifacts, not Git. If a complete replay is infeasible, explain precisely why and report the narrower mechanism evidence. Never invent successful execution, improvement or statistical proof. "
         "Keep edits within the approved automation roots and relevant tests/docs. Do not clone this repository, edit the evaluator, change unrelated automations, deploy, mutate Kubernetes, or run write-capable automations against real customer issues/reviews. Use isolated fixtures for external writes. Keep private data and credentials out of public files and logs. "
         "Match repository coding patterns. Keep comments and docstrings short and only explain non-obvious constraints; put investigation history in the issue or PR, not source comments. "
+        "Your public hypothesis and evaluation_plan become the PR description: write concise, plain-language Markdown with observed before/after behavior, negative/control counts and material limitations. Keep detailed investigation history, internal paths and execution notes in the issue artifacts. Do not describe pre-publication bookkeeping such as not yet having opened a PR. "
         "Do not commit, push or open a PR yourself: the publisher captures your actual diff, executes the paired checks and attaches evidence before opening it. You can investigate with GitHub and update the tracking issue using public-safe summaries. "
         f"When finished, write {output.resolve()} as JSON with proposals (zero or one) and rejections. Each proposal has finding_ids, title, hypothesis, evaluation_plan, and checks. In evaluation_plan summarize the executed validation, counts of available/tested negative and random non-negative inputs, and limitations in public-safe language. Each check has name, argv (a list), and baseline ('fail' for the target regression or 'pass' for controls). Include at least one of each. Each rejection has finding_id, reason, and disposition (unsupported, other_topic, already_tracked). Account for every finding. These fields describe your work; your code changes are taken directly from Git, not JSON edits. "
         "If no supported current defect can be fixed, return no proposal with a precise evidence-grounded rejection. If earlier feedback is present, inspect the previous patch and failed executions before revising against the original baseline. Finish normally after writing the result file."
@@ -182,6 +183,7 @@ def run_agent(args, context, snapshot, worktree):
         "model": args.coordinator,
         "tools": [tool.name for tool in agent.tools],
     }
+    patch = None
     try:
         conversation = Conversation(
             agent=agent,
@@ -215,6 +217,16 @@ def run_agent(args, context, snapshot, worktree):
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, previous_alarm)
+        if patch is None:
+            try:
+                command(["git", "add", "-A"], worktree)
+                patch = command(
+                    ["git", "diff", source["revision"], "--binary"],
+                    worktree,
+                    strip=False,
+                )
+            except Exception as error:
+                measurement["worktree_capture_error"] = redact(str(error))
         measurement["seconds"] = round(time.monotonic() - started, 3)
         if conversation is not None:
             measurement["conversation_id"] = str(conversation.id)
@@ -226,6 +238,8 @@ def run_agent(args, context, snapshot, worktree):
             if budget:
                 budget.record(cost)
         try:
+            if patch is not None:
+                write_json(root / "worktree.json", {"patch": patch})
             write_json(root / "measurement.json", measurement)
             write_json(root / "events.json", events)
         finally:

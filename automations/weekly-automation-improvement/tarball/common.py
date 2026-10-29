@@ -25,6 +25,7 @@ def redact(value):
             if key.lower()
             in (
                 "api_key",
+                "apikey",
                 "authorization",
                 "secret_registry",
                 "password",
@@ -43,6 +44,7 @@ def redact(value):
         value = SECRET.sub(
             lambda match: match[0]
             if match.lastgroup == "protocol_marker"
+            or re.fullmatch(r"[a-f0-9]{64}", match[0])
             else "[REDACTED]",
             value,
         )

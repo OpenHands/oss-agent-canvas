@@ -2,7 +2,8 @@
 
 A standalone prototype for OSS-14275. Flow-1 analyzes eligible automation traces
 in self-hosted Laminar. Each week, the worker aggregates findings **per automation**,
-asks Luna to identify focused repair topics, then asks Sol for one focused patch
+asks Luna to identify focused repair topics, then gives a full OpenHands agent
+powered by Sol 6.1 one focused repair task
 per topic. **A new draft PR requires executed baseline/candidate evidence and an
 independent review of whether that evidence supports the repair.** Unsupported,
 regressed or inconclusive candidates remain pending. Merges and deployment require
@@ -67,10 +68,12 @@ VM access; public GitHub access alone cannot retrieve private evidence. These fi
 are stored on the current worker, not a separate artifact service; retain its state
 directory when replacing the VM.
 
-[Example issue #61](https://github.com/OpenHands/oss-agent-canvas/issues/61) is linked
-from [repair #60](https://github.com/OpenHands/oss-agent-canvas/pull/60). A live Sol
-canary followed the issue catalog and read the original private instructions and
-frozen source for $0.0263271. This verifies context access, not repair quality.
+[Issue #62](https://github.com/OpenHands/oss-agent-canvas/issues/62) indexes the
+native-agent reporting repair in [PR #66](https://github.com/OpenHands/oss-agent-canvas/pull/66):
+14 regressions fail before and pass after, with 19 controls passing on both.
+Recorded-event projections cover two negatives and five randomly sampled
+non-negative inputs. A real SDK/server check verified persisted report delivery.
+This demonstrates a reporting mechanism, not general model-quality improvement.
 
 ## Configure and run
 
@@ -208,7 +211,7 @@ available through `main.py`; the weekly path reuses persisted Flow-1 findings.
 
 ## Resource thresholds and request bounds
 
-`max_inference_cost_usd` (default $1) and `max_run_seconds` (default 900) apply to
+`max_inference_cost_usd` (default $15) and `max_run_seconds` (default 10800) apply to
 the whole invocation. They are checked before new model calls and topic work.
 A completed request and its publication can finish, so one request can exceed the
 spending threshold. This is not a strict provider billing cap. Proxy-reported

@@ -265,6 +265,7 @@ def test_failed_native_attempt_consumes_shared_budget(source, tmp_path, monkeypa
     _, path, _ = source
 
     def execute(worktree):
+        (worktree / "value.py").write_text("VALUE = 4\n")
         raise RuntimeError("native model failed")
 
     captured = install_sdk(monkeypatch, execute)
@@ -279,6 +280,8 @@ def test_failed_native_attempt_consumes_shared_budget(source, tmp_path, monkeypa
         (args.output / "coding-agent/measurement.json").read_text()
     )
     assert measurement["sdk_estimated_cost_usd"] == 0.12
+    worktree = json.loads((args.output / "coding-agent/worktree.json").read_text())
+    assert "+VALUE = 4" in worktree["patch"]
 
 
 def test_issue_reads_do_not_require_laminar_credentials(tmp_path, monkeypatch, capsys):

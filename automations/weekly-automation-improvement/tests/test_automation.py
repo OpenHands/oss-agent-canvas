@@ -597,7 +597,7 @@ def test_redaction_preserves_protocol_checksums_but_removes_credentials(monkeypa
 
     digest = "a1" * 32
     marker = "<!-- triage-source:" + digest + " -->"
-    assert redact(marker + " " + digest) == marker + " [REDACTED]"
+    assert redact(marker + " " + digest) == marker + " " + digest
     monkeypatch.setenv("PRIVATE_API_KEY", digest)
     assert digest not in redact(marker)
 
@@ -644,3 +644,21 @@ def test_sdk_runtime_failure_is_preserved_in_private_report(
         app.run(args)
     report = json.loads((args.output / "report.json").read_text())
     assert report["errors"] == [{"stage": "coordinator", "error": "Native SDK failure"}]
+
+
+def test_evidence_checksums_survive_without_exposing_hex_credentials(monkeypatch):
+    checksum = "a1" * 32
+    secret = "b2" * 32
+    monkeypatch.setenv("LMNR_PROJECT_API_KEY", secret)
+    value = app.redact(
+        {
+            "source_sha256": checksum,
+            "api_key": checksum,
+            "apiKey": checksum,
+            "text": f"{checksum} {secret}",
+        }
+    )
+    assert value["source_sha256"] == checksum
+    assert value["api_key"] == "[REDACTED]"
+    assert value["apiKey"] == "[REDACTED]"
+    assert value["text"] == f"{checksum} [REDACTED]"

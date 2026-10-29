@@ -8,8 +8,8 @@ class BudgetExhausted(RuntimeError):
 
 class RunBudget:
     def __init__(self, config):
-        self.maximum_cost = config.get("max_inference_cost_usd", 1.0)
-        self.maximum_seconds = config.get("max_run_seconds", 900)
+        self.maximum_cost = config.get("max_inference_cost_usd", 15.0)
+        self.maximum_seconds = config.get("max_run_seconds", 10800)
         for name, value in (
             ("max_inference_cost_usd", self.maximum_cost),
             ("max_run_seconds", self.maximum_seconds),
