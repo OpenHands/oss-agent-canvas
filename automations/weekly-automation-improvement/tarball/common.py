@@ -94,38 +94,11 @@ def timestamp(value):
     )
 
 
-def call_model(args, model, instruction, context, name, schema):
+def request_model(args, model, body, endpoint, name, *, redact_body=True):
     budget = getattr(args, "budget", None)
     if budget:
         budget.check()
-    body = {"model": model}
-    messages = [
-        {"role": "system", "content": instruction},
-        {"role": "user", "content": encode(context)},
-    ]
-    if args.api == "responses":
-        body.update(
-            input=messages,
-            tools=[{"type": "function", "name": "report", "parameters": schema}],
-            tool_choice={"type": "function", "name": "report"},
-            max_output_tokens=args.max_output_tokens,
-            reasoning={"effort": args.effort},
-        )
-        endpoint = "/v1/responses"
-    else:
-        body.update(
-            messages=messages,
-            tools=[
-                {
-                    "type": "function",
-                    "function": {"name": "report", "parameters": schema},
-                }
-            ],
-            tool_choice={"type": "function", "function": {"name": "report"}},
-            max_tokens=args.max_output_tokens,
-        )
-        endpoint = "/v1/chat/completions"
-    body = redact(body)
+    body = redact(body) if redact_body else body
     encoded = encode(body).encode()
     if len(encoded) > args.max_input_bytes:
         raise ValueError(
@@ -178,6 +151,46 @@ def call_model(args, model, instruction, context, name, schema):
         "effort": args.effort if args.api == "responses" else "provider_default",
     }
     write_json(args.output / "measurements" / (name + ".json"), measurement)
+    return response, measurement
+
+
+def call_model(args, model, instruction, context, name, schema):
+    reader = getattr(args, "evidence_reader", None) if name == "coordinator" else None
+    if reader is not None:
+        from evidence_agent import investigate
+
+        return investigate(args, model, instruction, context, name, schema, reader)
+    budget = getattr(args, "budget", None)
+    if budget:
+        budget.check()
+    body = {"model": model}
+    messages = [
+        {"role": "system", "content": instruction},
+        {"role": "user", "content": encode(context)},
+    ]
+    if args.api == "responses":
+        body.update(
+            input=messages,
+            tools=[{"type": "function", "name": "report", "parameters": schema}],
+            tool_choice={"type": "function", "name": "report"},
+            max_output_tokens=args.max_output_tokens,
+            reasoning={"effort": args.effort},
+        )
+        endpoint = "/v1/responses"
+    else:
+        body.update(
+            messages=messages,
+            tools=[
+                {
+                    "type": "function",
+                    "function": {"name": "report", "parameters": schema},
+                }
+            ],
+            tool_choice={"type": "function", "function": {"name": "report"}},
+            max_tokens=args.max_output_tokens,
+        )
+        endpoint = "/v1/chat/completions"
+    response, measurement = request_model(args, model, body, endpoint, name)
     if args.api == "responses":
         if response.get("status") == "incomplete":
             raise ValueError("Model exhausted its output budget")

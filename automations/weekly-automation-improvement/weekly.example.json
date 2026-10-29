@@ -16,5 +16,6 @@
   "repair_model": "openai/gpt-6.1-sol",
   "triage_batch_size": 3,
   "max_inference_cost_usd": 1.0,
-  "max_run_seconds": 900
+  "max_run_seconds": 900,
+  "max_evidence_reads": 8
 }

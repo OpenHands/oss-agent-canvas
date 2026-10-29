@@ -208,3 +208,24 @@ python3 -m ruff check automations/weekly-automation-improvement
 See [TOPIC_VALIDATION.md](TOPIC_VALIDATION.md), earlier [VALIDATION.md](VALIDATION.md), and rollout tracker
 [#50](https://github.com/OpenHands/oss-agent-canvas/issues/50). Detector accuracy,
 behavioral benefit, executed revision uptake and post-merge benefit remain unproven.
+
+### On-demand evidence access
+
+Sol can call `search_runs`, `read_signal`, `list_spans`, and `read_trace` while
+preparing a patch. Searches use the monitored window; raw reads verify that the
+trace belongs to the same automation. Full fields are paged rather than silently
+clipped. The controller exposes no arbitrary SQL, shell, write endpoint or model
+credential. Every tool request/result is retained privately. The default
+`max_evidence_reads` is eight; normal cost/time/input bounds apply across turns.
+Frozen standalone replays without a reader remain snapshot-only.
+
+The controller's model transport is shared by stateless Luna calls and the
+interactive Sol investigation. Tool execution is separate from proposal parsing
+and publication. Responses continuation items are preserved as required by the
+[official function-calling protocol](https://developers.openai.com/api/docs/guides/function-calling).
+
+This uses the repository's supported git-synced `automation.yaml` + `tarball/`
+layout. Plugin-backed automations are a second supported packaging mechanism;
+copying the controller into another package would add a second source to maintain.
+The private file ledger and lock deliberately target the current single-VM cron
+runtime. A multi-host deployment would need the platform KV dispatcher pattern.
