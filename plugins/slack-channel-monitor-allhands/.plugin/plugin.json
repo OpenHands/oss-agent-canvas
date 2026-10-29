@@ -1,0 +1,42 @@
+{
+  "name": "slack-channel-monitor-allhands",
+  "version": "0.1.0",
+  "description": "Executable automation plugin for Slack Channel Monitor - All Joined Channels.",
+  "author": {
+    "name": "OpenHands",
+    "email": "contact@all-hands.dev"
+  },
+  "homepage": "https://github.com/OpenHands/oss-agent-canvas",
+  "repository": "https://github.com/OpenHands/oss-agent-canvas",
+  "license": "MIT",
+  "keywords": [
+    "automation",
+    "slack-channel-monitor-allhands"
+  ],
+  "automation": {
+    "schema_version": "openhands.automation.plugin.v1",
+    "entrypoint": {
+      "runner": "script",
+      "working_dir": "scripts",
+      "command": "python3 main.py"
+    },
+    "runtime": {
+      "plugins": []
+    },
+    "config_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "suggested_trigger": {
+      "type": "event",
+      "source": "slack",
+      "on": "app_mention",
+      "filter": "team_id == 'T07E1S2M2Q6'",
+      "destination": "dispatch_run",
+      "subject_key_expr": null,
+      "turn_text_expr": null,
+      "wake_agent": true
+    }
+  }
+}

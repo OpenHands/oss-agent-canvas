@@ -1,0 +1,37 @@
+{
+  "name": "stale-issue-nudge",
+  "version": "0.1.0",
+  "description": "Executable automation plugin for Stale Issue Nudge (multi-repo): extensions, OpenHands, software-agent-sdk, automation, enterprise.",
+  "author": {
+    "name": "OpenHands",
+    "email": "contact@all-hands.dev"
+  },
+  "homepage": "https://github.com/OpenHands/oss-agent-canvas",
+  "repository": "https://github.com/OpenHands/oss-agent-canvas",
+  "license": "MIT",
+  "keywords": [
+    "automation",
+    "stale-issue-nudge"
+  ],
+  "automation": {
+    "schema_version": "openhands.automation.plugin.v1",
+    "entrypoint": {
+      "runner": "script",
+      "working_dir": "scripts",
+      "command": "python3 main.py"
+    },
+    "runtime": {
+      "plugins": []
+    },
+    "config_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "suggested_trigger": {
+      "type": "cron",
+      "schedule": "0 15 * * 2,5",
+      "timezone": "UTC"
+    }
+  }
+}
