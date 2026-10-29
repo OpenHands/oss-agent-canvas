@@ -13,7 +13,7 @@ state: INACTIVE
 tarball_source:
   type: external
   url: plugin-spec://runtime
-timeout: 600
+timeout: 1800
 trigger:
   schedule: 0 3 * * *
   timezone: America/New_York
