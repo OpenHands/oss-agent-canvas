@@ -3,8 +3,8 @@
 A standalone prototype for OSS-14275. Flow-1 analyzes eligible automation traces
 in self-hosted Laminar. Each week, the worker aggregates findings **per automation**,
 asks Luna to identify focused repair topics, then asks Sol for one focused patch
-per topic. **A new draft PR is published only after a baseline/candidate comparison
-demonstrates the targeted improvement on frozen development cases.** Unsupported,
+per topic. **A new draft PR requires executed baseline/candidate evidence and an
+independent review of whether that evidence supports the repair.** Unsupported,
 regressed or inconclusive candidates remain pending. Merges and deployment require
 human review.
 
@@ -17,9 +17,10 @@ human review.
 3. Sol inspects the original evidence and approved source, using raw-read tools
    when needed. It proposes one focused repair or declines. Repeating an existing
    instruction without an enforceable improvement is not sufficient.
-4. One validation stage runs original and proposed code on the same saved inputs.
-   A Sol validation agent inspects task outcomes and can read full execution logs
-   and pinned repository files. Code checks actual deliverables and receipts.
+4. Sol validates the real code with regressions, controls and original inputs
+   where feasible. The publisher reruns identical checks on baseline/candidate
+   code; an independent review inspects the evidence. Configured historical
+   replay additionally checks task outcomes and actual deliverables.
 5. Publish a labeled repair draft only when paired evidence supports it. Reports
    distinguish tested mechanisms, task improvements, regressions and coverage gaps.
    Unproven findings remain pending; merge and deployment require human review.
@@ -54,8 +55,8 @@ never raw private content. They survive cleanup of temporary repair worktrees.
 
 Sol receives the issue brief and can use `read_issue(section, offset)`,
 `read_issue_comment(comment_id, offset)` and `read_issue_artifact(reference, offset)`.
-These page through the named issue and that topic's private files; they provide no
-arbitrary filesystem access. Existing Laminar evidence tools remain available.
+These page through the named issue and that topic's private files. The OpenHands
+agent also has its normal terminal and filesystem access.
 A revision reads the same issue, including the previous attempt's replay artifacts.
 The PR links back to its issue. Dry runs create only local previews.
 
@@ -98,17 +99,20 @@ profile. The worker only needs the SQL-capable self-hosted project key, proxy ke
 and existing GitHub access. Keep keys outside git and global agent profiles.
 
 ```bash
-python3 automations/weekly-automation-improvement/tarball/weekly.py \
+AUTOMATION_API_URL=http://localhost:8000/api/automation bash automations/weekly-automation-improvement/tarball/setup.sh
+
+automations/weekly-automation-improvement/tarball/.venv/bin/python automations/weekly-automation-improvement/tarball/weekly.py \
   --config /private/weekly.json --dry-run
 
-python3 automations/weekly-automation-improvement/tarball/weekly.py \
+automations/weekly-automation-improvement/tarball/.venv/bin/python automations/weekly-automation-improvement/tarball/weekly.py \
   --config /private/weekly.json
 ```
 
 `--limit 1..3` bounds representative conversations **per topic**, not the
 number of findings collected. Dry runs spend inference tokens but neither publish
 nor change the backlog, handled-event ledger or weekly reservations. The YAML
-runs `python3 weekly.py` on Mondays at 08:00 UTC; owner configuration must exist.
+runs `.venv/bin/python weekly.py` on Mondays at 08:00 UTC after installing the
+service's SDK version, following the other SDK automations. Owner configuration must exist.
 Native completion callbacks follow the existing automation convention.
 
 Current plugin automations resolve to their declared repository, branch and
@@ -212,14 +216,24 @@ costs are recorded; an unknown/invalid cost stops further inference. Timeouts an
 failed requests are not silently retried. Deferred topics stay in the backlog,
 and reports distinguish budget exhaustion from "no actionable findings".
 
-Technical bounds remain: 10,000 Signal run rows per seven-day collection window;
-representative conversations per topic set by `--limit 1..3`; 30 source files /
-250 KB; 20,000 characters per native Flow-1 finding text field; 750 KB per model
-request; 4,096 output tokens; one focused proposal and at most four exact source
-edits per repair. Each conversation retains the existing 1,000-span, 2 MB
-projected-sample and 8 MB HTTP-response limits. Oversized requests fail visibly
-with pending data retained. These bounds constrain individual requests/patches,
-not how many useful topics the run may publish.
+The repair worker is a normal OpenHands SDK `Agent`/`Conversation` powered by
+`openai/gpt-6.1-sol`, with the default terminal, editor, browser, task tracker,
+context condenser and subagent tools. It works in an isolated Git worktree,
+can create/delete files, install dependencies and run tests. Code changes come
+from its actual Git diff. Repository scope and publication stay in the harness.
+
+Configure `repair_agent` for effort, iteration and conversation time limits.
+The SDK receives the remaining run budget. The example allows $15 and three
+hours for the whole invocation; these are configurable resource limits.
+Projected samples retain their 1,000-span/2 MB bounds, and the agent can page
+through the original data. There are no file-count or patch-size restrictions.
+
+The publisher runs the agent's regression and control commands on actual
+baseline/candidate worktrees with identical new test assets. A separate Sol
+review checks that failures reproduce the reported behavior rather than a
+missing import/dependency, and checks public-data safety. Configured historical
+comparisons also run. Mechanism tests are labelled with their narrower scope;
+PRs remain drafts for review. Credentials are checked before pushing.
 
 ```bash
 python3 -m pytest automations/weekly-automation-improvement/tests -q
@@ -232,18 +246,18 @@ behavioral benefit, executed revision uptake and post-merge benefit remain unpro
 
 ### On-demand evidence access
 
-Sol can call `search_runs`, `read_signal`, `list_spans`, and `read_trace` while
-preparing a patch. Searches use the monitored window; raw reads verify that the
-trace belongs to the same automation. Full fields are paged rather than silently
-clipped. The controller exposes no arbitrary SQL, shell, write endpoint or model
-credential. Every tool request/result is retained privately. The default
-`max_evidence_reads` is eight; normal cost/time/input bounds apply across turns.
-Frozen standalone replays without a reader remain snapshot-only.
+The issue is the repair brief, with sections for the goal, scope, evidence,
+validation and previous attempts. Public issues contain authenticated references
+and metadata; original inputs, prompts, SDK events/completions, tests and logs
+stay in owner-only worker artifacts. Their catalogs are linked from the issue.
 
-The controller's model transport is shared by stateless Luna calls and the
-interactive Sol investigation. Tool execution is separate from proposal parsing
-and publication. Responses continuation items are preserved as required by the
-[official function-calling protocol](https://developers.openai.com/api/docs/guides/function-calling).
+The agent can use its terminal to read the issue, comments and private artifacts,
+or call `search_runs`, `read_signal`, `list_spans` and `read_trace` through the
+evidence CLI described in its task. Reads are paged and verify automation
+ownership. There is no eight-read limit on the OpenHands agent. It also has
+normal GitHub access and repository tools. Up to configurable N=5 negatives and
+N random completed non-negative inputs are collected for validation; missing
+data and unsupported historical adapters are reported explicitly.
 
 This uses the repository's supported git-synced `automation.yaml` + `tarball/`
 layout. Plugin-backed automations are a second supported packaging mechanism;

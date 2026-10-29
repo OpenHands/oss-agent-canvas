@@ -365,50 +365,7 @@ def fix_report(patch):
 PATCH = "diff --git a/value.py b/value.py\n--- a/value.py\n+++ b/value.py\n@@ -1 +1 @@\n-VALUE = 3\n+VALUE = 4\n"
 
 
-@pytest.mark.parametrize("original", ["VALUE = 3\n", "VALUE = 3"])
-def test_exact_edits_generate_applicable_diff(tmp_path, original):
-    command(["git", "init", "-q"], tmp_path)
-    file = tmp_path / "value.py"
-    file.write_text(original)
-    patch = patch_module.patch_from_edits(
-        {"files": {"value.py": original}},
-        [{"path": "value.py", "before": "VALUE = 3", "after": "VALUE = 4"}],
-    )
-    path = tmp_path / "candidate.patch"
-    path.write_text(patch)
-    command(["git", "apply", "--check", str(path)], tmp_path)
-    command(["git", "apply", str(path)], tmp_path)
-    assert file.read_text() == original.replace("3", "4")
-
-
-@pytest.mark.parametrize(
-    "edits",
-    [
-        [{"path": "value.py", "before": "missing", "after": "new"}],
-        [{"path": "value.py", "before": "repeat", "after": "new"}],
-        [{"path": "other.py", "before": "repeat", "after": "new"}],
-        [{"path": "../value.py", "before": "repeat", "after": "new"}],
-        [{"path": "value.py", "before": "", "after": "new"}],
-        [{"path": "value.py", "before": "repeat", "after": "repeat"}],
-        [{"path": "value.py", "before": "repeat\nrepeat\n", "after": "new"}] * 2,
-    ],
-)
-def test_unsafe_or_ambiguous_edits_are_rejected(edits):
-    with pytest.raises(ValueError):
-        patch_module.patch_from_edits(
-            {"files": {"value.py": "repeat\nrepeat\n"}}, edits
-        )
-
-
-def test_overlapping_source_matches_are_ambiguous():
-    with pytest.raises(ValueError, match="exactly one location"):
-        patch_module.patch_from_edits(
-            {"files": {"value.py": "aaa"}},
-            [{"path": "value.py", "before": "aa", "after": "b"}],
-        )
-
-
-def test_coordinator_edits_reach_regression_checks(source, tmp_path, monkeypatch):
+def test_coding_agent_diff_reaches_regression_checks(source, tmp_path, monkeypatch):
     checkout, config_path, _ = source
     value = snapshot()
     value["source"] = load_source(config_path)
@@ -418,29 +375,19 @@ def test_coordinator_edits_reach_regression_checks(source, tmp_path, monkeypatch
         tmp_path / "review", input=path, source_config=config_path, evaluate_fix=True
     )
 
-    def model(args, model, policy, context, name, schema):
-        if name == "analysis-c1":
-            return {"findings": [candidate()]}, {}
-        return {
-            "proposals": [
-                {
-                    "finding_ids": ["c1f1"],
-                    "title": "Correct the value",
-                    "hypothesis": "Use the required value",
-                    "evaluation_plan": "Run the regression",
-                    "edits": [
-                        {
-                            "path": "value.py",
-                            "before": "VALUE = 3",
-                            "after": "VALUE = 4",
-                        }
-                    ],
-                }
-            ],
-            "rejections": [],
-        }, {}
-
-    monkeypatch.setattr(app, "call_model", model)
+    monkeypatch.setattr(app, "call_model", lambda *a: ({"findings": [candidate()]}, {}))
+    proposal = fix_report(PATCH)["proposals"][0].copy()
+    proposal.pop("patch")
+    proposal["checks"] = json.loads(config_path.read_text())["checks"]
+    monkeypatch.setattr(
+        app,
+        "coding_coordinate",
+        lambda *a: (
+            {"proposals": [proposal], "rejections": []},
+            {"backend": "openhands-sdk"},
+            PATCH,
+        ),
+    )
     app.run(args)
     report = json.loads((args.output / "report.json").read_text())
     assert report["errors"] == []
@@ -497,7 +444,7 @@ def test_patch_outside_configured_allowlist_never_runs_checks(
     monkeypatch.setattr(
         patches, "run_checks", lambda *args: pytest.fail("Must not execute")
     )
-    with pytest.raises(ValueError, match="allowlist"):
+    with pytest.raises(ValueError, match="automation scope"):
         propose_fix(args, fix_report(patch), {"source": load_source(path)})
 
 
@@ -596,7 +543,7 @@ def test_new_untracked_files_in_patch_are_rejected_before_checks(
         patches, "run_checks", lambda *a: pytest.fail("Must not execute")
     )
     extra = "diff --git a/injected.py b/injected.py\nnew file mode 100644\n--- /dev/null\n+++ b/injected.py\n@@ -0,0 +1 @@\n+print('unexpected helper')\n"
-    with pytest.raises(ValueError, match="allowlist"):
+    with pytest.raises(ValueError, match="automation scope"):
         propose_fix(args, fix_report(PATCH + extra), {"source": load_source(path)})
 
 
@@ -653,3 +600,47 @@ def test_redaction_preserves_protocol_checksums_but_removes_credentials(monkeypa
     assert redact(marker + " " + digest) == marker + " [REDACTED]"
     monkeypatch.setenv("PRIVATE_API_KEY", digest)
     assert digest not in redact(marker)
+
+
+def test_private_report_preserves_exact_agent_patch(source, tmp_path, monkeypatch):
+    _, config_path, _ = source
+    value = snapshot()
+    value["source"] = load_source(config_path)
+    path = tmp_path / "snapshot.json"
+    path.write_text(encode(value))
+    args = arguments(tmp_path / "review", input=path, source_config=config_path)
+    patch = PATCH + "\n" + "a" * 64
+    proposal = fix_report(patch)["proposals"][0].copy()
+    proposal.pop("patch")
+    proposal["checks"] = []
+    monkeypatch.setattr(app, "call_model", lambda *a: ({"findings": [candidate()]}, {}))
+    monkeypatch.setattr(
+        app,
+        "coding_coordinate",
+        lambda *a: ({"proposals": [proposal], "rejections": []}, {}, patch),
+    )
+    app.run(args)
+    report = json.loads((args.output / "report.json").read_text())
+    assert report["proposals"][0]["patch"] == patch
+    assert (args.output / "report.json").stat().st_mode & 0o077 == 0
+
+
+def test_sdk_runtime_failure_is_preserved_in_private_report(
+    source, tmp_path, monkeypatch
+):
+    _, config_path, _ = source
+    value = snapshot()
+    value["source"] = load_source(config_path)
+    path = tmp_path / "snapshot.json"
+    path.write_text(encode(value))
+    args = arguments(tmp_path / "review", input=path, source_config=config_path)
+    monkeypatch.setattr(app, "call_model", lambda *a: ({"findings": [candidate()]}, {}))
+
+    def fail(*args):
+        raise RuntimeError("Native SDK failure")
+
+    monkeypatch.setattr(app, "coding_coordinate", fail)
+    with pytest.raises(ValueError, match="Partial analysis"):
+        app.run(args)
+    report = json.loads((args.output / "report.json").read_text())
+    assert report["errors"] == [{"stage": "coordinator", "error": "Native SDK failure"}]

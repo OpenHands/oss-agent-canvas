@@ -182,11 +182,6 @@ def request_model(args, model, body, endpoint, name, *, redact_body=True):
 
 
 def call_model(args, model, instruction, context, name, schema):
-    reader = getattr(args, "evidence_reader", None) if name == "coordinator" else None
-    if reader is not None:
-        from evidence_agent import investigate
-
-        return investigate(args, model, instruction, context, name, schema, reader)
     budget = getattr(args, "budget", None)
     if budget:
         budget.check()

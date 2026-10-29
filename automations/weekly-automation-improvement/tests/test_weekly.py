@@ -281,6 +281,7 @@ def test_source_matches_deployed_code_and_rejects_ambiguous_copies(
 
 def configuration(tmp_path):
     return {
+        "collect_validation_inputs": False,
         "state_dir": str(tmp_path / "state"),
         "repository": "Example/automation",
         "laminar_base_url": "https://example.test",
@@ -1340,3 +1341,67 @@ def test_budget_defers_unstarted_topics_and_preserves_backlog(
     assert len([c for c in calls if c[0] == "publish"]) == 1
     state = json.loads((Path(config["state_dir"]) / "state.json").read_text())
     assert len(state["backlog"]) == 2 and len(state["topic_weeks"]) == 1
+
+
+def test_default_collects_validation_inputs_without_replay_adapter(
+    configured_source, tmp_path, monkeypatch
+):
+    import cohorts
+
+    rows = [record()]
+    config, calls = prepare_grouped(configured_source, tmp_path, monkeypatch, rows)
+    config.pop("collect_validation_inputs")
+    selected = []
+
+    def collect(client, frame, automation, records, size, seed):
+        selected.append((automation, size, [r["event"]["id"] for r in records]))
+        return {
+            "scope": "original inputs",
+            "selection": {},
+            "errors": [],
+            "samples": [],
+            "sample_size": size,
+            "cohort_sha256": "frozen",
+            "complete": False,
+        }
+
+    monkeypatch.setattr(cohorts, "collect", collect)
+    monkeypatch.setattr(cohorts, "prepare", lambda cohort, source, output: cohort)
+    weekly.run(config)
+    assert selected == [
+        (rows[0]["owner"]["automation_id"], 5, [rows[0]["event"]["id"]])
+    ]
+    assert any(call[0] == "sol" for call in calls)
+
+
+def test_analysis_failure_is_indexed_on_the_central_issue(tmp_path, monkeypatch):
+    args = arguments(tmp_path)
+    report = {"errors": [{"stage": "coordinator", "error": "SDK failed"}]}
+    (tmp_path / "report.json").write_text(json.dumps(report))
+
+    def fail(args):
+        raise ValueError("Partial analysis")
+
+    attempts = []
+    from types import SimpleNamespace
+
+    issue = SimpleNamespace(
+        attempt=lambda output, value: attempts.append((output, value))
+    )
+    monkeypatch.setattr(weekly.analysis, "run", fail)
+    with pytest.raises(ValueError, match="Partial analysis"):
+        weekly.analyze_with_evidence(args, issue)
+    assert attempts == [(tmp_path, report)]
+
+
+def test_laminar_sdk_uses_reachable_http_transport(monkeypatch):
+    monkeypatch.delenv("LMNR_FORCE_HTTP", raising=False)
+    weekly.load_environment(
+        {
+            "laminar_base_url": "https://example.test",
+            "llm_base_url": "https://proxy.test",
+        }
+    )
+    import os
+
+    assert os.environ["LMNR_FORCE_HTTP"] == "true"

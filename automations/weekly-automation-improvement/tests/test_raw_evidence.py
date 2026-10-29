@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "tarball"))
-import common
 import evidence_agent
 from raw_evidence import EvidenceReader, population
 
@@ -89,9 +88,7 @@ def test_non_negative_frame_excludes_unscored_and_mixed_conversations():
     assert len([row for row in rows if row["classification"] == "negative"]) == 1
 
 
-def test_sol_can_request_detail_then_report_with_audited_transport(
-    tmp_path, monkeypatch
-):
+def test_readonly_validation_can_request_detail_then_report(tmp_path, monkeypatch):
     requests, reads = [], []
     reader = SimpleNamespace(
         schemas=[{"name": "list_spans", "parameters": {"type": "object"}}],
@@ -135,8 +132,8 @@ def test_sol_can_request_detail_then_report_with_audited_transport(
         evidence_reader=reader,
         max_evidence_reads=1,
     )
-    value, measurement = common.call_model(
-        args, "sol", "Investigate", {}, "coordinator", {}
+    value, measurement = evidence_agent.investigate(
+        args, "sol", "Investigate", {}, "validation", {}, reader
     )
     assert value == {"proposals": []}
     assert reads == [("list_spans", {"offset": 0})]

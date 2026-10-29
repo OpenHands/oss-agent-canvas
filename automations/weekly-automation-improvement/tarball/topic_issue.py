@@ -328,6 +328,12 @@ class TopicIssue:
                 for key in ("findings", "rejected_findings", "proposals", "errors")
             }
         }
+        coding = output / "coding-agent"
+        if coding.exists():
+            for path in sorted(coding.glob("*.json")):
+                artifacts[str(path.relative_to(output))] = read_json(path, 32_000_000)
+            for path in sorted((coding / "completions").glob("*.json")):
+                artifacts[str(path.relative_to(output))] = read_json(path, 32_000_000)
         for stage, pattern in (
             (output, "coordinator*.json"),
             (output / "comparison/semantic-review", "validation*.json"),
@@ -339,7 +345,12 @@ class TopicIssue:
                     )
         if (output / "validation.json").exists():
             artifacts["validation.json"] = read_json(output / "validation.json")
+        for name in ("paired-evidence-review.json", "paired-review-failure.json"):
+            if (output / name).exists():
+                artifacts[name] = read_json(output / name)
         receipt = output / "comparison/evidence.json"
+        if (output / "paired-checks.json").exists():
+            receipt = output / "paired-checks.json"
         summary = "Investigation recorded; no behavioral improvement is established."
         if receipt.exists():
             value = read_json(receipt)
@@ -350,6 +361,8 @@ class TopicIssue:
             ):
                 raise ValueError("Invalid comparison status")
             summary = f"Comparison verdict: **{value['status']}**. Full task-specific reasoning and results are in the private comparison receipt."
+            if value.get("assessment", {}).get("claim") == "mechanism_tested":
+                summary += " This is executed mechanism-test evidence, not a complete historical-cohort or population-quality evaluation."
             for key in ("baseline", "candidate"):
                 if value.get(key) and re.fullmatch(r"[a-f0-9]{40}", value[key]):
                     summary += f"\n\n{key.capitalize()}: `{value[key]}`."
@@ -382,10 +395,9 @@ class TopicIssue:
             ):
                 if path.exists():
                     artifacts[path.name] = read_json(path, 32_000_000)
-        log = output / "comparison-runner.log"
-        if log.exists():
+        for log in sorted(output.glob("*.log")):
             if log.stat().st_size > 16_000_000:
-                raise ValueError("Comparison log exceeds its byte budget")
+                raise ValueError("Execution log exceeds its byte budget")
             artifacts[log.name] = log.read_text(errors="replace")
         if publication:
             artifacts["publication.json"] = publication

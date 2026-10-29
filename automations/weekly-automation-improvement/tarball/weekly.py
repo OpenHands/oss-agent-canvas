@@ -36,6 +36,7 @@ def load_environment(config):
             if name in values:
                 os.environ[name] = values[name]
     os.environ["LMNR_BASE_URL"] = config["laminar_base_url"]
+    os.environ.setdefault("LMNR_FORCE_HTTP", "true")
     os.environ["LLM_BASE_URL"] = config["llm_base_url"]
     comparison = config.get("comparative_validation", {})
     profile_id = comparison.get("profile_id")
@@ -109,7 +110,7 @@ def source_config(config, snapshot, output):
     )
     revision = command(["git", "rev-parse", reference], checkout)
     index = repository_index(checkout, revision)
-    files, identifiers, samples, errors = set(), set(), [], []
+    files, identifiers, samples, errors, roots = set(), set(), [], [], {"tests/"}
     for sample in snapshot["samples"]:
         if sample.get("collection_error"):
             errors.append(
@@ -122,20 +123,8 @@ def source_config(config, snapshot, output):
         try:
             resolved = resolve_source(config, sample, index)
             proposed = files | set(resolved["files"])
-            if (
-                len(proposed) > 30
-                or sum(
-                    int(
-                        command(
-                            ["git", "cat-file", "-s", revision + ":" + path], checkout
-                        )
-                    )
-                    for path in proposed
-                )
-                > 250000
-            ):
-                raise ValueError("Selected source exceeds the 30-file/250 KB budget")
             files = proposed
+            roots.add(resolved["directory"] + "/")
             identifiers.add(sample["automation_id"])
             sample["source_resolution"] = resolved
             samples.append(sample)
@@ -146,14 +135,6 @@ def source_config(config, snapshot, output):
     if not samples:
         return None, [], errors
     paths = sorted(files)
-    sizes = [
-        int(command(["git", "cat-file", "-s", revision + ":" + path], checkout))
-        for path in paths
-    ]
-    if len(paths) > 30 or sum(sizes) > 250000:
-        raise ValueError(
-            "Selected source exceeds the 30-file/250 KB budget; reduce --limit"
-        )
     value = {
         "repository": repository,
         "checkout": str(checkout),
@@ -161,6 +142,7 @@ def source_config(config, snapshot, output):
         "base_branch": branch,
         "automation_ids": sorted(identifiers),
         "files": paths,
+        "editable_roots": sorted(roots),
         "checks": [],
         "require_improvement": config.get("require_improvement", True),
         "validation_sample_size": config.get("validation_sample_size", 5),
@@ -324,6 +306,7 @@ def investigate_topic(
     automation_id = records[0]["owner"]["automation_id"]
     args = arguments(config, output / "analysis", limit, seed)
     args.budget = budget
+    args.repair_agent_config = config.get("repair_agent", {})
     result = {
         "automation_id": automation_id,
         "topic": topic,
@@ -354,7 +337,9 @@ def investigate_topic(
         ).resolve()
     )
     snapshot["evidence_location"] = config.get("evidence_location")
-    if config.get("comparative_validation"):
+    if config.get("collect_validation_inputs", True) or config.get(
+        "comparative_validation"
+    ):
         from cohorts import prepare, collect
 
         cohort = collect(
@@ -392,8 +377,7 @@ def investigate_topic(
         issue,
         output / "evidence",
     )
-    args.max_evidence_reads = config.get("max_evidence_reads", 8)
-    analysis.run(args)
+    analyze_with_evidence(args, issue)
     report = read_json(args.output / "report.json")
     if report.get("errors"):
         issue.attempt(args.output, report)
@@ -457,7 +441,7 @@ def investigate_topic(
                 write_json(revision_input, snapshot)
                 args.input, args.output = revision_input, output / "revision"
                 args.publish_draft = False
-                analysis.run(args)
+                analyze_with_evidence(args, issue)
                 revised = read_json(args.output / "report.json")
                 if (
                     not revised.get("errors")
@@ -517,6 +501,16 @@ def investigate_topic(
     return result
 
 
+def analyze_with_evidence(args, issue):
+    try:
+        analysis.run(args)
+    except Exception:
+        path = args.output / "report.json"
+        if path.exists():
+            issue.attempt(args.output, read_json(path))
+        raise
+
+
 def propose_with_evidence(args, report, snapshot, issue):
     try:
         result = propose_fix(args, report, snapshot)
@@ -538,6 +532,36 @@ def propose_with_evidence(args, report, snapshot, issue):
 def comparison_feedback(output):
     path = output / "comparison/runs/comparison.json"
     if not path.exists():
+        reviewed = output / "paired-review-failure.json"
+        if reviewed.exists():
+            result = read_json(reviewed)
+            return {
+                "previous_attempt": str(reviewed),
+                "evidence_review": result["evidence_review"],
+                "baseline": result["baseline"],
+                "candidate": result["candidate"],
+            }
+        path = output / "validation.json"
+        if path.exists():
+            result = read_json(path)
+            if result.get("status") == "rejected" and result.get("checks"):
+                return {
+                    "previous_attempt": str(path),
+                    "failed_cases": [
+                        {
+                            "case_id": check["name"],
+                            "expected_baseline": check["baseline"],
+                            "baseline": before,
+                            "candidate": after,
+                        }
+                        for check, before, after in zip(
+                            result["checks"],
+                            result["baseline"],
+                            result["candidate"],
+                            strict=True,
+                        )
+                    ],
+                }
         return None
     report = read_json(path)
     if "assessment" in report:

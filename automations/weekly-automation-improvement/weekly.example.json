@@ -29,9 +29,14 @@
   "triage_model": "openai/gpt-6-luna",
   "repair_model": "openai/gpt-6.1-sol",
   "triage_batch_size": 3,
-  "max_inference_cost_usd": 1.0,
-  "max_run_seconds": 7200,
-  "max_evidence_reads": 8,
+  "max_inference_cost_usd": 15.0,
+  "max_run_seconds": 10800,
   "validation_sample_size": 5,
-  "evidence_location": "Authenticated worker access: gcloud compute ssh YOUR_VM --project=YOUR_PROJECT --zone=YOUR_ZONE"
+  "evidence_location": "Authenticated worker access: gcloud compute ssh YOUR_VM --project=YOUR_PROJECT --zone=YOUR_ZONE",
+  "repair_agent": {
+    "effort": "high",
+    "max_iterations": 200,
+    "max_run_seconds": 3600,
+    "max_output_tokens": 16384
+  }
 }
