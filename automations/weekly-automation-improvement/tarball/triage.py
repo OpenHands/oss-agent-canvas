@@ -234,6 +234,7 @@ def triage(args, records, prs, completed_topics=()):
         "Never bundle independent fixes just because they affect the same automation, file, tool or broad cluster. "
         "Laminar clusters reflect similar summaries, not proven common root causes. Merge duplicate groups into one topic; split a mixed group into separate topics using different representative events. "
         "Use a stable lowercase kebab-case key of at most 40 characters describing the specific failure mechanism, independent of dates, event IDs or cluster names. "
+        "Topic keys appear in public issue titles: describe only the generic failure mode, without customer/user/project identifiers, secrets or private quotations. "
         "Reuse an existing topic key when the issue matches; do not rename a topic to evade an existing PR or weekly reservation. "
         "Exclude topics already addressed by open PRs or completed/reserved this week. "
         "You select leads for Sol, not validated fixes. Counts are facts; summaries, severity and causes are unverified judgments. "
