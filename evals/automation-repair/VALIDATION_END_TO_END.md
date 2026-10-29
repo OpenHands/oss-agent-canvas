@@ -169,8 +169,8 @@ On 2026-10-29, the prototype produced
 [repair PR #60](https://github.com/OpenHands/oss-agent-canvas/pull/60) with
 **Before / After Evidence already in its initial description**. Its label is
 `automation-improvement`; it remains a draft for human review.
-The implementation is [#55](https://github.com/OpenHands/oss-agent-canvas/pull/55),
-stacked on [#49](https://github.com/OpenHands/oss-agent-canvas/pull/49).
+The implementation is consolidated in [#49](https://github.com/OpenHands/oss-agent-canvas/pull/49).
+The earlier validation work was developed in [#55](https://github.com/OpenHands/oss-agent-canvas/pull/55).
 
 ## Executed chain
 

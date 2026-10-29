@@ -3,7 +3,7 @@
 The weekly publisher compares the actual automation source before opening a new
 repair PR. It selects a trusted task contract, freezes its inputs and execution
 settings, runs baseline/candidate code, and publishes **Before / After Evidence**
-only when the target improvement is demonstrated. This PR is stacked on
+only when the target improvement is demonstrated. The full pipeline is reviewed in
 [#49](https://github.com/OpenHands/oss-agent-canvas/pull/49).
 
 ## One validation stage
