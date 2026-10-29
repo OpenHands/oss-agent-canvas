@@ -1,9 +1,7 @@
-import copy
 import json
 import sys
 import uuid
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -118,65 +116,48 @@ def test_invalid_user_sample_size_is_rejected(value):
         cohorts.collect(*fixture(), size=value)
 
 
-def test_annotations_are_blind_and_frozen_before_candidate_code(tmp_path, monkeypatch):
+def test_preparation_freezes_inputs_and_repository_without_label_inference(
+    tmp_path, monkeypatch
+):
     data = cohorts.collect(*fixture(), size=1, seed=42)
     task = {
         "issue": {
             "number": 7,
             "title": "A report",
-            "author_body": "Reported real harm",
+            "author_body": "Original text",
             "labels": [],
         }
     }
     for sample in data["samples"]:
         sample["initial_instructions"] = [
             {
-                "role": "user",
                 "content": "modify only fixture/review issue #7.\nMarker: <!-- marker -->\n\n"
-                + json.dumps(task),
+                + json.dumps(task)
             }
         ]
-    received = []
-
-    def annotate(args, model, instruction, context, name, schema):
-        received.append(copy.deepcopy(context))
-        return {
-            "cases": [
-                {
-                    "id": row["id"],
-                    "priority_basis": "experienced_user_harm",
-                    "priority_quote": "Reported real harm",
-                    "readiness_basis": "unknown",
-                    "readiness_quote": "",
-                    "rationale": "The task records actual user harm",
-                }
-                for row in context["inputs"]
-            ]
-        }, {"seconds": 1}
-
-    monkeypatch.setattr(cohorts, "call_model", annotate)
+    calls = []
+    monkeypatch.setattr(cohorts, "capture_reads", lambda *a: {})
     monkeypatch.setattr(
-        cohorts, "repository_snapshot", lambda repo: {"repository": repo, "files": {}}
+        cohorts,
+        "repository_snapshot",
+        lambda repo, output: calls.append(repo) or {"revision": "b" * 40},
     )
-    result = cohorts.annotate(
-        SimpleNamespace(model="luna"),
-        data,
-        {
-            "revision": "a" * 40,
-            "files": {
-                "worker.py": "class IssueTriage:\n    def _prompt(self):\n        return 'Policy'\n"
-            },
-        },
-        tmp_path,
-    )
-    assert result["complete"]
-    assert result["annotation"]["blind_to_candidate_and_signal_classification"]
-    assert "classification" not in json.dumps(received)
-    assert "candidate" not in json.dumps(received)
-    assert all(
-        sample["expected_outcome"]["priority"] == "medium_or_high"
-        for sample in result["samples"]
-    )
+    prepared = cohorts.prepare(data, {"revision": "a" * 40}, tmp_path)
+    assert prepared["complete"] and calls == ["fixture/review"]
+    assert all("expected_outcome" not in sample for sample in prepared["samples"])
+    assert prepared["baseline_revision"] == "a" * 40
+
+
+def test_redacted_native_markers_cannot_be_replayed():
+    sample = {
+        "initial_instructions": [
+            {
+                "content": 'modify only fixture/review issue #7.\nMarker: <!-- triage-source:[REDACTED] -->\n\n{"issue":{"number":7}}'
+            }
+        ]
+    }
+    with pytest.raises(ValueError, match="marker"):
+        cohorts.native_payload(sample)
 
 
 def test_validation_expands_exact_signatures_without_absorbing_a_mixed_cluster():
@@ -201,42 +182,3 @@ def test_validation_expands_exact_signatures_without_absorbing_a_mixed_cluster()
     ]
     missing = [record("e", ""), record("f", "")]
     assert cohorts.topic_records(missing, ["e"]) == missing[:1]
-
-
-def test_evidence_categories_determine_priority_and_require_real_quotes():
-    from triage_expectations import outcome
-
-    native = {
-        "task": {
-            "issue": {
-                "author_body": "Run npm run dev:mock with MSW; the same code runs in production."
-            }
-        }
-    }
-    label = {
-        "priority_basis": "synthetic_only",
-        "priority_quote": "Run npm run dev:mock with MSW",
-        "readiness_basis": "unknown",
-        "readiness_quote": "",
-        "rationale": "A mock reproduction does not establish production impact",
-    }
-    assert outcome(label, native)["priority"] == "low"
-    assert outcome(label, native)["readiness"] == "unspecified"
-    label["priority_quote"] = "A real customer lost money"
-    with pytest.raises(ValueError, match="grounded"):
-        outcome(label, native)
-    label["priority_quote"] = ""
-    with pytest.raises(ValueError, match="grounded"):
-        outcome(label, native)
-
-
-def test_annotation_policy_excludes_unrelated_dispatcher_code():
-    from triage_expectations import baseline_policy
-
-    source = {
-        "files": {
-            "worker.py": "class IssueTriage:\n    def _prompt(self):\n        return 'Triage policy'\n\ndef unrelated_dispatch():\n    return 'Do not include'\n"
-        }
-    }
-    policy = baseline_policy(source)
-    assert "Triage policy" in policy and "unrelated_dispatch" not in policy

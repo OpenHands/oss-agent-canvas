@@ -36,6 +36,8 @@ def execute(argv, log, timeout):
         for key, value in os.environ.items()
         if key in ("PATH", "HOME", "LANG", "LC_ALL", "LITELLM_API_KEY")
     }
+    if os.environ.get("LITELLM_API_KEY"):
+        environment["VALIDATION_JUDGE_API_KEY"] = os.environ["LITELLM_API_KEY"]
     if os.environ.get("COMPARISON_API_KEY"):
         environment["LITELLM_API_KEY"] = os.environ["COMPARISON_API_KEY"]
     with log.open("x") as stream:
@@ -175,9 +177,19 @@ def run_locked(request_path, command):
         "[Evidence] ",
         "[Inconclusive] ",
         "[Regressed] ",
+        "[Observed regression] ",
+        "[Mechanism tested] ",
     ):
         if current.get("title", "").startswith(previous):
-            prefix = "Evidence" if supported else receipt["status"].capitalize()
+            prefix = (
+                "Evidence"
+                if supported
+                else "Observed regression"
+                if receipt["status"] == "regressed"
+                else "Mechanism tested"
+                if (receipt.get("assessment") or {}).get("mechanism_supported")
+                else receipt["status"].capitalize()
+            )
             payload["title"] = f"[{prefix}] " + current["title"][len(previous) :]
             break
     body_path = root / "pr-body-with-evidence.md"
@@ -187,6 +199,8 @@ def run_locked(request_path, command):
     payload_path.write_text(json.dumps(payload))
     payload_path.chmod(0o600)
     command(["gh", "api", "--method", "PATCH", endpoint, "--input", str(payload_path)])
+    if not supported and current.get("draft") is False:
+        command(["gh", "pr", "ready", request["pr_url"], "--undo"])
     return {
         "status": receipt["status"],
         "published": True,

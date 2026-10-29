@@ -17,7 +17,10 @@ def rescore(source, output):
         state = json.loads(world_path.read_text())
         previous = row["score"]
         error = previous["error"]
-        if error == "Frozen API does not cover all requested endpoints":
+        if error in (
+            "Frozen API does not cover all requested endpoints",
+            "Replay lacks requested API context",
+        ):
             error = None
         revised = score(
             state,
@@ -30,7 +33,14 @@ def rescore(source, output):
             changes.append(
                 {"trial": path.parent.name, "before": previous, "after": revised}
             )
-        for artifact in (path, world_path):
+        for artifact in (
+            path,
+            world_path,
+            path.with_name("prompt.json"),
+            path.with_name("events.json"),
+        ):
+            if not artifact.exists():
+                continue
             receipts[str(artifact.relative_to(source))] = hashlib.sha256(
                 artifact.read_bytes()
             ).hexdigest()
@@ -41,7 +51,16 @@ def rescore(source, output):
             if case.get("native_payload")
             else scenario(case["id"]).get("target_violation")
         )
-        cases.append(case | ({"target_violation": target} if target else {}))
+        cases.append(
+            case
+            | (
+                {"target_violation": None, "semantic_required": True}
+                if case.get("native_payload")
+                else {"target_violation": target}
+                if target
+                else {}
+            )
+        )
     report = compare(rows, cases, manifest["repeats"])
     if not report["complete"]:
         raise ValueError("Only rescore a complete comparison")
@@ -71,6 +90,8 @@ def rescore(source, output):
                         "triage_world.py",
                         "scenarios.py",
                         "rescore.py",
+                        "triage_contract.py",
+                        "evaluation.py",
                     )
                 },
                 "source_receipts": receipts,

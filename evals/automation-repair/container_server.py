@@ -111,6 +111,7 @@ def serve(args):
                 self.send_error(403)
                 return
             status = 200
+            response_headers = {}
             try:
                 if private and self.path == "/snapshot":
                     with lock:
@@ -171,6 +172,7 @@ def serve(args):
                             body,
                             self.headers.get("Accept", ""),
                         )
+                        response_headers = dict(getattr(world, "response_headers", {}))
                 data = (
                     result
                     if isinstance(result, bytes)
@@ -183,6 +185,8 @@ def serve(args):
                     "Content-Type",
                     "text/plain" if isinstance(result, str) else "application/json",
                 )
+                for name, value in response_headers.items():
+                    self.send_header(name, value)
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)

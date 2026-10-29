@@ -643,3 +643,13 @@ def test_model_payload_redaction_preserves_json_and_sanitizes_structured_audits(
     audit = json.loads((tmp_path / "responses/roundtrip.json").read_text())
     assert json.loads(audit["output"][0]["arguments"]) == common.redact(result)
     assert "private-result-value" not in json.dumps(audit)
+
+
+def test_redaction_preserves_protocol_checksums_but_removes_credentials(monkeypatch):
+    from common import redact
+
+    digest = "a1" * 32
+    marker = "<!-- triage-source:" + digest + " -->"
+    assert redact(marker + " " + digest) == marker + " [REDACTED]"
+    monkeypatch.setenv("PRIVATE_API_KEY", digest)
+    assert digest not in redact(marker)

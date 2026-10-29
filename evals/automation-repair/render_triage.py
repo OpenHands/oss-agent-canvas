@@ -34,6 +34,14 @@ def render(source, case):
             task.get("readiness_check"),
         )
         start = prompt.rfind('\n\n{"issue":')
+        task = {
+            **task,
+            "issue": {
+                **task["issue"],
+                "managed_triage_section_present": "<!-- openhands-ai-triage:start -->"
+                in value["body"],
+            },
+        }
         return prompt[:start] + "\n\n" + json.dumps(task)
     return automation._prompt(
         value, [], [], [value], "<!-- triage-source:frozen-case -->", None

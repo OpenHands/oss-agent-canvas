@@ -6,74 +6,47 @@ settings, runs baseline/candidate code, and publishes **Before / After Evidence*
 only when the target improvement is demonstrated. This PR is stacked on
 [#49](https://github.com/OpenHands/oss-agent-canvas/pull/49).
 
-## Contracts and evidence
+## One validation stage
 
-The normal weekly path freezes a historical cohort **before Sol sees the repair**.
-Top-level `validation_sample_size` defaults to **5**; users can set any positive
-integer within their time/cost budgets. Select up to N distinct topic-linked
-negative conversations and N uniformly random non-negative conversations from the
-same automation and detector window. Non-negative means completed Flow-1 analysis
-with no finding, not verified healthy. Unscored, failed and mixed-negative
-conversations are excluded from controls. Sampling seeds, eligible-frame hashes,
-selected identities and the complete evidence hash are retained. Missing selected
-inputs or fewer than N eligible controls make the cohort incomplete; no rerolls.
-Negative candidates are the topic representatives plus exact cause/signature
-matches. A shared Laminar cluster alone cannot pull another repair topic into the cohort.
+Freeze the original tasks and a pinned repository snapshot, run the baseline and
+candidate on identical inputs, then ask **one Sol validation agent** to inspect
+the recorded before/after evidence. There is no precomputed gold-label pipeline.
+Sol judges the original task, the complete deliverable and the specific repair
+hypothesis. It can inspect full tool events and repository files when needed.
 
-- **Historical issue priority:** execute `IssueTriage._prompt` on each original
-  native task payload. Independently derive expected priority/readiness from the
-  frozen baseline policy, task data and pinned root repository guidance using Luna;
-  shuffle opaque input IDs and hide Signal classification, candidate code and
-  candidate outcomes. The annotation prompt includes only the baseline `_prompt`
-  policy rather than unrelated dispatcher source. Luna extracts an evidence
-  category and a verbatim quote; trusted code maps categories to outcomes and
-  rejects quotes absent from the input. Dependency mentions do not establish a
-  linked PR's merge state. Quotes make annotations auditable, not infallible.
-  Unscorable expectations block acceptance. Inspect labels,
-  human-text/comment preservation and unrelated labels. Current root guidance is
-  shared across versions; complete historical repositories and linked discussions
-  are not reconstructed. This adapter supports priority topics only.
-- **Legacy issue-priority fixtures:** original author body plus AI-authored
-  unknown-amount and speculative-risk cases remain available for development.
-- **Review faithfulness:** execute the reviewer against a complete PR description
-  and a reconstructed working draft. Detect explicit false test-absence claims
-  while requiring retention of a known independent code bug. A genuine-absence
-  control prevents rewarding blanket suppression of findings. The current checks
-  cover these explicit claims, not general semantic review quality.
-- **Review publication:** exercise requested-head checks, duplicate/empty review
-  handling and publication formatting, with normal/known-bug controls. For source
-  containing `controlled_review.py`, run its actual gateway and trusted publisher.
-  The historical body-file fault targets `/tmp/review_body.md`; a different path
-  can avoid that particular fault, so it alone cannot establish general recovery.
+Code enforces the parts that should not depend on a model's assertion:
 
-Contracts are selected by source family and failure mechanism, without a manual
-per-automation/topic mapping. Unsupported mechanisms stay pending. A suitable
-execution adapter and outcome checker are necessary for each additional family.
-Historical execution adapters for the reviewer contracts are not yet implemented.
-Their AI-authored fixtures remain available for explicit experiments using
-`legacy_development_fixtures: true`; they cannot satisfy the weekly N-input gate.
-Some fixtures start from reconstructed draft checkpoints. Neither mode reproduces
-the entire production environment or establishes a statistical failure-rate reduction.
+- Exact input/source identities and retained execution artifacts.
+- Actual body/comment/label deliverables, preservation of human text and final
+  readback. Rejected write attempts are distinct from successful writes.
+- No improvement claim from identical rendered prompts, missing executions or
+  contradictory success/regression judgments. Prompt repairs need at least two
+  valid paired observations; these remain development evidence, not statistical proof.
 
-Improvement requires a baseline execution with the **specific target violation**,
-a paired passing candidate, complete execution and passing negative candidate cases.
-Historical controls must introduce **no new violations** relative to paired
-baseline executions; inherited failures remain visible. Legacy fixtures retain
-their stricter all-candidate-checks-pass rule. An unrelated formatting failure does not prove a
-factual-accuracy fix. Runtime/provider failures, absent required inputs and
-unreproduced failures remain inconclusive. The narrow priority contract requires
-observation of the complete current issue and checks the verified final labels;
-unsupported optional research reads are retained as warnings. Unsupported writes
-remain failures. Reviewer contracts require complete read coverage.
-Completed baseline behavioral failures remain visible; they do not invalidate an
-otherwise sound execution. New control violations, missing inputs and execution
-errors on either version still block acceptance.
+Top-level `validation_sample_size` defaults to **5**. Freeze up to N topic-linked
+negative conversations and N uniformly sampled non-negative conversations from the
+same automation before the repair is proposed. Non-negative means completed
+Flow-1 analysis with no finding, not verified healthy. No selected input is
+replaced after failure. N counts distinct inputs; `repeats` separately controls
+executions and defaults to two in the example configuration.
 
-Reports compare expected behavior and observed outcomes side by side, including
-labels, violations, retained code findings, timing, tokens and estimated cost.
-Exact source SHAs, SDK/image/model settings and evidence hashes identify what was
-executed. Full prompts, events, API records and manifests stay private. A successful
-comparison supports human review; it never merges or deploys the repair.
+The historical adapter currently runs issue-triage tasks. Its repository snapshot
+contains real implementation files and directory listings, not a synthetic example.
+Related GitHub reads are captured upfront. Both versions see the same pinned
+present-day environment with the original task data; this is not a reconstruction
+of all historical environment state. Unknown API reads are explicit coverage gaps.
+Sol determines whether missing exploratory data was supplied by other captured
+evidence; required missing inputs and runtime errors cannot establish improvement.
+
+Reports separate target reproduction, paired fixes, observed regressions, actual
+deliverable failures, control coverage and experiment validity. A clean publication
+safety test remains useful when unrelated trials are invalid; it does not establish
+general review quality. Reviewer publication/factual-claim fixtures remain explicit
+mechanism experiments, not replacements for a historical-input adapter.
+
+Repairs without demonstrated benefit remain drafts or pending. Human review
+controls merge and deployment. Full prompts, model/tool events and private receipts
+identify what ran. The validation agent's judgments are auditable, not infallible.
 
 ## Install and configure
 
@@ -99,7 +72,7 @@ candidate worktrees. For example:
     "model": "openai/glm-5.3-flash",
     "base_url": "https://llm-proxy.eval.all-hands.dev",
     "effort": "high",
-    "repeats": 1,
+    "repeats": 2,
     "llm_timeout": 120,
     "max_run_seconds": 420,
     "timeout_seconds": 7200
@@ -144,7 +117,7 @@ there is no PR-count quota. Cached receipts are keyed by head, settings and harn
 fingerprint. The cohort is cached separately by PR/head/N, so a harness correction
 does not select a new favorable dataset. A changed head or closed PR rejects the description update. Existing
 text is preserved, except superseded pipeline-owned unevaluated notices when a
-comparison succeeds. Inconclusive results are visible and never promoted to passes.
+comparison completes. Coverage gaps, observed regressions and supported mechanisms remain visible separately.
 
 To inspect a pinned pair directly:
 

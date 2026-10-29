@@ -22,7 +22,7 @@
     "profile_id": "glm-5.3-flash",
     "automatic_contracts": true,
     "timeout_seconds": 7200,
-    "repeats": 1,
+    "repeats": 2,
     "max_run_seconds": 420,
     "llm_timeout": 120
   },

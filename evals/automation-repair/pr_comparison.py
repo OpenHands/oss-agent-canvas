@@ -162,8 +162,34 @@ def run(request_path, output):
         else:
             compare.main(args)
         report = json.loads((args.output / "comparison.json").read_text())
+        if args.native_cases and report["complete"]:
+            from validation_agent import assess as review_executions
+            from evaluation import assess
+
+            try:
+                judgments = review_executions(
+                    request,
+                    Path(recorded).resolve() if recorded else args.output,
+                    report,
+                    args.native_cases,
+                    output=output,
+                )
+                report["assessment"] = assess(
+                    report,
+                    args.native_cases,
+                    args.repeats,
+                    judgments,
+                    request["baseline"] == request["candidate"],
+                )
+                report["status"] = report["assessment"]["status"]
+            except (OSError, ValueError, KeyError) as error:
+                report["semantic_review_error"] = str(error)[:500]
+                report["assessment"] = assess(report, args.native_cases, args.repeats)
+                report["status"] = report["assessment"]["status"]
+            compare.write(args.output / "comparison.json", report)
         receipt.update(
             status=report["status"],
+            assessment=report.get("assessment"),
             target_topic_exercised=targeted,
             contract=contract,
             reused_executions=bool(recorded),

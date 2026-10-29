@@ -172,7 +172,10 @@ def source_config(config, snapshot, output):
             else configured.get(next(iter(identifiers)))
         )
         if comparison:
-            value["comparative_validation"] = comparison
+            value["comparative_validation"] = comparison | {
+                "judge_model": config.get("repair_model", "openai/gpt-6.1-sol"),
+                "judge_base_url": config["llm_base_url"],
+            }
     path = output / "source-config.json"
     write_json(path, value)
     return path, samples, errors
@@ -342,7 +345,7 @@ def investigate_topic(
     snapshot["topic"] = topic
     snapshot["existing_improvement_prs"] = prs
     if config.get("comparative_validation"):
-        from cohorts import annotate, collect
+        from cohorts import prepare, collect
 
         cohort = collect(
             Laminar(args),
@@ -352,9 +355,7 @@ def investigate_topic(
             config.get("validation_sample_size", 5),
             seed,
         )
-        cohort = annotate(
-            args, cohort, snapshot["source"], output / "validation-labels"
-        )
+        cohort = prepare(cohort, snapshot["source"], output / "validation-context")
         cohort_path = output / "validation-cohort.json"
         write_json(cohort_path, cohort)
         snapshot["validation_cohort"] = {

@@ -16,7 +16,7 @@ def load(metadata, contract):
     ).hexdigest()
     if digest != expected or digest != metadata["sha256"]:
         raise ValueError("Historical cohort changed after selection")
-    if contract != "issue_priority":
+    if contract not in ("issue_priority", "issue_readiness", "issue_triage"):
         raise ValueError(
             "Historical execution adapter is not available for this repair family"
         )
@@ -65,11 +65,8 @@ def load(metadata, contract):
         ):
             raise ValueError("Historical input ownership or collection failed")
         native = sample["native_payload"]
-        outcome = sample["expected_outcome"]
-        if outcome["priority"] not in ("low", "medium_or_high"):
-            raise ValueError("Historical input has no independent expected outcome")
-        if outcome["readiness"] not in ("ready", "not_ready", "unspecified"):
-            raise ValueError("Invalid historical readiness expectation")
+        if "[REDACTED]" in native.get("marker", ""):
+            raise ValueError("Historical task marker was redacted")
         snapshot = sample.get("repository_snapshot")
         if not snapshot or not re.fullmatch(
             r"[0-9a-f]{40}", snapshot.get("revision", "")
@@ -84,17 +81,20 @@ def load(metadata, contract):
                 "body": native["task"]["issue"]["author_body"],
                 "title": native["task"]["issue"]["title"],
                 "native_payload": native,
+                "github_reads": sample.get("github_reads", {}),
                 "repository_snapshot": sample.get(
                     "repository_snapshot", {"files": {}, "root_entries": []}
                 ),
-                "expected_priorities": ["priority:low"]
-                if outcome["priority"] == "low"
-                else ["priority:medium", "priority:high"],
-                "readiness_expectation": outcome["readiness"],
+                "expected_priorities": [
+                    "priority:low",
+                    "priority:medium",
+                    "priority:high",
+                ],
+                "readiness_expectation": "unspecified",
+                "semantic_required": True,
                 "expectation": "historical_task_outcome",
-                "target_violation": "incorrect_priority"
-                if kind == "regression"
-                else None,
+                "target_violation": None,
+                "repair_target": contract,
                 "provenance": {
                     key: sample.get(key)
                     for key in (

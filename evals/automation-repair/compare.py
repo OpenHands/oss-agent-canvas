@@ -129,6 +129,15 @@ class Sandbox:
         self.directory = directory
         directory.mkdir()
         write(directory / "case.json", case)
+        if case.get("repository_snapshot", {}).get("archive_path"):
+            for field, name in (
+                ("archive", "repository.tar.gz"),
+                ("index", "repository-index.json"),
+            ):
+                artifact = Path(case["repository_snapshot"][field + "_path"])
+                if digest(artifact) != case["repository_snapshot"][field + "_sha256"]:
+                    raise ValueError("Repository artifact changed before execution")
+                (directory / name).write_bytes(artifact.read_bytes())
         (directory / "token").write_text(self.token)
         (directory / "token").chmod(0o600)
         command(
@@ -223,6 +232,8 @@ class Sandbox:
                 ROOT / "container_server.py",
                 ROOT / "reviewer_world.py",
                 ROOT / "triage_world.py",
+                ROOT / "triage_contract.py",
+                ROOT / "repository_files.py",
                 ROOT / "render_triage.py",
                 ROOT / "scenarios.py",
                 ROOT / "git_http.py",
@@ -230,6 +241,14 @@ class Sandbox:
                 directory / "token",
                 directory / "key.pem",
                 directory / "cert.pem",
+                *(
+                    [
+                        directory / "repository.tar.gz",
+                        directory / "repository-index.json",
+                    ]
+                    if case.get("repository_snapshot", {}).get("archive_path")
+                    else []
+                ),
             ]:
                 destination = (
                     "/tmp/workspace/repo"
@@ -282,13 +301,7 @@ class Sandbox:
                         self.name,
                         "python3",
                         "-c",
-                        "import json,os,pathlib,shutil,subprocess; c=json.load(open('/tmp/replay/case.json')); r=pathlib.Path('/tmp/workspace/repo'); "
-                        "[(shutil.rmtree(p) if p.is_dir() and not p.is_symlink() else p.unlink()) for p in r.iterdir()]; "
-                        "[(r/name).write_text(text) for name,text in c['repository_snapshot']['files'].items() if name in ('AGENTS.md','CONTRIBUTING.md','README.md')]; "
-                        "subprocess.run(['git','init','-q','--initial-branch=main'],cwd=r,check=True); "
-                        "subprocess.run(['git','add','.'],cwd=r,check=True); "
-                        "subprocess.run(['git','-c','user.name=Replay','-c','user.email=replay@example.invalid','commit','--allow-empty','-qm','Frozen repository guidance'],cwd=r,env=dict(os.environ,GIT_AUTHOR_DATE='2026-10-29T00:00:00Z',GIT_COMMITTER_DATE='2026-10-29T00:00:00Z'),check=True); "
-                        "subprocess.run(['git','remote','add','origin','https://github.com/'+c['native_payload']['repository']+'.git'],cwd=r,check=True)",
+                        "import json,pathlib,sys; sys.path.insert(0,'/tmp/replay'); from repository_files import materialize; materialize(json.load(open('/tmp/replay/case.json')), pathlib.Path('/tmp/workspace/repo'))",
                     ]
                 )
             if case.get("body_file_failure"):
@@ -605,7 +618,7 @@ def compare(rows, cases, expected_repeats=1):
         if improvement and all_candidate_pass and controls_passed
         else "inconclusive"
     )
-    return {
+    report = {
         "status": status,
         "complete": complete,
         "controls_passed": controls_passed,
@@ -620,6 +633,11 @@ def compare(rows, cases, expected_repeats=1):
         if historical
         else "AI-authored task scenarios derived from observed failures; not historical full-trajectory replay or held-out quality evaluation",
     }
+    from evaluation import assess
+
+    report["assessment"] = assess(report, cases, expected_repeats)
+    report["status"] = report["assessment"]["status"]
+    return report
 
 
 def run_comparison(args):

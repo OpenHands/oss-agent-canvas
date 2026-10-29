@@ -21,7 +21,7 @@ def cohort_sections(report, cases):
             [
                 f"### {heading} ({len(selected)} inputs, N={size})",
                 "",
-                "| Input | Before passes | After passes | Result |",
+                "| Input | Before conformance | After conformance | Assessment |",
                 "|---|---:|---:|---|",
             ]
         )
@@ -43,19 +43,35 @@ def cohort_sections(report, cases):
             error = any(
                 row["score"]["error"] or not row["score"]["finished"] for row in rows
             )
-            outcome = (
-                "Inconclusive"
-                if error or len(baseline) != len(candidate) or not candidate
-                else "Regression / failed check"
-                if not passed and (kind == "regression" or worsened)
-                else "No new violations; existing failures remain"
-                if not passed
-                else "Fixed reproduced target"
-                if kind == "regression" and reproduced
-                else "Not reproduced"
-                if kind == "regression"
-                else "Passed regression checks"
-            )
+            observed = [
+                item
+                for item in report.get("assessment", {}).get("observations", [])
+                if item["case_id"] == case["id"]
+            ]
+            judgments = [item["semantic"] for item in observed if item.get("semantic")]
+            if judgments:
+                outcome = " / ".join(
+                    dict.fromkeys(
+                        item["reason"].replace("|", "\\|").replace("\n", " ")
+                        for item in judgments
+                    )
+                )
+            else:
+                outcome = (
+                    "Not established; semantic review pending"
+                    if case.get("semantic_required")
+                    else "Inconclusive"
+                    if error or len(baseline) != len(candidate) or not candidate
+                    else "Regression / failed check"
+                    if not passed and (kind == "regression" or worsened)
+                    else "No new violations; existing failures remain"
+                    if not passed
+                    else "Fixed reproduced target"
+                    if kind == "regression" and reproduced
+                    else "Not reproduced"
+                    if kind == "regression"
+                    else "Passed regression checks"
+                )
             lines.append(
                 f"| [{case['id']}]({case['trace_url']}) | {sum(row['score']['passed'] for row in baseline)}/{len(baseline)} | {sum(row['score']['passed'] for row in candidate)}/{len(candidate)} | {outcome} |"
             )
@@ -76,6 +92,29 @@ def summarize(root):
         "| Scenario | Expected behavior | Baseline passes | Candidate passes | Inconclusive executions |",
         "|---|---|---:|---:|---:|",
     ]
+    assessment = report.get("assessment", {})
+    if assessment:
+        lines[4:4] = [
+            "| Evidence dimension | Result |",
+            "|---|---|",
+            f"| Claim supported | {assessment['claim']} |",
+            f"| Target mechanism supported | {assessment['mechanism_supported']} |",
+            f"| Experiment fully valid | {assessment['experiment_valid']} |",
+            f"| Target reproduced | {assessment['target_reproduced'] if assessment['target_reproduced'] is not None else 'Unknown'} |",
+            f"| Paired target fixes | {len(assessment['target_fixed_pairs'])} |",
+            f"| Observed regression pairs | {len(assessment['observed_regressions'])} |",
+            f"| Finished runs missing a deliverable | {len(assessment.get('observed_deliverable_failures', []))} |",
+            f"| Valid control pairs | {assessment['control_coverage']['valid_pairs']}/{assessment['control_coverage']['planned_pairs']} |",
+            "",
+            "Positive mechanism tests and observed regressions remain visible when other trials lack coverage. A mechanism test does not establish general task quality; small stochastic comparisons do not establish statistical improvement.",
+            "",
+        ]
+    if report.get("semantic_review_error"):
+        lines[4:4] = [
+            "Semantic review could not complete: "
+            + report["semantic_review_error"].replace("\n", " "),
+            "",
+        ]
     expectations = {
         "one_valid_review": "Publish one valid review at the requested revision",
         "no_write": "Observe changed/completed state and publish no review",
@@ -87,7 +126,7 @@ def summarize(root):
     cases = {case["id"]: case for case in manifest.get("cases", [])}
     historical = any(case.get("native_payload") for case in cases.values())
     if historical:
-        lines = lines[:4] + cohort_sections(report, cases)
+        lines = lines[:4] + lines[4:-2] + cohort_sections(report, cases)
     if any(
         case.get("draft_decision") or case.get("draft_review")
         for case in cases.values()
@@ -219,11 +258,11 @@ def summarize(root):
         [
             "",
             (
-                "These are actual historical task inputs with AI-derived expectations frozen independently of candidate outputs. Both source versions execute in a controlled GitHub world with pinned current repository guidance. Historical repository state, all implementation files and accumulated conversation history are not fully reconstructed; this checks the priority/readiness/preservation contract, not general task quality."
+                "These are actual historical task inputs with task-level judgments from one validation agent inspecting paired recorded executions. Both source versions execute in a controlled GitHub world with pinned current repository guidance. Historical repository state, all implementation files and accumulated conversation history are not fully reconstructed; this checks the priority/readiness/preservation contract, not general task quality."
                 if historical
                 else "These are AI-authored development scenarios with a synthetic repository and controlled GitHub state, not exact historical replays or a held-out quality benchmark."
             )
-            + " Missing required inputs, unsupported mutations and runtime/provider errors are inconclusive. The priority contract reports unsupported optional research reads separately: its checks use the observed complete issue and verified final labels. Reviewer contracts require complete read coverage. Small counts do not establish statistical improvement. No real GitHub review was posted; production was unchanged.",
+            + " Missing required inputs, unsupported mutations and runtime/provider errors are inconclusive. Required API/context gaps invalidate the affected pair. Rejected API writes and incomplete deliverables are reported separately. Reviewer contracts require complete read coverage. Small counts do not establish statistical improvement. No real GitHub review was posted; production was unchanged.",
         ]
     )
     return "\n".join(lines) + "\n"

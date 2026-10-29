@@ -10,7 +10,7 @@ import urllib.parse
 import urllib.request
 
 SECRET = re.compile(
-    r"\bsk-[\w-]{8,}|gh[pousr]_[\w]{15,}|github_pat_[\w]{15,}|xox[baprs]-[\w-]+|Bearer\s+\S+|(?<![\w/.-])[A-Za-z0-9_-]{48,}(?![\w/.-])"
+    r"(?P<protocol_marker><!-- triage-source:[a-f0-9]{64} -->)|\bsk-[\w-]{8,}|gh[pousr]_[\w]{15,}|github_pat_[\w]{15,}|xox[baprs]-[\w-]+|Bearer\s+\S+|(?<![\w/.-])[A-Za-z0-9_-]{48,}(?![\w/.-])"
 )
 
 ASSIGNMENT = re.compile(
@@ -40,7 +40,12 @@ def redact(value):
         for name, secret in os.environ.items():
             if re.search(r"KEY|TOKEN|SECRET|PASSWORD", name) and len(secret) >= 8:
                 value = value.replace(secret, "[REDACTED]")
-        value = SECRET.sub("[REDACTED]", value)
+        value = SECRET.sub(
+            lambda match: match[0]
+            if match.lastgroup == "protocol_marker"
+            else "[REDACTED]",
+            value,
+        )
         value = ASSIGNMENT.sub(
             lambda match: (
                 match.group(0)

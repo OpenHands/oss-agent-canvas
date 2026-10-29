@@ -10,75 +10,33 @@ human review.
 
 ## Weekly path
 
-1. The dedicated Signal runs at execution finish (`conversation.arun`), filtered
-   to traces containing `automation.conversation`. Sampling is disabled for full
-   coverage of matching instrumented traces; missing telemetry and failed analysis
-   still create coverage gaps. It neither ingests traces nor replaces the health monitor.
-2. Collect every latest finding event in the previous seven days, with a ten-minute
-   arrival buffer. Sampling-only configuration versions are compatible; changed
-   instructions, schemas or LLM routes are separate cohorts. Read lightweight
-   event/ownership records upfront without loading every full trajectory. Retain
-   failed/pending runs and completed no-event counts separately.
-3. Merge findings into the existing private JSON backlog. Pending findings survive
-   the collection window and weekly boundaries. Deduplicate event IDs, discard
-   superseded findings, and group by automation UUID. Incompatible older detector
-   cohorts remain visible in the backlog but are not mixed into the current analysis.
-4. Within each automation, reuse Laminar leaf clusters; otherwise group by exact
-   normalized signature and cause. Empty signatures stay separate. If an event has
-   several leaf memberships, use its first sorted leaf once. Count distinct
-   conversations so repeated events do not inflate affected-run counts. Cards have
-   up to three distinct-conversation examples, outcome/cause counts and recency.
-5. Use `openai/gpt-6-luna` to select focused repair topics in batches. Clusters are semantic hints: Luna may merge duplicate groups or split
-   a mixed group using different representative events. Each topic gets a title,
-   stable key, reason and up to three representative conversations. A single
-   event cannot be assigned to two topics, while different events from one
-   conversation may support different topics. Luna selects compact `e1`-style
-   references; trusted code resolves their event and group IDs from a saved map.
-   Unselected findings stay pending.
-6. For each topic separately, load its representatives and freeze their evidence,
-   the approved source and only that topic's aggregate context. Make a separate
-   `openai/gpt-6.1-sol` call. Sol confirms the issue against the task, trace,
-   recovery, current source and existing PRs, then proposes one focused patch or
-   declines. Independent fixes and incidental cleanup cannot be bundled into
-   another topic. An unrelated but potentially valid finding is deferred in the
-   backlog; unsupported findings can be rejected.
-7. Before proposing a patch, freeze up to `validation_sample_size` topic-linked
-   negative inputs and that many uniformly sampled non-negative inputs from the
-   same automation. The setting defaults to **5** and is a positive user-supplied
-   integer. A non-negative input must have completed Flow-1 analysis with no
-   finding; unscored traces are excluded. Freeze independent AI expectations from
-   the baseline policy and original tasks, without candidate code or Signal labels.
-   Failed selections are retained rather than replaced; insufficient controls block
-   publication. Apply the patch in a detached worktree and check approved file scope,
-   whitespace and Python syntax. Commit locally and retain a private Git bundle.
-   Select a trusted task contract from the affected source and failure mechanism;
-   freeze native inputs, source revisions, model settings and case definitions.
-8. Run both versions through the actual SDK against identical isolated GitHub
-   worlds. Require a reproduced **target violation**, passing negative candidate
-   cases, no new control violations and no required-input/runtime gaps on either
-   version. Existing control failures remain visible in both versions. The PR has
-   separate negative-input and random non-negative-input comparison tables.
-   Unrelated failures cannot establish the intended improvement. Missing contracts
-   or inconclusive results produce no branch push or new PR.
-9. A completed behavioral failure may receive one Sol revision with compact case
-   feedback, followed by a new comparison. The previous patch must change;
-   provider/runtime failures and unchanged patches are not rerolled. Retain both
-   attempts and disclose development feedback in the evidence report.
-10. Publish one draft per demonstrated topic, labeled `automation-improvement`,
-    with **Before / After Evidence already in its description**. Recheck the base
-    revision after evaluation. Later topics see the newly created PR. Release the
-    reservation when no publication occurred; findings remain pending. Worktrees
-    are removed while source bundles and all comparison artifacts remain private.
+1. Read persisted Flow-1 findings from self-hosted Laminar and retain unresolved
+   findings in the private backlog. Group by automation, then cluster/signature.
+2. Luna selects focused repair topics from compact cards. Counts are facts;
+   detector diagnoses and cluster membership remain leads to investigate.
+3. Sol inspects the original evidence and approved source, using raw-read tools
+   when needed. It proposes one focused repair or declines. Repeating an existing
+   instruction without an enforceable improvement is not sufficient.
+4. One validation stage runs original and proposed code on the same saved inputs.
+   A Sol validation agent inspects task outcomes and can read full execution logs
+   and pinned repository files. Code checks actual deliverables and receipts.
+5. Publish a labeled repair draft only when paired evidence supports it. Reports
+   distinguish tested mechanisms, task improvements, regressions and coverage gaps.
+   Unproven findings remain pending; merge and deployment require human review.
 
-The worker continues across Luna batches until no actionable topics remain or a
-resource threshold is reached. There is no total topic or PR-count quota. Dry runs
-perform analysis and mechanical checks without PR writes or backlog changes.
-The historical-input adapter currently covers issue-priority/readiness decisions.
-Older reviewer factual-claim/publication fixtures remain available for explicit
-development experiments; they cannot satisfy the new historical-cohort gate.
-Other families cannot publish until an appropriate adapter and outcome checker
-exist. This is development-case evidence, not a
-general automation-quality benchmark. See the [comparison setup](../../evals/automation-repair/README.md).
+`validation_sample_size` is a user-configurable positive integer, default **5**:
+up to N topic-linked negative conversations plus N random completed no-finding
+conversations. Inputs are frozen before proposing the patch, with no replacement
+after failure. There is no separate gold-label annotation/adjudication pipeline.
+The historical execution adapter currently supports issue triage. Explicit reviewer
+fault tests provide narrower publication/factual-claim evidence; they cannot stand
+in for historical-input coverage. See the [validation setup](../../evals/automation-repair/README.md).
+
+Processing continues across topic batches until no actionable topics remain or a
+resource threshold is reached. There is no total topic/PR-count quota. Each topic
+has its own source snapshot, evidence, patch and publication reservation. Existing
+PRs block duplicates; failed publication releases its reservation. Private receipts
+and candidate bundles support recovery without silently rerolling failed cases.
 
 ## Configure and run
 

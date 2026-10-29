@@ -623,9 +623,7 @@ def test_one_repair_revision_keeps_failed_evidence_and_only_consumes_proven_find
         assert result["status"] == "completed"
         assert state["events"][records[0]["event"]["id"]]["status"] == "draft_pr"
         assert not state["backlog"]
-        assert {row["status"] for row in state["topic_weeks"].values()} == {
-            "completed"
-        }
+        assert {row["status"] for row in state["topic_weeks"].values()} == {"completed"}
     else:
         assert result["status"] == "validation_incomplete"
         assert records[0]["event"]["id"] in state["backlog"]

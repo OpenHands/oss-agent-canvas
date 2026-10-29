@@ -22,8 +22,7 @@ def select(request):
         [request.get("topic"), request.get("findings"), request.get("hypothesis", "")]
     ).lower()
     if paths and all(path.startswith(ISSUE_TRIAGE) for path in paths):
-        if re.search(r"priorit|user.pain|reported.harm|reproduc|readiness", context):
-            return "issue_priority", list(TRIAGE)
+        return "issue_triage", list(TRIAGE)
     if paths and all(path.startswith(REVIEWER) for path in paths):
         if re.search(
             r"claims?|factual|contradict|metadata|description|test.instructions",
@@ -39,7 +38,7 @@ def select(request):
 
 
 def captured_inputs(snapshot, contract):
-    if contract != "issue_priority":
+    if contract not in ("issue_priority", "issue_triage"):
         return {}
     for sample in snapshot.get("samples", []):
         for message in sample.get("initial_instructions", []):

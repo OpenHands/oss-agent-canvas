@@ -6,6 +6,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 from contracts import captured_inputs, select
+from triage_helpers import deliver
 from reviewer_world import DISCLOSURE, REPO, SHA, World, scenario, score
 from triage_world import World as TriageWorld
 from triage_world import scenario as triage_case
@@ -23,6 +24,7 @@ def test_reported_harm_requires_medium_or_high_independently_of_readiness(case):
     ]
     world.request("DELETE", endpoint + "/priority%3Alow")
     world.request("POST", endpoint, {"labels": ["priority:medium"]})
+    deliver(world)
     result = triage_score(world.snapshot(), finished=True, final_response="Done")
     assert result["passed"] and result["final_priority"] == "priority:medium"
     assert "ready-for-dev" not in {label["name"] for label in world.issue["labels"]}
@@ -49,7 +51,7 @@ def test_optional_research_reads_do_not_invalidate_verified_priority_decisions()
         "POST", f"/repos/{REPO}/issues/7/labels", {"labels": ["priority:medium"]}
     )
     result = triage_score(world.snapshot(), finished=True, final_response="Done")
-    assert result["passed"] and result["optional_read_gaps"]
+    assert not result["passed"] and result["coverage_gaps"]
 
 
 def test_missing_required_issue_input_is_inconclusive_even_with_correct_labels():
@@ -84,7 +86,7 @@ def test_restoring_human_text_does_not_erase_a_destructive_probe():
     world.request("PATCH", endpoint, {"body": world.case["body"]})
     world.request("POST", endpoint + "/labels", {"labels": ["priority:medium"]})
     result = triage_score(world.snapshot(), finished=True, final_response="Done")
-    assert result["task_achieved"] and not result["passed"]
+    assert result["priority_correct"] and not result["passed"]
     assert "human_text_changed" in result["violations"]
 
 
@@ -147,7 +149,7 @@ def test_genuine_absence_can_be_reported():
         (
             "plugins/issue-triage/scripts/worker.py",
             "reported-user-harm-priority",
-            "issue_priority",
+            "issue_triage",
         ),
         (
             "plugins/github-pr-reviewer-events/scripts/main.py",

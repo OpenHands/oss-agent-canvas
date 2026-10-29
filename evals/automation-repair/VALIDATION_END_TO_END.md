@@ -1,3 +1,80 @@
+# Current simplified evaluator
+
+One semantic validation stage follows paired execution: freeze original task inputs
+and a pinned real repository; execute baseline and candidate through the actual SDK;
+then let one Sol agent inspect the task and outcomes, with optional raw-run/source
+reads. Code checks source/input identity, actual deliverables, preserved human text,
+readback and runtime integrity. There is no separate gold-label generation or
+quote-adjudication stage. N defaults to 5 and counts distinct inputs; the example
+uses two repetitions. These are development observations, not statistical proof.
+
+The corrected implementation covers label-only false passes, missing implementation
+files, wrong-repository/GraphQL responses, fabricated empty searches, pagination,
+contradictory semantic controls and unchanged executed prompts. Unsupported data is
+explicit. Recorded-run reviews keep a separate audit directory. Redaction preserves
+the non-secret triage protocol checksum; corrupted input markers are rejected.
+
+## Publication safety: positive mechanism evidence (#54)
+
+The separate moved-head experiment has two valid pairs: baseline published on the
+wrong head 2/2 times; candidate prevented publication 2/2 times. One valid original
+body-file-failure pair also supports the guard. Other original trials retain runtime
+or coverage gaps; missing same-cohort controls block a broader acceptance claim.
+This is useful safety-mechanism evidence, not a general reviewer-quality benchmark.
+
+Tested candidate `703ad30a6e3864437aeeaf65061cdb8d0a144a21`; current #54 head
+`e904068189798df4207a2b9b6b3fafaf7970a52c` differs only in README/tests. Runtime
+publication code is identical; the exact current head was not rerun. Both artifacts
+and current rescoring are retained under `automation-simple-validation-20261029/guard-evidence`.
+
+## Historical-input diagnosis (#60): not a qualified repair
+
+The N=5 comparison completed **24 SDK executions**: one available negative and five
+originally random non-negative inputs, both source versions, two repetitions.
+Pinned full repository archives and related reads replaced the toy source checkout.
+Sol completed its assessment with eight optional reads, **$0.5079 proxy-reported
+cost**, and approximately 74 seconds. Code attached exact artifact references.
+
+A valid pair under that scorer showed a completed baseline decision and a candidate
+duplicate/missing decision after rejected comment operations. Another repetition
+suggested a priority fix, but its replay could not establish valid evidence. Four
+of ten control pairs met the then-current validity requirements; the rest retained
+runtime or unbacked-response gaps. There was no qualified improvement.
+
+Further inspection found an additional input defect: secret redaction had removed
+the task's checksum marker. That can cause false deliverable failures, so this entire
+experiment is now diagnostic rather than qualification evidence. No causal regression
+or general benefit is claimed. The implementation now preserves that protocol marker
+while continuing to remove credentials, and rejects previously corrupted cohorts.
+
+Raw runs: `automation-simple-validation-20261029/e4e1b0f37d99`. Completed semantic
+review: `full-review-bd0f3498364e`. Earlier first-pass reviews and an audit-directory
+collision remain retained; rescoring never reran SDK executions or replaced inputs.
+
+A fresh **N=1 diagnostic canary** refetches original task messages from Laminar and
+randomly downsamples one of the original five controls with seed `20261029`. It
+uses two repetitions, intact markers, the same pinned source snapshots and corrected
+API coverage. It does not replace the original N=5 experiment. Its artifacts are
+under `automation-simple-validation-20261029/canary-4470c6209387`; results will be
+recorded separately when execution completes.
+
+## Other calibration and checks
+
+The #59 factual-error incident is supported by its original trace, but the baseline
+already avoided that specific error in three reconstructed target trials. Formatting
+passes do not demonstrate a factual-accuracy improvement. It remains draft/unproven.
+A one-off Sol policy check correctly recognized SDK issue #6295 as actual workflow
+pain (medium/high, approximately $0.003), correcting the earlier Luna label. This is
+a calibration check, not an added labeling stage or a repair-quality benchmark.
+
+**249 tests pass**; Ruff, formatting and whitespace checks pass. Independent review
+found no further material defect in the bounded implementation review. Historical
+execution currently covers issue triage; reviewer fixtures remain mechanism tests,
+not substitutes for a historical reviewer adapter. No production schedule, deployment
+or weekly-ledger replacement is part of this work. Generated repair PRs remain draft.
+
+# Earlier experiments (superseded evaluator)
+
 # Historical-cohort validation
 
 On 2026-10-29, the stronger user-configurable protocol selected **N=5** from live

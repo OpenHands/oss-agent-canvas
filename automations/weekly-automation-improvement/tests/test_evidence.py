@@ -288,3 +288,37 @@ def test_stronger_inconclusive_comparison_downgrades_old_evidence_title(tmp_path
     evidence.run(path, command)
     assert payloads[0]["title"] == "[Inconclusive] Repair"
     assert "Improvement has not been demonstrated" in payloads[0]["body"]
+
+
+def test_inconclusive_evidence_returns_a_ready_pr_to_draft(tmp_path):
+    path, value = request(tmp_path)
+    output = tmp_path / "comparison"
+    output.mkdir()
+    (output / "evidence.json").write_text(
+        json.dumps(
+            value
+            | {
+                "status": "inconclusive",
+                "markdown": "Required evidence is missing.",
+                "request_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    )
+    calls = []
+
+    def command(argv):
+        calls.append(argv)
+        if argv[:3] == ["gh", "api", "repos/example/repo/pulls/1"]:
+            return json.dumps(
+                {
+                    "head": {"sha": value["candidate"]},
+                    "body": "Notes",
+                    "title": "[Evidence] Repair",
+                    "state": "open",
+                    "draft": False,
+                }
+            )
+        return ""
+
+    evidence.run(path, command)
+    assert ["gh", "pr", "ready", value["pr_url"], "--undo"] in calls

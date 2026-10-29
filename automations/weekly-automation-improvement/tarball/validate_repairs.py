@@ -14,7 +14,7 @@ from weekly import arguments, load_environment
 
 
 def historical_cohort(config, body, revision, files, output):
-    from cohorts import annotate, collect, topic_records
+    from cohorts import prepare, collect, topic_records
     from events import collect_events
 
     owner = re.search(
@@ -56,7 +56,7 @@ def historical_cohort(config, body, revision, files, output):
             },
         )
         value = collect(client, inventory, owner[1], records, size=size)
-        value = annotate(args, value, load_source(source_path), output / "labels")
+        value = prepare(value, load_source(source_path), output / "context")
         write_json(path, value)
     return {
         "path": str(path.resolve()),

@@ -9,6 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 from historical_cases import load
+from triage_helpers import deliver
 from triage_world import World, score
 from summarize import cohort_sections
 
@@ -90,6 +91,8 @@ def test_real_task_identity_preservation_and_human_comment_checks(tmp_path):
     assert status == 200 and value["number"] == 123
     assert value["body"] == "Reported impact"
     world.request("POST", root + "/labels", {"labels": ["priority:medium"]})
+    assert not score(world.snapshot(), finished=True, final_response="Done")["passed"]
+    deliver(world)
     assert score(world.snapshot(), finished=True, final_response="Done")["passed"]
     world.request("DELETE", "/repos/Example/project/issues/comments/999")
     assert (
@@ -106,6 +109,7 @@ def test_real_task_identity_preservation_and_human_comment_checks(tmp_path):
         "different_automation",
         "fewer_controls",
         "no_guidance",
+        "redacted_marker",
         "path_case",
     ],
 )
@@ -121,6 +125,10 @@ def test_invalid_or_incomplete_cohorts_cannot_satisfy_n(tmp_path, corruption):
         data["samples"].pop()
     elif corruption == "no_guidance":
         data["samples"][0].pop("repository_snapshot")
+    elif corruption == "redacted_marker":
+        data["samples"][0]["native_payload"]["marker"] = (
+            "<!-- triage-source:[REDACTED] -->"
+        )
     else:
         data["samples"][0]["case_id"] = "../../outside"
     with pytest.raises(ValueError):
@@ -149,7 +157,7 @@ def test_changed_data_is_rejected_and_reports_have_both_cohort_sections(tmp_path
     )
     assert "Negative Signal inputs (1 inputs, N=2)" in text
     assert "Random non-negative inputs (2 inputs, N=2)" in text
-    assert "Not reproduced" in text
+    assert "Not established" in text
     value = json.loads(Path(metadata["path"]).read_text())
     value["sample_size"] = 5
     Path(metadata["path"]).write_text(json.dumps(value))
@@ -189,7 +197,8 @@ def test_historical_controls_allow_existing_failures_but_never_new_violations():
         row("non_negative-1", "candidate", ["existing_failure"]),
     ]
     report = compare(rows, cases)
-    assert report["status"] == "improvement_on_development_cases"
+    assert report["status"] == "inconclusive"
+    assert not report["assessment"]["observed_regressions"]
     assert report["control_acceptance"] == "no_new_violations"
     assert report["runs"][-1]["score"]["violations"] == ["existing_failure"]
     assert report["runs"][-1]["introduced_violations"] == []
