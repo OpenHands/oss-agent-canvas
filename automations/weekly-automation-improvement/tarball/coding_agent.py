@@ -7,6 +7,7 @@ import sys
 import time
 import uuid
 import math
+from urllib.parse import quote
 from importlib.metadata import version
 from pathlib import Path
 from types import SimpleNamespace
@@ -70,9 +71,9 @@ def coordinate(args, context, snapshot):
         command(["git", "worktree", "remove", "--force", str(worktree)], checkout)
 
 
-def run_agent(args, context, snapshot, worktree):
+def create_repair_agent(args, root):
     from pydantic import SecretStr
-    from openhands.sdk import Conversation, LLM
+    from openhands.sdk import LLM
     from openhands.sdk.tool import Tool
     from openhands.tools.preset.default import (
         get_default_agent,
@@ -80,11 +81,122 @@ def run_agent(args, context, snapshot, worktree):
     )
     from openhands.tools.task import TaskToolSet
 
+    settings = getattr(args, "repair_agent_config", {})
+    name = getattr(args, "repair_agent_profile", None)
+    if name:
+        from openhands.sdk.profiles import resolve_agent_profile, validate_agent_profile
+        from openhands.sdk.skills import load_available_skills
+        from openhands.sdk.workspace import RemoteWorkspace
+        from openhands.tools import register_default_tools
+        from sources import native_request
+
+        host = os.environ.get("AGENT_SERVER_URL", "")
+        profile = validate_agent_profile(
+            json.loads(
+                native_request(host, "/api/agent-profiles/" + quote(name, safe=""))
+            )["profile"]
+        )
+        if profile.agent_kind != "openhands":
+            raise ValueError("The repair agent profile must use an OpenHands agent")
+
+        def load_llm(reference, *, cipher=None):
+            value = json.loads(
+                native_request(
+                    host,
+                    "/api/profiles/" + quote(reference, safe=""),
+                    expose_secrets=True,
+                )
+            )["config"]
+            try:
+                return LLM.model_validate(value).model_copy(
+                    update={
+                        "log_completions": True,
+                        "log_completions_folder": str(root / "completions"),
+                    }
+                )
+            except ValueError:
+                raise ValueError(
+                    "The repair profile's LLM configuration is invalid"
+                ) from None
+
+        native_settings = json.loads(
+            native_request(host, "/api/settings", expose_secrets=True)
+        )["agent_settings"]
+        public = (
+            load_available_skills(include_public=True)
+            if getattr(profile, "public_skills", None) != []
+            else {}
+        )
+        user = load_available_skills(include_user=True)
+        skills = public | user
+        critic_key = native_settings.get("verification", {}).get("critic_api_key")
+        resolved = resolve_agent_profile(
+            profile,
+            llm_store=SimpleNamespace(load=load_llm),
+            mcp_config=native_settings.get("mcp_config", {}),
+            available_skills=list(skills.values()),
+            public_skill_names=set(public) - set(user),
+            **({"critic_api_key": SecretStr(critic_key)} if critic_key else {}),
+        )
+        register_default_tools()
+        register_builtins_agents()
+        agent = resolved.create_agent()
+        try:
+            with RemoteWorkspace(
+                host=host,
+                api_key=os.environ.get("OH_SESSION_API_KEYS_0")
+                or os.environ.get("SESSION_API_KEY"),
+                working_dir=str(root),
+            ) as workspace:
+                secrets = workspace.get_secrets(agent_profile_id=str(profile.id))
+        except ValueError:
+            raise ValueError("Could not load the repair profile's secrets") from None
+        return (
+            agent,
+            {
+                "name": profile.name,
+                "id": str(profile.id),
+                "revision": profile.revision,
+                "llm_profile_ref": profile.llm_profile_ref,
+                "model": resolved.llm.model,
+            },
+            secrets,
+        )
+
+    llm = LLM(
+        model=args.coordinator,
+        base_url=os.environ["LLM_BASE_URL"],
+        api_key=SecretStr(
+            os.environ.get("LITELLM_API_KEY") or os.environ["LLM_API_KEY"]
+        ),
+        reasoning_effort=settings.get("effort", "high"),
+        max_output_tokens=settings.get("max_output_tokens", 16384),
+        api_mode="responses",
+        num_retries=settings.get("num_retries", 3),
+        timeout=settings.get("llm_timeout", 180),
+        log_completions=True,
+        log_completions_folder=str(root / "completions"),
+    )
+    agent = get_default_agent(llm=llm)
+    register_builtins_agents()
+    if not any(tool.name == TaskToolSet.name for tool in agent.tools):
+        agent = agent.model_copy(
+            update={"tools": [*agent.tools, Tool(name=TaskToolSet.name)]}
+        )
+    return agent, {"name": "built-in", "model": args.coordinator}, {}
+
+
+def run_agent(args, context, snapshot, worktree):
+    from openhands.sdk import Conversation
+
     root = args.output / "coding-agent"
     root.mkdir(mode=0o700)
     settings = getattr(args, "repair_agent_config", {})
     budget = getattr(args, "budget", None)
     seconds = settings.get("max_run_seconds", 3600)
+    if budget:
+        seconds = budget.timeout(seconds)
+    agent, profile, secrets = create_repair_agent(args, root)
     if budget:
         seconds = budget.timeout(seconds)
     source = snapshot["source"]
@@ -128,7 +240,7 @@ def run_agent(args, context, snapshot, worktree):
     output = root / "result.json"
     evidence_command = f"{shlex.quote(sys.executable)} {shlex.quote(str(Path(__file__).resolve()))} evidence --context {shlex.quote(str(private.resolve()))}"
     prompt = (
-        f"You are the OpenHands self-improvement coding agent using {args.coordinator}. Improve the automation with a real, evidence-backed, focused PR. Your checkout is {worktree}, at frozen baseline {source['revision']}. "
+        f"You are the OpenHands self-improvement coding agent using {profile['model']}. Improve the automation with a real, evidence-backed, focused PR. Your checkout is {worktree}, at frozen baseline {source['revision']}. "
         "Use your normal terminal, editor, browser, task planning and subagent capabilities. Read repository instructions, inspect all relevant code/tests/docs, install dependencies in a local environment, create/edit/delete files as needed, and run meaningful tests. There is no four-file, text-replacement or 20KB patch limit. "
         f"Your SDK interpreter is {sys.executable}, with openhands-sdk {version('openhands-sdk')}. Reuse it for SDK API investigation and prefer installed dependency source/signatures over browsing a different version. Check the repaired automation's actual runtime before choosing test dependency versions. "
         f"The compact private brief, original task cards, findings, source index, issue and prior feedback are in {private.resolve()}. Read it first. The complete frozen original is at {frozen.resolve()}, and validation_cohort references the selected negative/control inputs. Use targeted JSON extraction for needed fields rather than dumping entire trace/cohort files. Read actual source from your worktree, then consult the issue and raw evidence as needed. "
@@ -148,27 +260,10 @@ def run_agent(args, context, snapshot, worktree):
         f"When finished, write {output.resolve()} as JSON with proposals (zero or one) and rejections. Each proposal has finding_ids, title, hypothesis, evaluation_plan, checks and candidate_checks (an empty list when unnecessary). In evaluation_plan summarize the executed validation, counts of available/tested negative and random non-negative inputs, and limitations in public-safe language. Each paired check has name, argv (a list), and baseline ('fail' for the target regression or 'pass' for controls). Include at least one of each. Each candidate check has name and argv, must pass, and is not baseline defect evidence. Each rejection has finding_id, reason, and disposition (unsupported, unrepaired, other_topic, already_tracked). Account for every finding. These fields describe your work; your code changes are taken directly from Git, not JSON edits. "
         "Use unsupported when the finding itself is not supported, and unrepaired when the defect is credible but no validated fix was found. If earlier feedback is present, inspect the previous patch and failed executions before revising against the original baseline. Missing test receipts may need only revised checks, with the same code patch. An unchanged failed experiment is a reason to stop, not repeat it. Finish normally after writing the result file."
     )
-    write_json(root / "prompt.json", {"prompt": prompt, "model": args.coordinator})
-    llm = LLM(
-        model=args.coordinator,
-        base_url=os.environ["LLM_BASE_URL"],
-        api_key=SecretStr(
-            os.environ.get("LITELLM_API_KEY") or os.environ["LLM_API_KEY"]
-        ),
-        reasoning_effort=settings.get("effort", "high"),
-        max_output_tokens=settings.get("max_output_tokens", 16384),
-        api_mode="responses",
-        num_retries=settings.get("num_retries", 3),
-        timeout=settings.get("llm_timeout", 180),
-        log_completions=True,
-        log_completions_folder=str(root / "completions"),
+    write_json(
+        root / "prompt.json",
+        {"prompt": prompt, "model": profile["model"], "profile": profile},
     )
-    agent = get_default_agent(llm=llm)
-    register_builtins_agents()
-    if not any(tool.name == TaskToolSet.name for tool in agent.tools):
-        agent = agent.model_copy(
-            update={"tools": [*agent.tools, Tool(name=TaskToolSet.name)]}
-        )
     events = []
     conversation = None
     previous_alarm = signal.getsignal(signal.SIGALRM)
@@ -193,7 +288,8 @@ def run_agent(args, context, snapshot, worktree):
     started = time.monotonic()
     measurement = {
         "backend": "openhands-sdk",
-        "model": args.coordinator,
+        "model": profile["model"],
+        "profile": profile,
         "tools": [tool.name for tool in agent.tools],
     }
     patch = None
@@ -207,6 +303,7 @@ def run_agent(args, context, snapshot, worktree):
             callbacks=[
                 lambda event: events.append(redact(event.model_dump(mode="json")))
             ],
+            secrets=secrets,
         )
         if budget:
             conversation.max_budget_per_run = max(

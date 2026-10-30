@@ -1697,3 +1697,29 @@ def test_repeated_triage_without_new_representatives_stops(
     result = weekly.run(config)
     assert len([c for c in calls if c[0] == "sol"]) == 1
     assert "no progress" in result["automations"][0]["no_action_reason"]
+
+
+def test_high_level_profile_reaches_the_coding_attempt(
+    configured_source, tmp_path, monkeypatch
+):
+    config, _ = prepare_grouped(configured_source, tmp_path, monkeypatch, [record()])
+    config["repair_agent_profile"] = "factory-developer"
+    analyze = weekly.analysis.run
+    selected = []
+
+    def run(args):
+        selected.append(args.repair_agent_profile)
+        return analyze(args)
+
+    monkeypatch.setattr(weekly.analysis, "run", run)
+    weekly.run(config)
+    assert selected == ["factory-developer"]
+
+
+@pytest.mark.parametrize("profile", [True, {}, "", "../profile"])
+def test_invalid_profile_fails_before_collection(monkeypatch, profile):
+    monkeypatch.setattr(
+        weekly, "collect_events", lambda *a, **k: pytest.fail("Must not collect")
+    )
+    with pytest.raises(ValueError, match="repair_agent_profile"):
+        weekly.run({"repair_agent_profile": profile})

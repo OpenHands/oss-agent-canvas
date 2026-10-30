@@ -171,6 +171,13 @@ def source_config(config, snapshot, output):
 
 
 def run(config, *, dry_run=False, limit=3, seed=None):
+    profile = config.get("repair_agent_profile")
+    if profile is not None and (
+        not isinstance(profile, str) or not re.fullmatch(r"[\w.-]+", profile)
+    ):
+        raise ValueError(
+            "repair_agent_profile must be a saved OpenHands profile name or null"
+        )
     size = config.get("validation_sample_size", 5)
     if type(size) is not int or size < 1:
         raise ValueError("validation_sample_size must be a positive integer")
@@ -204,6 +211,7 @@ def arguments(config, output, limit, seed=None):
     args.analyzer = "flow1"
     args.model = config.get("triage_model", "openai/gpt-6-luna")
     args.coordinator = config.get("repair_model", "openai/gpt-6.1-sol")
+    args.repair_agent_profile = config.get("repair_agent_profile")
     args.limit, args.seed = limit, seed
     args.population_limit = 10000
     args.retry_topic_ids = config.get("retry_topic_ids", [])

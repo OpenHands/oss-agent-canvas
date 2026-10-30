@@ -30,6 +30,7 @@
   },
   "triage_model": "openai/gpt-6-luna",
   "repair_model": "openai/gpt-6.1-sol",
+  "repair_agent_profile": null,
   "triage_batch_size": 3,
   "max_inference_cost_usd": 15.0,
   "max_run_seconds": 10800,

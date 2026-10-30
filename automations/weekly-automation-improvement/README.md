@@ -103,7 +103,19 @@ Copy [weekly.example.json](weekly.example.json) outside git. Configure the proje
 Signal, endpoints, existing canonical checkout, approved repository/base branch,
 private state directory and GitHub secret name. Create the repository label `automation-improvement`
 (already installed in `OpenHands/oss-agent-canvas`). `triage_model` and `repair_model`
-are configurable. `triage_batch_size` controls topics returned per Luna call
+are configurable. Set top-level `repair_agent_profile` to a saved OpenHands agent
+profile name, such as `factory-developer`. The profile owns the repair agent's
+model, tools, persona, condenser, skills, MCP configuration and secret references.
+The worker resolves it through the native SDK using `AGENT_SERVER_URL` and its
+session credential. An absent/null value retains the current Sol 6.1 default
+agent with terminal, editor, browser, task planning and subagents. A selected
+profile is used as configured; an unavailable profile fails without silently
+switching agents. `repair_model` still selects the independent evidence reviewer
+and supplies the built-in agent's model when no profile is selected.
+Changing profiles does not silently retry previously blocked findings; use
+`retry_topic_ids` when a new attempt on unchanged evidence is intended.
+
+`triage_batch_size` controls topics returned per Luna call
 (default three), not a total PR limit. The obsolete `max_topics_per_automation`
 setting no longer limits output. Configure the global `comparative_validation`
 runner and use `require_improvement: true` (the default). `validate_existing_repairs`
@@ -266,6 +278,10 @@ source separation, not an operating-system sandbox. Use a dedicated development
 worker with access appropriate for the source and evidence being inspected.
 
 Configure `repair_agent` for effort, iteration and conversation time limits.
+For a saved profile, LLM effort/output/retry settings come from that profile;
+iteration/time limits and the shared run budget remain controlled by the worker.
+Frozen standalone runs also accept `--repair-agent-profile NAME`. Agent profile
+name, ID/revision, actual model and tools are recorded in the private receipts.
 The SDK receives the remaining run budget. The example allows $15 and three
 hours for the whole invocation; these are configurable resource limits.
 The coding brief includes its deadline and shared budget. Source discovery

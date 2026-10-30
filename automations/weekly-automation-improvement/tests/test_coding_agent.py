@@ -418,3 +418,135 @@ def test_independent_review_receives_operational_constraints(tmp_path, monkeypat
     assert not result["supported"]
     assert captured[0][1]["runtime"] == runtime
     assert "dispatch/concurrency" in captured[0][0]
+
+
+@pytest.mark.parametrize("kind", ["openhands", "acp", "missing"])
+def test_saved_profile_owns_model_tools_and_secrets(
+    source, tmp_path, monkeypatch, kind
+):
+    import sources
+
+    _, path, _ = source
+    output = tmp_path / "repair"
+    output.mkdir()
+
+    def execute(worktree):
+        (output / "coding-agent/result.json").write_text(
+            json.dumps({"proposals": [], "rejections": []})
+        )
+
+    captured = install_sdk(monkeypatch, execute)
+    monkeypatch.setenv("AGENT_SERVER_URL", "http://127.0.0.1:18000")
+    monkeypatch.setenv("SESSION_API_KEY", "private-session-key")
+    profile = SimpleNamespace(
+        name="chosen",
+        id="profile-id",
+        revision=3,
+        agent_kind=kind,
+        llm_profile_ref="cheap-model",
+        public_skills=[],
+    )
+    custom_agent = SimpleNamespace(tools=[SimpleNamespace(name="custom_tool")])
+
+    class ProfileLLM:
+        @classmethod
+        def model_validate(cls, value):
+            captured["profile_llm"] = value
+            instance = cls()
+            instance.model = value["model"]
+            return instance
+
+        def model_copy(self, update):
+            captured["instrumentation"] = update
+            return self
+
+    def resolve(value, *, llm_store, mcp_config, available_skills, public_skill_names):
+        assert value is profile
+        assert mcp_config == {"example": {"url": "https://mcp.test"}}
+        assert available_skills == ["user-skill"] and public_skill_names == set()
+        return SimpleNamespace(
+            llm=llm_store.load("cheap-model"), create_agent=lambda: custom_agent
+        )
+
+    class Workspace:
+        def __init__(self, *, host, api_key, working_dir):
+            assert working_dir == str(output / "coding-agent")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def get_secrets(self, *, agent_profile_id):
+            assert agent_profile_id == "profile-id"
+            return {"EXTRA_TOKEN": "profile-secret-value"}
+
+    for name, fields in {
+        "openhands.sdk.profiles": {
+            "validate_agent_profile": lambda x: profile,
+            "resolve_agent_profile": resolve,
+        },
+        "openhands.sdk.skills": {
+            "load_available_skills": lambda **kwargs: {"user": "user-skill"}
+        },
+        "openhands.sdk.workspace": {"RemoteWorkspace": Workspace},
+    }.items():
+        module = ModuleType(name)
+        module.__dict__.update(fields)
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(sys.modules["openhands.sdk"], "LLM", ProfileLLM)
+    monkeypatch.setattr(
+        sys.modules["openhands.tools"],
+        "register_default_tools",
+        lambda: None,
+        raising=False,
+    )
+
+    def request(host, endpoint, *, expose_secrets=False):
+        if endpoint == "/api/agent-profiles/chosen":
+            if kind == "missing":
+                raise FileNotFoundError("Unknown profile")
+            return json.dumps({"profile": {}})
+        assert expose_secrets
+        if endpoint == "/api/profiles/cheap-model":
+            return json.dumps(
+                {
+                    "config": {
+                        "model": "alternate-model",
+                        "api_key": "profile-model-key",
+                        "reasoning_effort": "low",
+                    }
+                }
+            )
+        assert endpoint == "/api/settings"
+        return json.dumps(
+            {"agent_settings": {"mcp_config": {"example": {"url": "https://mcp.test"}}}}
+        )
+
+    monkeypatch.setattr(sources, "native_request", request)
+    args = arguments(
+        output,
+        source_config=path,
+        coordinator="openai/gpt-6.1-sol",
+        repair_agent_profile="chosen",
+    )
+    if kind != "openhands":
+        with pytest.raises((ValueError, FileNotFoundError)):
+            coding_agent.coordinate(args, {}, {"source": load_source(path)})
+        assert "instance" not in captured
+        return
+    _, measurement, _ = coding_agent.coordinate(args, {}, {"source": load_source(path)})
+    assert captured["conversation"]["agent"] is custom_agent
+    assert captured["conversation"]["secrets"] == {
+        "EXTRA_TOKEN": "profile-secret-value"
+    }
+    assert measurement["model"] == "alternate-model" and measurement["tools"] == [
+        "custom_tool"
+    ]
+    assert measurement["profile"]["revision"] == 3
+    assert captured["profile_llm"]["reasoning_effort"] == "low"
+    assert "using alternate-model" in captured["prompt"]
+    for file in (output / "coding-agent").glob("*.json"):
+        assert "profile-model-key" not in file.read_text()
+        assert "profile-secret-value" not in file.read_text()
