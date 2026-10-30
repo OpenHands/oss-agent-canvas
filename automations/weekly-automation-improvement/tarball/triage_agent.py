@@ -60,6 +60,11 @@ def prepare_issue(args, context, records):
         + "\n"
         + current[current.index(end) :]
     )
+    updated = updated.replace(
+        "One repair topic must belong to one automation.",
+        "A topic is one underlying problem and may span automations and repositories, including the SDK.",
+        1,
+    )
     if updated != current:
         issue.update_body(updated)
     inventory = read_json(Path(args.inventory_path), 32_000_000)

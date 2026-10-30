@@ -138,6 +138,10 @@ def test_weekly_issue_reuses_catalogs_updates_summary_and_preserves_human_notes(
     context, _, prepared = triage.prepare(rows, [], [])
     first = triage_agent.prepare_issue(args, context, prepared)
     github.issues[0]["body"] += "\nHuman note: preserve this context."
+    github.issues[0]["body"] = github.issues[0]["body"].replace(
+        "A topic is one underlying problem and may span automations and repositories, including the SDK.",
+        "One repair topic must belong to one automation.",
+    )
     rows.append(record(2, automation=2))
     frame = tmp_path / "second-inventory.json"
     write_json(frame, inventory(rows))
@@ -149,6 +153,8 @@ def test_weekly_issue_reuses_catalogs_updates_summary_and_preserves_human_notes(
     assert len(github.issues) == 1 and len(github.comments) == 2
     assert "Prepared 2 findings across 2 automations" in second.value["body"]
     assert "Human note: preserve this context" in second.value["body"]
+    assert "One repair topic must belong to one automation." not in second.value["body"]
+    assert "may span automations and repositories, including the SDK" in second.value["body"]
     github.issues[0]["state"] = "closed"
     args.output = tmp_path / "run3" / "triage"
     with pytest.raises(ValueError, match="closed"):
