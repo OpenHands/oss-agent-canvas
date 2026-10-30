@@ -261,3 +261,29 @@ def test_failed_execution_context_is_published_without_a_receipt(tmp_path, monke
     private = "\n".join(path.read_text() for path in issue.evidence_root.glob("*.json"))
     assert "Actual API error" in private and "Original task and exact policy" in private
     assert "Exact private repair prompt" in private
+
+
+def test_large_catalog_uses_complete_private_index_without_losing_references(
+    tmp_path, monkeypatch
+):
+    github = GitHub()
+    monkeypatch.setattr(topic_issue, "command", github)
+    issue = TopicIssue.ensure(snapshot(tmp_path), tmp_path / "issue")
+    artifacts = {
+        f"validation/run-{number:04d}/original-input.json": {"case": number}
+        for number in range(500)
+    }
+    issue.record(
+        "Evidence — large comparison", "Recorded inputs remain private.", artifacts
+    )
+    comment = github.comments[-1]["body"]
+    assert len(comment) < 60000
+    assert "500 artifacts" in comment
+    match = re.search(r"\| evidence-index.json \| `([a-f0-9]{64}\.json)`", comment)
+    assert match
+    index = json.loads(issue.read_artifact(match[1]))
+    assert len(index) == 500 and {row["name"] for row in index} == set(artifacts)
+    for row in (index[0], index[-1]):
+        assert (
+            json.loads(issue.read_artifact(row["reference"])) == artifacts[row["name"]]
+        )

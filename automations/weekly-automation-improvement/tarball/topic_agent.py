@@ -477,9 +477,10 @@ def finish(config, context, output, budget, repair):
         except Exception as error:
             review = {"status": "failed", "error": redact(str(error))[:2000]}
         resources = discover(context, output)
-        catalog_errors = record_evidence(
-            context, output, "repair", resources["resources"]
-        )
+        if catalog_errors:
+            catalog_errors = record_evidence(
+                context, output, "repair", resources["resources"]
+            )
         catalog_errors += record_evidence(
             context, output, "review", resources["resources"]
         )

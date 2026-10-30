@@ -245,7 +245,16 @@ class TopicIssue:
             )
         )
         if len(content) > 60000:
-            raise ValueError("Issue attempt catalog exceeds its size budget")
+            index = self.artifact("evidence-index.json", catalog)
+            content = (
+                f"## {title}\n\n{summary}\n\n### Private evidence catalog\n\n"
+                f"The complete index contains {len(catalog)} artifacts. Read it with "
+                "`read_issue_artifact(reference, offset)`, then use the same tool for each indexed reference. "
+                "Raw content stays on the automation worker.\n\n| Evidence | Reference |\n|---|---|\n"
+                f"| {index['name']} | `{index['reference']}` |"
+            )
+            if len(content) > 60000:
+                raise ValueError("Issue attempt summary exceeds its size budget")
         marker = f"{RECORD} {hashlib.sha256(content.encode()).hexdigest()} -->"
         found = [item for item in self.comments if item["body"].startswith(marker)]
         if found:
