@@ -118,7 +118,7 @@ def findings(snapshot, sample):
             > timestamp(latest[span["trace_id"]]["updated_at"])
         ):
             if (
-                span["name"] == "conversation"
+                span["name"] in ("conversation", "automation.conversation")
                 and span["span_type"] == "DEFAULT"
                 and not span.get("input")
                 and not span.get("output")
@@ -157,6 +157,8 @@ def findings(snapshot, sample):
             url = urllib.parse.urlparse(link)
             parts = url.path.strip("/").split("/")
             query = urllib.parse.parse_qs(url.query)
+            if parts[0] != "project" and "spanId" not in query:
+                continue
             if (
                 len(parts) != 4
                 or parts[0] != "project"

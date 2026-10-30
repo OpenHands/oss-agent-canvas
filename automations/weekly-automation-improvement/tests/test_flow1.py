@@ -350,9 +350,11 @@ def test_topic_rejections_are_typed_and_preserve_separate_issue_dispositions(
         assert report["rejected_findings"][0]["disposition"] == disposition
 
 
+@pytest.mark.parametrize("name", ["conversation", "automation.conversation"])
 @pytest.mark.parametrize("content", ["", "New execution content"])
 def test_late_empty_conversation_wrapper_does_not_invalidate_unchanged_execution(
     content,
+    name,
 ):
     value = frozen()
     case = value["samples"][0]
@@ -361,7 +363,7 @@ def test_late_empty_conversation_wrapper_does_not_invalidate_unchanged_execution
         | {
             "ref": "s2",
             "span_id": str(uuid.UUID(int=91)),
-            "name": "conversation",
+            "name": name,
             "span_type": "DEFAULT",
             "input": "",
             "output": content,
@@ -402,3 +404,23 @@ def test_partial_preflight_never_starts_expensive_coding(tmp_path, monkeypatch):
     report = json.loads((tmp_path / "analysis/report.json").read_text())
     assert report["findings"] and report["errors"][0]["case_id"] == "c2"
     assert not report["proposals"]
+
+
+@pytest.mark.parametrize("with_trace", [False, True])
+def test_external_evidence_links_do_not_replace_or_invalidate_trace_citations(
+    with_trace,
+):
+    value = frozen()
+    case = value["samples"][0]
+    event = case["flow1_events"][0]
+    payload = json.loads(event["payload"])
+    payload["evidence"] = "Context: https://api.github.com/search/issues?q=example " + (
+        payload["evidence"] if with_trace else ""
+    )
+    event["payload"] = json.dumps(payload)
+    if with_trace:
+        result, _ = findings(value, case)
+        assert result["findings"][0]["evidence"] == ["s1"]
+    else:
+        with pytest.raises(ValueError, match="no valid span citations"):
+            findings(value, case)
