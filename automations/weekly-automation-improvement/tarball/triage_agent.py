@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent_runtime import create_agent
+from agent_runtime import AgentDeadline, create_agent
 from common import read_json, redact, write_json
 from laminar import Laminar
 from raw_evidence import EvidenceReader
@@ -139,7 +139,7 @@ def rank(args, context, records, schema):
     previous_alarm = signal.getsignal(signal.SIGALRM)
 
     def expired(signum, frame):
-        raise TimeoutError("OpenHands triage exceeded its time budget")
+        raise AgentDeadline("OpenHands triage exceeded its time budget")
 
     signal.signal(signal.SIGALRM, expired)
     signal.alarm(max(1, math.ceil(seconds)))
@@ -176,6 +176,8 @@ def rank(args, context, records, schema):
             raise ValueError("OpenHands triage did not finish normally")
         result = read_json(output, 8_000_000)
         return result, measurement, issue
+    except AgentDeadline as error:
+        raise TimeoutError(str(error)) from None
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, previous_alarm)

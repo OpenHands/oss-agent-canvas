@@ -4,6 +4,10 @@ from types import SimpleNamespace
 from urllib.parse import quote
 
 
+class AgentDeadline(BaseException):
+    pass
+
+
 def create_agent(model, name, settings, root):
     from pydantic import SecretStr
     from openhands.sdk import LLM

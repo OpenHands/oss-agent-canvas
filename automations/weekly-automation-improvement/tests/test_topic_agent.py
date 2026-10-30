@@ -305,3 +305,36 @@ def test_saved_repair_can_finish_without_repeating_coding(tmp_path, monkeypatch)
     assert (
         json.loads((output / "topic-report.json").read_text())["status"] == "reviewed"
     )
+
+
+def test_deadline_escapes_tool_exception_shield(tmp_path, monkeypatch):
+    import signal
+    from test_coding_agent import install_sdk
+
+    output = tmp_path / "topic"
+    output.mkdir()
+    workspace = output / "workspace"
+    workspace.mkdir()
+    swallowed = []
+
+    def execute(_):
+        try:
+            signal.getsignal(signal.SIGALRM)(signal.SIGALRM, None)
+        except Exception:
+            swallowed.append(True)
+
+    captured = install_sdk(monkeypatch, execute)
+    monkeypatch.setattr(topic_agent, "version", lambda name: "test-sdk")
+    report = topic_agent.run_conversation(
+        {},
+        "repair",
+        output / "context.json",
+        output,
+        workspace,
+        "Repair",
+        RunBudget({}),
+    )
+    assert not swallowed
+    assert report["status"] == "failed"
+    assert "reached its time limit" in report["error"]
+    assert captured["closed"]

@@ -12,7 +12,7 @@ from importlib.metadata import version
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent_runtime import create_agent
+from agent_runtime import AgentDeadline, create_agent
 from common import read_json, redact, replace_json, write_json
 from github_io import command, github_pages, IMPROVEMENT_LABEL
 from laminar import Laminar
@@ -301,7 +301,7 @@ def run_conversation(config, phase, context_path, output, workspace, prompt, bud
             replace_json(observed, sorted(links))
 
     def expired(signum, frame):
-        raise TimeoutError(f"The {phase} agent reached its time limit")
+        raise AgentDeadline(f"The {phase} agent reached its time limit")
 
     previous = signal.getsignal(signal.SIGALRM)
     signal.signal(signal.SIGALRM, expired)
@@ -327,7 +327,7 @@ def run_conversation(config, phase, context_path, output, workspace, prompt, bud
         result["status"] = (
             "finished" if result["execution_status"] == "FINISHED" else "incomplete"
         )
-    except Exception as error:
+    except (Exception, AgentDeadline) as error:
         result["error"] = redact(str(error))[:2000]
     finally:
         signal.alarm(0)
