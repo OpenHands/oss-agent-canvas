@@ -1,0 +1,947 @@
+import argparse
+import base64
+import fcntl
+import io
+import tarfile
+import hashlib
+import importlib.metadata
+import json
+import os
+import secrets
+import signal
+import subprocess
+import time
+import uuid
+from contextlib import contextmanager
+from pathlib import Path
+from types import SimpleNamespace
+
+from reviewer_world import GUIDANCE, REPO
+from scenarios import scenario, score
+
+ROOT = Path(__file__).parent
+IMAGE = "automation-repair-replay:1.58.2"
+RPC = "import json,sys,urllib.request; b=json.load(sys.stdin); r=urllib.request.Request('http://127.0.0.1:8766'+b['path'],data=json.dumps(b['body']).encode(),headers={'Authorization':'Bearer '+b['token'],'Content-Type':'application/json'}); print(urllib.request.urlopen(r,timeout=100).read().decode())"
+
+
+class TrialDeadline(BaseException):
+    pass
+
+
+@contextmanager
+def deadline(seconds):
+    def expire(signum, frame):
+        raise TrialDeadline()
+
+    previous = signal.signal(signal.SIGALRM, expire)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+@contextmanager
+def comparison_lock(output):
+    with (output / ".run.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("Comparison already running") from None
+        yield
+
+
+def command(argv, *, cwd=None, data=None, timeout=120):
+    result = subprocess.run(
+        argv, cwd=cwd, input=data, text=True, capture_output=True, timeout=timeout
+    )
+    if result.returncode:
+        raise RuntimeError(
+            f"{argv[0]} failed ({result.returncode}): {result.stderr[-1500:]}"
+        )
+    return result.stdout.strip()
+
+
+def write(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2, ensure_ascii=False))
+    path.chmod(0o600)
+
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def fixture(path):
+    path.mkdir()
+    command(["git", "init", "-q", "--initial-branch", "fix-add", str(path)])
+    command(["git", "config", "commit.gpgsign", "false"], cwd=path)
+    command(["git", "config", "user.name", "Replay Fixture"], cwd=path)
+    command(["git", "config", "user.email", "fixture@example.invalid"], cwd=path)
+    (path / "AGENTS.md").write_text(GUIDANCE + "\n")
+    (path / "arithmetic.py").write_text("def add(a, b):\n    return a - b\n")
+    (path / "test_arithmetic.py").write_text(
+        "import unittest\nfrom arithmetic import add\n\nclass TestAddition(unittest.TestCase):\n    def test_addition(self):\n        self.assertEqual(add(2, 3), 5)\n"
+    )
+    (path / "test_acp_conformance.py").write_text(
+        (path / "test_arithmetic.py").read_text()
+    )
+    environment = dict(
+        os.environ,
+        GIT_AUTHOR_DATE="2026-10-27T00:00:00Z",
+        GIT_COMMITTER_DATE="2026-10-27T00:00:00Z",
+    )
+    command(["git", "add", "."], cwd=path)
+    subprocess.run(
+        ["git", "commit", "-qm", "Fixture base"], cwd=path, env=environment, check=True
+    )
+    base = command(["git", "rev-parse", "HEAD"], cwd=path)
+    (path / "arithmetic.py").write_text("def add(a, b):\n    return a + b\n")
+    subprocess.run(
+        ["git", "commit", "-qam", "Correct addition"],
+        cwd=path,
+        env=environment,
+        check=True,
+    )
+    head = command(["git", "rev-parse", "HEAD"], cwd=path)
+    command(["git", "branch", "main", base], cwd=path)
+    command(
+        ["git", "remote", "add", "origin", f"https://github.com/{REPO}.git"], cwd=path
+    )
+    (path / "arithmetic.py").write_text("def add(a, b):\n    return a * b\n")
+    subprocess.run(
+        ["git", "commit", "-qam", "Introduce multiplication regression"],
+        cwd=path,
+        env=environment,
+        check=True,
+    )
+    buggy_head = command(["git", "rev-parse", "HEAD"], cwd=path)
+    command(["git", "checkout", "--detach", head], cwd=path)
+    return {"base": base, "head": head, "buggy_head": buggy_head}
+
+
+class Sandbox:
+    def __init__(self, args, case, repo, directory, automation_source):
+        self.case = case
+        self.name = "repair-replay-" + uuid.uuid4().hex[:12]
+        self.token = secrets.token_urlsafe(32)
+        self.directory = directory
+        directory.mkdir()
+        write(directory / "case.json", case)
+        if case.get("repository_snapshot", {}).get("archive_path"):
+            for field, name in (
+                ("archive", "repository.tar.gz"),
+                ("index", "repository-index.json"),
+            ):
+                artifact = Path(case["repository_snapshot"][field + "_path"])
+                if digest(artifact) != case["repository_snapshot"][field + "_sha256"]:
+                    raise ValueError("Repository artifact changed before execution")
+                (directory / name).write_bytes(artifact.read_bytes())
+        (directory / "token").write_text(self.token)
+        (directory / "token").chmod(0o600)
+        command(
+            [
+                "openssl",
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-keyout",
+                str(directory / "key.pem"),
+                "-out",
+                str(directory / "cert.pem"),
+                "-days",
+                "1",
+                "-subj",
+                "/CN=api.github.com",
+                "-addext",
+                "subjectAltName=DNS:api.github.com,DNS:github.com",
+            ]
+        )
+        self.controlled = (automation_source / "controlled_review.py").exists()
+        self.created = False
+        try:
+            command(
+                [
+                    "docker",
+                    "create",
+                    "--name",
+                    self.name,
+                    "--network",
+                    "none",
+                    "--cap-drop",
+                    "ALL",
+                    "--security-opt",
+                    "no-new-privileges",
+                    "--memory",
+                    "1g",
+                    "--cpus",
+                    "1",
+                    "--pids-limit",
+                    "256",
+                    "--add-host",
+                    "api.github.com:127.0.0.1",
+                    "--add-host",
+                    "github.com:127.0.0.1",
+                    "--env",
+                    "REVIEW_GATEWAY_TOKEN=replay-only-not-a-credential"
+                    if self.controlled
+                    else "GITHUB_TOKEN=replay-only-not-a-credential",
+                    "--env",
+                    "REVIEW_GATEWAY_URL=https://api.github.com"
+                    if self.controlled
+                    else "GH_TOKEN=replay-only-not-a-credential",
+                    "--env",
+                    "GH_PROMPT_DISABLED=1",
+                    "--env",
+                    "LITELLM_LOCAL_MODEL_COST_MAP=True",
+                    "--env",
+                    "OTEL_SDK_DISABLED=true",
+                    "--env",
+                    "SSL_CERT_FILE=/tmp/replay/cert.pem",
+                    "--env",
+                    "REQUESTS_CA_BUNDLE=/tmp/replay/cert.pem",
+                    "--env",
+                    "GIT_SSL_CAINFO=/tmp/replay/cert.pem",
+                    "--entrypoint",
+                    "/bin/bash",
+                    args.image,
+                    "-lc",
+                    "mkdir -p /tmp/workspace/repo /tmp/replay; sleep infinity",
+                ]
+            )
+            self.created = True
+            command(["docker", "start", self.name])
+            command(
+                [
+                    "docker",
+                    "exec",
+                    self.name,
+                    "mkdir",
+                    "-p",
+                    "/tmp/workspace/repo",
+                    "/tmp/replay",
+                ]
+            )
+            for source in [
+                repo,
+                automation_source,
+                ROOT / "render_reviewer.py",
+                ROOT / "container_server.py",
+                ROOT / "reviewer_world.py",
+                ROOT / "triage_world.py",
+                ROOT / "triage_contract.py",
+                ROOT / "repository_files.py",
+                ROOT / "render_triage.py",
+                ROOT / "scenarios.py",
+                ROOT / "git_http.py",
+                directory / "case.json",
+                directory / "token",
+                directory / "key.pem",
+                directory / "cert.pem",
+                *(
+                    [
+                        directory / "repository.tar.gz",
+                        directory / "repository-index.json",
+                    ]
+                    if case.get("repository_snapshot", {}).get("archive_path")
+                    else []
+                ),
+            ]:
+                destination = (
+                    "/tmp/workspace/repo"
+                    if source == repo
+                    else "/tmp/replay/automation-source"
+                    if source == automation_source
+                    else "/tmp/replay/" + source.name
+                )
+                if source.is_dir():
+                    buffer = io.BytesIO()
+                    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+                        for path in source.iterdir():
+                            archive.add(path, arcname=path.name)
+                    program = "import base64,io,sys,tarfile; tarfile.open(fileobj=io.BytesIO(base64.b64decode(sys.stdin.read())),mode='r:gz').extractall(sys.argv[1],filter='data')"
+                    data = buffer.getvalue()
+                else:
+                    program = "import base64,pathlib,sys; p=pathlib.Path(sys.argv[1]); p.write_bytes(base64.b64decode(sys.stdin.read())); p.chmod(0o600)"
+                    data = source.read_bytes()
+                command(
+                    [
+                        "docker",
+                        "exec",
+                        "-i",
+                        self.name,
+                        "python3",
+                        "-c",
+                        program,
+                        destination,
+                    ],
+                    data=base64.b64encode(data).decode(),
+                )
+            command(
+                [
+                    "docker",
+                    "exec",
+                    self.name,
+                    "git",
+                    "-C",
+                    "/tmp/workspace/repo",
+                    "checkout",
+                    "--detach",
+                    case["requested_sha"],
+                ]
+            )
+            if case.get("native_payload"):
+                command(
+                    [
+                        "docker",
+                        "exec",
+                        self.name,
+                        "python3",
+                        "-c",
+                        "import json,pathlib,sys; sys.path.insert(0,'/tmp/replay'); from repository_files import materialize; materialize(json.load(open('/tmp/replay/case.json')), pathlib.Path('/tmp/workspace/repo'))",
+                    ]
+                )
+            if case.get("body_file_failure"):
+                command(
+                    [
+                        "docker",
+                        "exec",
+                        self.name,
+                        "ln",
+                        "-s",
+                        "/dev/full",
+                        "/tmp/review_body.md",
+                    ]
+                )
+            command(
+                [
+                    "docker",
+                    "exec",
+                    "-d",
+                    self.name,
+                    "bash",
+                    "-lc",
+                    "python3 /tmp/replay/container_server.py --case /tmp/replay/case.json --token /tmp/replay/token --cert /tmp/replay/cert.pem --key /tmp/replay/key.pem >/tmp/replay/server.log 2>&1",
+                ]
+            )
+            for _ in range(120):
+                try:
+                    self.call("/snapshot", {})
+                    break
+                except RuntimeError:
+                    time.sleep(0.2)
+            else:
+                raise RuntimeError(
+                    "Replay server did not become ready: "
+                    + command(
+                        ["docker", "exec", self.name, "cat", "/tmp/replay/server.log"]
+                    )
+                )
+            inspect = json.loads(command(["docker", "inspect", self.name]))[0]
+            assert (
+                inspect["HostConfig"]["NetworkMode"] == "none"
+                and inspect["Mounts"] == []
+            )
+        except BaseException:
+            self.close()
+            raise
+
+    def call(self, path, body):
+        return json.loads(
+            command(
+                ["docker", "exec", "-i", self.name, "python3", "-c", RPC],
+                data=json.dumps({"path": path, "body": body, "token": self.token}),
+                timeout=110,
+            )
+        )
+
+    def close(self):
+        if self.created:
+            subprocess.run(
+                ["docker", "rm", "-f", self.name], capture_output=True, timeout=30
+            )
+            self.created = False
+
+    def hide_oracles(self):
+        command(
+            [
+                "docker",
+                "exec",
+                self.name,
+                "python3",
+                "-c",
+                "import pathlib,shutil; root=pathlib.Path('/tmp/replay'); "
+                "[p.unlink(missing_ok=True) for p in root.iterdir() if p.is_file() and p.name != 'cert.pem']; "
+                "shutil.rmtree(root/'__pycache__',ignore_errors=True)",
+            ]
+        )
+
+
+def final_message(events):
+    response = ""
+    for event in events:
+        if event.get("tool_name") == "finish" and event.get("action"):
+            response = event["action"].get("message", response)
+        if event.get("kind") == "MessageEvent":
+            message = event.get("llm_message", {})
+            if message.get("role") == "assistant":
+                response = "\n".join(
+                    content.get("text", "")
+                    for content in message.get("content", [])
+                    if content.get("type") == "text"
+                )
+    return response
+
+
+def run_agent(args, sandbox, prompt, output):
+    budget = getattr(args, "budget", None)
+    if budget:
+        budget.check()
+    from pydantic import SecretStr
+    from openhands.sdk import LLM, Agent, Conversation, ToolDefinition
+    from openhands.sdk.tool import Tool, ToolExecutor, register_tool
+    from openhands.tools.file_editor import FileEditorTool
+    from openhands.tools.task_tracker import TaskTrackerTool
+    from openhands.tools.terminal import TerminalTool
+
+    class Bridge(ToolExecutor):
+        def __init__(self, name, observation):
+            self.name, self.observation = name, observation
+
+        def __call__(self, action, conversation=None):
+            if self.name == "terminal":
+                action = action.model_copy(
+                    update={"timeout": min(action.timeout or 30, 30)}
+                )
+            value = sandbox.call(
+                "/tool", {"tool": self.name, "action": action.model_dump(mode="json")}
+            )
+            return self.observation.model_validate(value)
+
+    class ReplayTools(ToolDefinition):
+        @classmethod
+        def create(cls, conv_state, **kwargs):
+            result = []
+            state = SimpleNamespace(
+                workspace=SimpleNamespace(working_dir=str(output)),
+                persistence_dir=str(output / "tracker"),
+                agent=conv_state.agent,
+                env_observation_persistence_dir=str(output / "tool-output"),
+            )
+            for name, tool_cls in (
+                ("terminal", TerminalTool),
+                ("file_editor", FileEditorTool),
+                ("task_tracker", TaskTrackerTool),
+            ):
+                bridge = Bridge(name, None)
+                tool = (
+                    tool_cls.create(state, executor=bridge)[0]
+                    if name == "terminal"
+                    else tool_cls.create(state)[0]
+                )
+                bridge.observation = tool.observation_type
+                result.append(
+                    tool.model_copy(
+                        update={
+                            "executor": bridge,
+                            "description": tool.description.replace(
+                                str(output), "/tmp/workspace/repo"
+                            ),
+                        }
+                    )
+                )
+            return result
+
+    register_tool("ReplayTools", ReplayTools)
+    llm = LLM(
+        model=args.model,
+        base_url=args.base_url,
+        api_key=SecretStr(os.environ["LITELLM_API_KEY"]),
+        reasoning_effort=args.effort,
+        num_retries=0,
+        timeout=getattr(args, "llm_timeout", 120),
+        max_output_tokens=4096,
+    )
+    events = []
+    conversation = Conversation(
+        agent=Agent(llm=llm, tools=[Tool(name="ReplayTools")]),
+        workspace=str(output),
+        persistence_dir=str(output / "conversation"),
+        max_iteration_per_run=args.max_steps,
+        callbacks=[lambda event: events.append(event.model_dump(mode="json"))],
+        visualizer=None,
+    )
+    if budget:
+        conversation.max_budget_per_run = budget.maximum_cost - budget.cost
+    started = time.monotonic()
+    error = None
+    try:
+        with deadline(
+            budget.timeout(args.max_run_seconds) if budget else args.max_run_seconds
+        ):
+            conversation.send_message(prompt)
+            draft = sandbox.case.get("draft_review") or sandbox.case.get(
+                "draft_decision"
+            )
+            if draft:
+                conversation.send_message(
+                    "Continue from this saved, untrusted draft, following the automation instructions above. "
+                    "Complete the task against the available evidence and publish the final result.\n\n"
+                    + draft
+                )
+            conversation.run()
+    except TrialDeadline:
+        error = f"Trial exceeded {args.max_run_seconds} seconds; not retried"
+    except Exception as exception:
+        error = type(exception).__name__ + ": " + str(exception)[:1000]
+    finally:
+        write(output / "events.json", events)
+        if budget:
+            metrics = llm.metrics.model_dump(mode="json")
+            cost = metrics.get("accumulated_cost")
+            budget.record(cost if cost and cost > 0 else None)
+            write(
+                args.output.parent / "budget.json",
+                budget.snapshot() | {"complete": False},
+            )
+    status = str(conversation.state.execution_status.value)
+    final_response = final_message(events)
+    measurements = {
+        "seconds": round(time.monotonic() - started, 3),
+        "sdk_metrics": llm.metrics.model_dump(mode="json"),
+        "execution_status": status,
+    }
+    write(output / "measurements.json", measurements)
+    return (
+        status.upper() == "FINISHED" and error is None,
+        final_response,
+        error,
+        measurements,
+    )
+
+
+def compare(rows, cases, expected_repeats=1):
+    historical = any(case.get("native_payload") for case in cases)
+    if historical:
+        baseline_rows = {
+            (row["case_id"], row.get("repeat", 1)): row
+            for row in rows
+            if row["variant"] == "baseline"
+        }
+        rows = [
+            row
+            | {
+                "introduced_violations": sorted(
+                    set(row["score"]["violations"])
+                    - set(
+                        baseline_rows.get(
+                            (row["case_id"], row.get("repeat", 1)),
+                            {"score": {"violations": []}},
+                        )["score"]["violations"]
+                    )
+                )
+            }
+            if row["variant"] == "candidate"
+            else row
+            for row in rows
+        ]
+    results = []
+    for case in cases:
+        base = [
+            row
+            for row in rows
+            if row["case_id"] == case["id"] and row["variant"] == "baseline"
+        ]
+        candidate = [
+            row
+            for row in rows
+            if row["case_id"] == case["id"] and row["variant"] == "candidate"
+        ]
+        failures = sum(not row["score"]["passed"] for row in base)
+        wins = sum(row["score"]["passed"] for row in candidate)
+        results.append(
+            {
+                "case_id": case["id"],
+                "kind": case["kind"],
+                "baseline_passed": len(base) - failures,
+                "candidate_passed": wins,
+                "runs_per_version": len(base),
+            }
+        )
+    complete = all(
+        sum(row["case_id"] == case["id"] and row["variant"] == variant for row in rows)
+        == expected_repeats
+        for case in cases
+        for variant in ("baseline", "candidate")
+    )
+    errors = any(row["score"]["error"] or not row["score"]["finished"] for row in rows)
+    regressions = any(
+        item["candidate_passed"] < item["baseline_passed"] for item in results
+    )
+    if historical:
+        regressions = any(row.get("introduced_violations") for row in rows)
+    improvement = any(
+        case["kind"] == "regression"
+        and row["case_id"] == case["id"]
+        and row["variant"] == "baseline"
+        and case.get("target_violation") in row["score"]["violations"]
+        and any(
+            other["case_id"] == row["case_id"]
+            and other.get("repeat", 1) == row.get("repeat", 1)
+            and other["variant"] == "candidate"
+            and other["score"]["passed"]
+            for other in rows
+        )
+        for case in cases
+        for row in rows
+    )
+    all_candidate_pass = all(
+        row["score"]["passed"] for row in rows if row["variant"] == "candidate"
+    )
+    controls = any(case["kind"] == "control" for case in cases)
+    control_ids = {case["id"] for case in cases if case["kind"] == "control"}
+    baseline_controls_passed = controls and all(
+        row["score"]["passed"]
+        for row in rows
+        if row["case_id"] in control_ids and row["variant"] == "baseline"
+    )
+    controls_passed = controls and all(
+        row["score"]["passed"]
+        for row in rows
+        if row["case_id"] in control_ids and row["variant"] == "candidate"
+    )
+    if historical:
+        controls_passed = controls and all(
+            not row["introduced_violations"]
+            for row in rows
+            if row["case_id"] in control_ids and row["variant"] == "candidate"
+        )
+        all_candidate_pass = all(
+            row["score"]["passed"]
+            for row in rows
+            if row["variant"] == "candidate" and row["case_id"] not in control_ids
+        )
+    status = (
+        "inconclusive"
+        if errors or not controls or not complete
+        else "regressed"
+        if regressions
+        else "improvement_on_development_cases"
+        if improvement and all_candidate_pass and controls_passed
+        else "inconclusive"
+    )
+    report = {
+        "status": status,
+        "complete": complete,
+        "controls_passed": controls_passed,
+        "baseline_controls_passed": baseline_controls_passed,
+        "control_acceptance": "no_new_violations"
+        if historical
+        else "all_candidate_checks_pass",
+        "cases": results,
+        "runs": rows,
+        "behavioral_benefit_proven": False,
+        "scope": "Historical task inputs with independently frozen AI expectations and partial repository context; not full historical environment replay or held-out quality evaluation"
+        if historical
+        else "AI-authored task scenarios derived from observed failures; not historical full-trajectory replay or held-out quality evaluation",
+    }
+    from evaluation import assess
+
+    report["assessment"] = assess(report, cases, expected_repeats)
+    report["status"] = report["assessment"]["status"]
+    return report
+
+
+def run_comparison(args):
+    if any(
+        importlib.metadata.version(package) != "1.58.2"
+        for package in ("openhands-sdk", "openhands-tools")
+    ):
+        raise ValueError("Use openhands-sdk and openhands-tools 1.58.2")
+    for revision in (args.baseline, args.candidate):
+        if len(revision) != 40 or any(
+            char not in "0123456789abcdef" for char in revision
+        ):
+            raise ValueError("Pin both versions to full commit SHAs")
+    image_id = command(
+        ["docker", "image", "inspect", args.image, "--format", "{{.Id}}"]
+    )
+    args.image = image_id
+    if args.resume and any(
+        (args.output / "source" / name).exists() for name in ("baseline", "candidate")
+    ):
+        raise ValueError(
+            "Source worktrees still exist; wait for or clean up the previous execution before resuming"
+        )
+    repo = args.output / "fixture"
+    previous = (
+        json.loads((args.output / "manifest.json").read_text()) if args.resume else None
+    )
+    fixture_revisions = previous["fixture_revisions"] if previous else fixture(repo)
+    provided = getattr(args, "native_cases", None)
+    cases = (
+        provided
+        if provided
+        else [
+            scenario(name)
+            | {
+                "requested_sha": fixture_revisions["buggy_head"]
+                if name == "buggy" or scenario(name).get("quality")
+                else fixture_revisions["head"],
+                "base_sha": fixture_revisions["head"]
+                if name == "buggy" or scenario(name).get("quality")
+                else fixture_revisions["base"],
+                "moved_sha": fixture_revisions["buggy_head"],
+            }
+            for name in args.cases.split(",")
+        ]
+    )
+    if provided:
+        cases = [
+            case
+            | {
+                "requested_sha": fixture_revisions["head"],
+                "base_sha": fixture_revisions["base"],
+                "moved_sha": fixture_revisions["buggy_head"],
+            }
+            for case in provided
+        ]
+    if getattr(args, "case_file", None):
+        inputs = json.loads(args.case_file.read_text())
+        for case in cases:
+            values = inputs.get(case["id"], {})
+            if set(values) - {"body", "title", "pr_body", "draft_review"}:
+                raise ValueError("Frozen inputs may not change acceptance checks")
+            case.update(values)
+    manifest = {
+        "baseline": args.baseline,
+        "candidate": args.candidate,
+        "model": args.model,
+        "llm_base_url": args.base_url,
+        "effort": args.effort,
+        "max_output_tokens": 4096,
+        "max_steps": args.max_steps,
+        "max_run_seconds": args.max_run_seconds,
+        "max_tool_seconds": 30,
+        "oracle_files_hidden": True,
+        "llm_timeout": getattr(args, "llm_timeout", 120),
+        "tools": ["terminal", "file_editor", "task_tracker"],
+        "image": args.image,
+        "sdk_version": "1.58.2",
+        "repeats": args.repeats,
+        "cases": cases,
+        "harness_sha256": {p.name: digest(p) for p in ROOT.glob("*.py")},
+        "fixture_revisions": fixture_revisions,
+    }
+    if previous:
+        if previous.get("llm_timeout", 60) != manifest["llm_timeout"]:
+            raise ValueError("Cannot resume changed llm_timeout")
+        for name in (
+            "baseline",
+            "candidate",
+            "model",
+            "llm_base_url",
+            "effort",
+            "max_steps",
+            "max_run_seconds",
+            "image",
+            "repeats",
+            "cases",
+        ):
+            if previous[name] != manifest[name]:
+                raise ValueError(f"Cannot resume changed {name}")
+        previous.setdefault("resumes", []).append(
+            {
+                "harness_sha256": manifest["harness_sha256"],
+                "max_run_seconds": args.max_run_seconds,
+                "max_tool_seconds": 30,
+                "status": "started",
+            }
+        )
+        manifest = previous
+    write(args.output / "manifest.json", manifest)
+    sources = {}
+    for name, revision in (("baseline", args.baseline), ("candidate", args.candidate)):
+        source = args.output / "source" / name
+        source.parent.mkdir(exist_ok=True)
+        command(
+            ["git", "worktree", "add", "--detach", str(source), revision],
+            cwd=args.checkout,
+        )
+        sources[name] = source
+    rows = []
+    new_executions = 0
+    try:
+        for index in range(args.repeats):
+            order = (
+                ("baseline", "candidate")
+                if index % 2 == 0
+                else ("candidate", "baseline")
+            )
+            for case in cases:
+                for variant in order:
+                    budget = getattr(args, "budget", None)
+                    if budget:
+                        budget.check()
+                    output = args.output / f"{case['id']}-{index + 1}-{variant}"
+                    if args.resume and (output / "result.json").exists():
+                        rows.append(json.loads((output / "result.json").read_text()))
+                        continue
+                    if output.exists():
+                        raise ValueError(
+                            "Retain an explicit inconclusive result for the interrupted trial before resuming"
+                        )
+                    sandbox = Sandbox(
+                        args,
+                        case,
+                        repo,
+                        output,
+                        sources[variant]
+                        / (
+                            "plugins/issue-triage/scripts"
+                            if case.get("family") == "triage"
+                            else "plugins/github-pr-reviewer-events/scripts"
+                        ),
+                    )
+                    try:
+                        prompt = json.loads(
+                            command(
+                                [
+                                    "docker",
+                                    "exec",
+                                    sandbox.name,
+                                    "python3",
+                                    "/tmp/replay/render_reviewer.py",
+                                    "/tmp/replay/automation-source",
+                                    "/tmp/replay/case.json",
+                                ]
+                            )
+                        )["prompt"]
+                        write(
+                            output / "prompt.json",
+                            {
+                                "prompt": prompt,
+                                "sha256": hashlib.sha256(prompt.encode()).hexdigest(),
+                            },
+                        )
+                        sandbox.hide_oracles()
+                        new_executions += 1
+                        precheck = (
+                            sandbox.call("/precheck", {})
+                            if sandbox.controlled
+                            else None
+                        )
+                        if precheck:
+                            finished, response, error = True, "", None
+                            measurements = {
+                                "seconds": 0,
+                                "sdk_metrics": {},
+                                "execution_status": "controller_precheck",
+                                "agent_executed": False,
+                            }
+                            write(output / "events.json", [])
+                            write(output / "measurements.json", measurements)
+                        else:
+                            finished, response, error, measurements = run_agent(
+                                args, sandbox, prompt, output
+                            )
+                            measurements["agent_executed"] = True
+                        publication = None
+                        agent_response = response
+                        if sandbox.controlled:
+                            publication = precheck or sandbox.call(
+                                "/publish", {"finished": finished}
+                            )
+                            response = (
+                                publication.get("final_response")
+                                or publication.get("reason")
+                                or publication.get("status", "No publication")
+                            )
+                            write(output / "publication.json", publication)
+                        state = sandbox.call("/snapshot", {})
+                        write(output / "world.json", state)
+                        verdict = score(
+                            state,
+                            finished=finished,
+                            final_response=response,
+                            error=error,
+                        )
+                        row = {
+                            "case_id": case["id"],
+                            "repeat": index + 1,
+                            "variant": variant,
+                            "score": verdict,
+                            "measurements": measurements,
+                            "final_response": response,
+                            "agent_final_response": agent_response,
+                            "publication": publication,
+                        }
+                        rows.append(row)
+                        write(output / "result.json", row)
+                        write(
+                            args.output / "comparison.json",
+                            compare(rows, cases, args.repeats),
+                        )
+                        print(
+                            json.dumps(
+                                {
+                                    "case_id": case["id"],
+                                    "repeat": index + 1,
+                                    "variant": variant,
+                                    "score": verdict,
+                                }
+                            ),
+                            flush=True,
+                        )
+                    finally:
+                        sandbox.close()
+    finally:
+        for source in sources.values():
+            command(
+                ["git", "worktree", "remove", "--force", str(source)], cwd=args.checkout
+            )
+    result = compare(rows, cases, args.repeats)
+    if previous:
+        manifest["resumes"][-1].update(
+            status="completed", executions_started=new_executions
+        )
+        write(args.output / "manifest.json", manifest)
+    write(args.output / "comparison.json", result)
+    print(json.dumps({"status": result["status"], "cases": result["cases"]}))
+
+
+def main(args):
+    os.umask(0o077)
+    args.output.mkdir(parents=True, exist_ok=args.resume)
+    with comparison_lock(args.output):
+        return run_comparison(args)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    for name in ("checkout", "output"):
+        parser.add_argument(
+            "--" + name,
+            required=True,
+            type=lambda value: Path(value).expanduser().resolve(),
+        )
+    for name in ("baseline", "candidate", "model", "base-url"):
+        parser.add_argument("--" + name, required=True)
+    parser.add_argument("--image", default=IMAGE)
+    parser.add_argument("--effort", default="low")
+    parser.add_argument("--repeats", type=int, choices=range(1, 6), default=3)
+    parser.add_argument("--max-steps", type=int, choices=range(1, 61), default=30)
+    parser.add_argument(
+        "--max-run-seconds", type=int, choices=range(30, 1201), default=180
+    )
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--llm-timeout", type=int, choices=range(30, 181), default=120)
+    parser.add_argument("--case-file", type=Path)
+    parser.add_argument(
+        "--cases",
+        default="healthy,buggy,head_moved,head_moves_late,body_file_failure,accepted_empty",
+    )
+    main(parser.parse_args())
