@@ -65,7 +65,9 @@ Secrets (names are configurable): `LINEAR_BOT_READ_AND_MENTION_TOKEN` with
    the returned `webhook_url`, paste the signing secret, and subscribe to
    app-user notifications.
 
-3. Create the automation. The timeout must be at least `max_active_age_seconds`:
+3. Create the automation. The timeout must be at least `max_active_age_seconds`,
+   and staging caps it at 1800 s, so lower the default (3 h) to fit. A task that
+   needs longer is abandoned with a reply asking the user to mention the bot again:
 
    ```bash
    curl -X POST "${OPENHANDS_HOST}/api/automation/v1/plugin-spec" \
@@ -74,8 +76,8 @@ Secrets (names are configurable): `LINEAR_BOT_READ_AND_MENTION_TOKEN` with
      -d '{
        "name": "Linear Assistant (webhook)",
        "plugin": {"source": "github:OpenHands/oss-agent-canvas", "repo_path": "plugins/linear-assistant-webhook", "ref": "main"},
-       "config": {"openhands_url": "'"${OPENHANDS_HOST}"'"},
-       "timeout": 11000
+       "config": {"openhands_url": "'"${OPENHANDS_HOST}"'", "max_active_age_seconds": 1500},
+       "timeout": 1700
      }'
    ```
 
