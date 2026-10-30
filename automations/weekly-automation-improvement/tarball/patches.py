@@ -172,7 +172,9 @@ def validate_public_patch(patch):
         raise ValueError("Patch contains a credential-shaped value")
 
 
-def review_checks(args, proposal, findings, checks, before, after, snapshot):
+def review_checks(
+    args, proposal, findings, checks, before, after, snapshot, candidate_only=None
+):
     result, measurement = call_model(
         args,
         args.coordinator,
@@ -181,6 +183,7 @@ def review_checks(args, proposal, findings, checks, before, after, snapshot):
         "Adding diagnostics alone does not repair an unchanged task failure. For reporting failures, verify an authoritative correction reaches the actual operator-facing output or conversation; merely creating an audit field in a private runner log is insufficient. "
         "Reject missing imports/files/dependencies, setup or collection errors, commands merely checking source text, tests implementing their own repaired algorithm, assertions that encode an unjustified new policy, or a fix that does not address the recorded finding. "
         "Check that identical test assets and equivalent commands test actual baseline/candidate code. Tests may mock external effects but must invoke production logic. "
+        "Candidate-only checks provide executed safety/integration evidence for new behavior. They do not establish a baseline defect or replace paired controls. "
         "A narrow deterministic regression can be valid mechanism evidence without population-wide or historical LLM replay proof. Do not demand unsupported statistical proof. "
         "Judge the proposed repair's scope. Unrelated inherited failures do not invalidate a demonstrated fix; controls must establish no new violations rather than perfect existing behavior. "
         "Check runtime constraints and caller behavior: a fix must fit the outer automation timeout including overhead and preserve dispatch/concurrency behavior or provide explicit evidence for the tradeoff. Fast fixtures alone cannot establish that a newly blocking scan fits its deadline. "
@@ -193,6 +196,7 @@ def review_checks(args, proposal, findings, checks, before, after, snapshot):
             "runtime": snapshot.get("source", {}).get("runtime", {}),
             "baseline": before,
             "candidate": after,
+            "candidate_only": candidate_only or [],
             "baseline_source": {
                 path: text
                 for path, text in snapshot.get("source", {}).get("files", {}).items()
@@ -261,7 +265,10 @@ def _propose_fix(args, report, snapshot):
     publishing = args.publish_fix or getattr(args, "publish_draft", False)
     agent_checks = proposal.get("checks", [])
     checks = agent_checks or ([] if unevaluated else config["checks"])
-    if checks or not unevaluated:
+    candidate_checks = proposal.get("candidate_checks", [])
+    if not isinstance(candidate_checks, list):
+        raise ValueError("Candidate checks must be a list")
+    if checks or candidate_checks or not unevaluated:
         if (
             not isinstance(checks, list)
             or not checks
@@ -431,6 +438,13 @@ def _propose_fix(args, report, snapshot):
         if checks
         else []
     )
+    candidate_only = (
+        run_checks(
+            candidate, candidate_checks, args.output, "candidate-only", budget=budget
+        )
+        if candidate_checks
+        else []
+    )
     if (
         checks
         and command(["git", "diff", "HEAD", "--binary"], baseline, strip=False)
@@ -447,10 +461,15 @@ def _propose_fix(args, report, snapshot):
         "changed_files": changed,
         "baseline": before,
         "candidate": after,
+        "candidate_only": candidate_only,
         "status": "rejected",
         "test_assets_sha256": test_assets,
         "checks": checks,
+        "candidate_checks": candidate_checks,
     }
+    if any(row["exit_code"] != 0 for row in candidate_only):
+        write_json(args.output / "validation.json", results)
+        return results
     for check, first, second in zip(checks, before, after, strict=True):
         if (
             (first["exit_code"] == 0) != (check["baseline"] == "pass")
@@ -530,7 +549,7 @@ def _propose_fix(args, report, snapshot):
     verified = None
     if agent_checks:
         review = review_checks(
-            args, proposal, findings, checks, before, after, snapshot
+            args, proposal, findings, checks, before, after, snapshot, candidate_only
         )
         results["evidence_review"] = review
         if not review["supported"] or not review["public_safe"]:
@@ -548,6 +567,14 @@ def _propose_fix(args, report, snapshot):
             + "\n\nThe regression failed before and passes after; controls pass on both versions. Exact commands, stdout/stderr and test hashes are retained privately through the linked investigation issue. "
             "This is focused mechanism evidence from executed tests, not proof of population-wide automation quality or a complete N-per-cohort historical replay."
         )
+        if candidate_only:
+            markdown += (
+                "\n\nAdditional checks executed on the candidate (not baseline defect evidence):\n\n"
+                "| Check | Candidate exit |\n|---|---:|\n"
+                + "\n".join(
+                    f"| {row['name']} | {row['exit_code']} |" for row in candidate_only
+                )
+            )
         verified = {
             "status": "improvement_on_development_cases",
             "baseline": source["revision"],
@@ -561,6 +588,7 @@ def _propose_fix(args, report, snapshot):
             "checks": checks,
             "before": before,
             "after": after,
+            "candidate_only": candidate_only,
             "test_assets_sha256": test_assets,
         }
         if config.get("comparative_validation"):

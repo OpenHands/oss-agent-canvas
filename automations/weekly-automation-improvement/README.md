@@ -20,7 +20,10 @@ human review.
    instruction without an enforceable improvement is not sufficient.
 4. Sol validates the real code with regressions, controls and original inputs
    where feasible. The publisher reruns identical checks on baseline/candidate
-   code; an independent review inspects the evidence. Configured historical
+   code and any submitted candidate-only safety/integration checks. Their executed
+   outputs reach the independent reviewer and PR evidence. Candidate-only checks
+   supplement the paired checks; they cannot establish the baseline defect.
+   Configured historical
    replay additionally checks task outcomes and actual deliverables.
 5. Publish a labeled repair draft only when paired evidence supports it. Reports
    distinguish tested mechanisms, task improvements, regressions and coverage gaps.

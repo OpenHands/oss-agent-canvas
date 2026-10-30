@@ -220,6 +220,16 @@ def test_publication_requires_review_and_preserves_historical_comparison(
     report = fix_report(PATCH)
     report["findings"][0].update(trace_urls=[], case_id="c1")
     report["proposals"][0]["checks"] = config["checks"]
+    report["proposals"][0]["candidate_checks"] = [
+        {
+            "name": "Complete candidate safety suite",
+            "argv": [
+                sys.executable,
+                "-c",
+                "import runpy; assert runpy.run_path('value.py')['VALUE'] == 4; print('safety passed')",
+            ],
+        }
+    ]
     original = patches.command
     calls = []
 
@@ -242,6 +252,7 @@ def test_publication_requires_review_and_preserves_historical_comparison(
                 "Historical input comparison" in body
                 and "Historical inconclusive" in body
             )
+            assert "Complete candidate safety suite | 0" in body
             return "https://github.com/Example/automation/pull/2"
         return original(argv, cwd, **kwargs)
 
@@ -250,15 +261,18 @@ def test_publication_requires_review_and_preserves_historical_comparison(
         return {"status": "inconclusive", "markdown": "Historical inconclusive"}
 
     monkeypatch.setattr(patches, "command", transport)
-    monkeypatch.setattr(
-        patches,
-        "review_checks",
-        lambda *a: {
+
+    def review(*args):
+        assert len(args[-1]) == 1
+        assert args[-1][0]["exit_code"] == 0
+        assert "safety passed" in args[-1][0]["excerpt"]
+        return {
             "supported": supported,
             "public_safe": public_safe,
             "reason": "Independent review",
-        },
-    )
+        }
+
+    monkeypatch.setattr(patches, "review_checks", review)
     monkeypatch.setattr(patches, "before_publication", historical)
     result = patches.propose_fix(args, report, {"source": load_source(path)})
     if supported and public_safe:
@@ -267,6 +281,47 @@ def test_publication_requires_review_and_preserves_historical_comparison(
     else:
         assert calls == [] and result["status"] == "rejected"
         assert (args.output / "paired-review-failure.json").exists()
+
+
+def test_failed_candidate_safety_check_blocks_review(source, tmp_path, monkeypatch):
+    _, path, config = source
+    args = arguments(tmp_path / "repair", source_config=path)
+    args.output.mkdir()
+    report = fix_report(PATCH)
+    report["proposals"][0]["checks"] = config["checks"]
+    report["proposals"][0]["candidate_checks"] = [
+        {
+            "name": "safety",
+            "argv": [sys.executable, "-c", "raise RuntimeError('unsafe')"],
+        }
+    ]
+    monkeypatch.setattr(patches, "review_checks", lambda *a: pytest.fail("not safe"))
+    result = patches.propose_fix(args, report, {"source": load_source(path)})
+    assert result["status"] == "rejected"
+    assert result["candidate_only"][0]["exit_code"] == 1
+    assert [row["exit_code"] for row in result["candidate"]] == [0, 0]
+    assert (args.output / "candidate-only-0-check.json").exists()
+
+
+def test_reviewer_receives_executed_candidate_safety_output(tmp_path, monkeypatch):
+    args = arguments(tmp_path)
+    candidate_only = [
+        {"name": "whole worker", "exit_code": 0, "excerpt": "48 tests OK"}
+    ]
+
+    def model(args, model, policy, context, name, schema):
+        assert context["candidate_only"] == candidate_only
+        assert "do not establish a baseline defect" in policy
+        return {
+            "supported": True,
+            "public_safe": True,
+            "reason": "Executed safety checks",
+        }, {}
+
+    monkeypatch.setattr(patches, "call_model", model)
+    assert patches.review_checks(
+        args, {"patch": PATCH}, [], [], [], [], {}, candidate_only
+    )["supported"]
 
 
 def test_failed_native_attempt_consumes_shared_budget(source, tmp_path, monkeypatch):

@@ -67,6 +67,12 @@ PROPOSAL = object_schema(
                 }
             ),
         },
+        "candidate_checks": {
+            "type": "array",
+            "items": object_schema(
+                {"name": TEXT, "argv": {"type": "array", "items": TEXT}}
+            ),
+        },
     }
 )
 COORDINATION = object_schema(
@@ -420,6 +426,7 @@ def run(args):
                 raise ValueError("Coordinator must return at most one proposal")
             ids = {finding["id"] for finding in findings}
             for proposal in proposals:
+                proposal.setdefault("candidate_checks", [])
                 if (
                     set(proposal) != set(PROPOSAL["properties"])
                     or not proposal["finding_ids"]
@@ -432,7 +439,10 @@ def run(args):
                 ):
                     raise ValueError("Invalid coordinator text or oversized patch")
                 proposal["patch"] = actual_patch
-                if not isinstance(proposal["checks"], list):
+                if any(
+                    not isinstance(proposal[field], list)
+                    for field in ("checks", "candidate_checks")
+                ):
                     raise ValueError("Repair checks must be a list")
             accepted = {
                 identifier
@@ -545,6 +555,7 @@ def run(args):
     ):
         sanitized["patch"] = original["patch"]
         sanitized["checks"] = original["checks"]
+        sanitized["candidate_checks"] = original["candidate_checks"]
     clean["snapshot_sha256"] = report["snapshot_sha256"]
     clean["selection"]["population_sha256"] = snapshot["selection"]["population_sha256"]
     write_json(args.output / "report.json", clean)
