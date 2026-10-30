@@ -268,6 +268,7 @@ def test_publication_requires_review_and_preserves_historical_comparison(
                     and "Historical inconclusive" in body
                 )
             else:
+                assert body.startswith("**Validation incomplete")
                 assert (
                     "improvement not demonstrated" in body
                     and "Independent review" in body
@@ -614,6 +615,7 @@ def test_draft_without_paired_checks_still_requires_public_safety_review(
         if argv[:3] == ["gh", "pr", "create"]:
             assert public_safe and "--draft" in argv
             body = Path(argv[argv.index("--body-file") + 1]).read_text()
+            assert body.startswith("**Validation incomplete")
             assert "No paired checks were provided" in body
             assert "improvement not demonstrated" in body
             published.append(True)

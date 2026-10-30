@@ -778,6 +778,13 @@ def _propose_fix(args, report, snapshot):
         else "**Not run:** no behavioral comparison adapter is configured for this automation. "
         "Mechanical checks passed; behavioral improvement has not been demonstrated."
     )
+    if verified and verified["status"] != "improvement_on_development_cases":
+        body = (
+            "**Validation incomplete — keep this PR draft.** Improvement has not been demonstrated. "
+            "The proposal and test summary below are the repair agent's assessment; "
+            "see **Before / After Evidence** for the independent verdict and remaining work.\n\n"
+            + body
+        )
     body_path = args.output / "pr-body.md"
     body_path.write_text(redact(body))
     body_path.chmod(0o600)
