@@ -23,7 +23,14 @@ PAGE = {"type": "integer", "minimum": 0}
 
 
 def population(client, inventory, automation_id):
-    automation_id = str(uuid.UUID(automation_id))
+    automation_ids = {
+        str(uuid.UUID(value))
+        for value in (
+            [automation_id] if isinstance(automation_id, str) else automation_id
+        )
+    }
+    if not automation_ids:
+        raise ValueError("Select at least one automation")
     latest = inventory.get("latest_runs", [])
     owners = {}
     traces = sorted({str(uuid.UUID(row["trace_id"])) for row in latest})
@@ -43,7 +50,7 @@ def population(client, inventory, automation_id):
     result = []
     for run in latest:
         matching = list(owners.get(run["trace_id"], {}).values())
-        if len(matching) != 1 or matching[0]["automation_id"] != automation_id:
+        if len(matching) != 1 or matching[0]["automation_id"] not in automation_ids:
             continue
         owner = matching[0]
         owner["conversation_id"] = str(uuid.UUID(owner["conversation_id"]))

@@ -8,6 +8,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 SECRET = re.compile(
     r"(?P<protocol_marker><!-- triage-source:[a-f0-9]{64} -->)|\bsk-[\w-]{8,}|gh[pousr]_[\w]{15,}|github_pat_[\w]{15,}|xox[baprs]-[\w-]+|Bearer\s+\S+|(?P<opaque>(?<![\w/.-])[A-Za-z0-9_-]{48,}(?![\w/.-]))"
@@ -76,6 +77,15 @@ def topic_id(automation_id, key):
     ):
         raise ValueError("Topic keys must be short lowercase kebab-case identifiers")
     return hashlib.sha256(encode([automation_id, key]).encode()).hexdigest()[:20]
+
+
+def replace_json(path, value):
+    temporary = path.with_name(path.name + "." + uuid.uuid4().hex)
+    try:
+        write_json(temporary, value)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def write_json(path, value):

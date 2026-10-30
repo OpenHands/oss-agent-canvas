@@ -7,7 +7,7 @@ from pathlib import PurePosixPath
 from urllib.parse import quote
 
 from common import write_json
-from patches import command, json_pages
+from github_io import command, json_pages
 
 
 def capture(repository, output):

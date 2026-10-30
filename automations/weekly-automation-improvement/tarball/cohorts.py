@@ -95,12 +95,21 @@ def prepare(cohort, source, output):
 def collect(client, inventory, automation_id, negative_records, size=5, seed=None):
     if type(size) is not int or size < 1:
         raise ValueError("validation_sample_size must be a positive integer")
-    automation_id = str(uuid.UUID(automation_id))
+    automation_ids = sorted(
+        {
+            str(uuid.UUID(value))
+            for value in (
+                [automation_id] if isinstance(automation_id, str) else automation_id
+            )
+        }
+    )
+    if not automation_ids:
+        raise ValueError("Select at least one automation")
     seed = secrets.randbits(64) if seed is None else seed
     rng = random.Random(seed)
     negative = {}
     for record in negative_records:
-        if record["owner"]["automation_id"] != automation_id:
+        if record["owner"]["automation_id"] not in automation_ids:
             raise ValueError("Validation inputs must belong to the repaired automation")
         owner, run = record["owner"], record["run"]
         negative.setdefault(
@@ -114,7 +123,7 @@ def collect(client, inventory, automation_id, negative_records, size=5, seed=Non
                 "definition": record["definition"],
             },
         )
-    rows = population(client, inventory, automation_id)
+    rows = population(client, inventory, automation_ids)
     controls = {}
     for row in rows:
         if (
@@ -129,7 +138,8 @@ def collect(client, inventory, automation_id, negative_records, size=5, seed=Non
     }
     result = {
         "schema_version": 1,
-        "automation_id": automation_id,
+        "automation_id": automation_ids[0] if len(automation_ids) == 1 else None,
+        "automation_ids": automation_ids,
         "project_id": inventory["project_id"],
         "app_url": inventory.get("app_url", "https://laminar.app.all-hands.dev"),
         "signal": inventory["flow1_signal"],

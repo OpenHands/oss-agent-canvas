@@ -94,7 +94,6 @@ def test_luna_agent_returns_a_globally_sorted_scoped_plan(tmp_path, monkeypatch)
         "reused_event",
         "duplicate_topic",
         "invalid_key",
-        "cross_automation",
         "invalid_priority",
     ],
 )
@@ -104,7 +103,6 @@ def test_selection_rejects_invalid_references_and_priority(bad):
         record(
             2,
             conversation=1 if bad == "duplicate_conversation" else 2,
-            automation=2 if bad == "cross_automation" else 1,
         ),
     ]
     _, references, _ = triage.prepare(records, [], [])
@@ -112,7 +110,7 @@ def test_selection_rejects_invalid_references_and_priority(bad):
     result = {"topics": [plan], "no_action_reason": ""}
     if bad == "foreign_event":
         plan["representative_event_refs"] = ["e999"]
-    elif bad in ("duplicate_conversation", "cross_automation"):
+    elif bad == "duplicate_conversation":
         plan["representative_event_refs"] = ["e1", "e2"]
     elif bad == "missing_evidence":
         plan["representative_event_refs"] = []
@@ -244,3 +242,21 @@ def test_empty_signatures_do_not_merge_unrelated_findings():
         item["event"]["payload"] = json.dumps(payload)
     cards, _ = triage.group_findings(records)
     assert len(cards) == 2
+
+
+def test_shared_root_cause_can_span_automations_with_one_stable_topic_id():
+    rows = [record(1), record(2, automation=2)]
+    _, refs, _ = triage.prepare(rows, [], [])
+    plan = topic("e1")
+    plan["representative_event_refs"] = ["e1", "e2"]
+    result = triage.validate({"topics": [plan], "no_action_reason": ""}, rows, refs, 3)[
+        0
+    ]
+    assert result["automation_ids"] == sorted(
+        {r["owner"]["automation_id"] for r in rows}
+    )
+    _, refs, _ = triage.prepare(rows[1:], [], [])
+    single = triage.validate(
+        {"topics": [topic("e1")], "no_action_reason": ""}, rows[1:], refs, 3
+    )[0]
+    assert single["id"] == result["id"]

@@ -11,7 +11,7 @@ import uuid
 from pathlib import PurePosixPath
 
 from common import redact
-from patches import command
+from github_io import command
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):

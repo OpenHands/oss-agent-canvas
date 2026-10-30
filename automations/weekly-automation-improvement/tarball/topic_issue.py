@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 from common import read_json, redact, write_json
-from patches import command, github_pages, IMPROVEMENT_LABEL
+from github_io import command, github_pages, IMPROVEMENT_LABEL
 from raw_evidence import schema, PAGE
 
 SECTIONS = (

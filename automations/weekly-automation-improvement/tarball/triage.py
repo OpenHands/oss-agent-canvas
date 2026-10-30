@@ -5,7 +5,18 @@ from collections import Counter
 from common import encode, timestamp, topic_id, write_json
 from triage_agent import rank
 from laminar import object_value
-from main import TEXT, object_schema
+
+TEXT = {"type": "string"}
+
+
+def object_schema(properties):
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": list(properties),
+        "additionalProperties": False,
+    }
+
 
 TRIAGE = object_schema(
     {
@@ -267,10 +278,8 @@ def validate(result, records, references, limit):
             raise ValueError("Topic repeats evidence from another topic")
         chosen = [by_id[event_id] for event_id in selected]
         automation_ids = {record["owner"]["automation_id"] for record in chosen}
-        if len(automation_ids) != 1:
-            raise ValueError("A repair topic must belong to one automation")
-        automation_id = next(iter(automation_ids))
-        identifier = topic_id(automation_id, topic["key"])
+        automation_id = sorted(automation_ids)[0]
+        identifier = topic_id("shared", topic["key"])
         if identifier in seen_topics:
             raise ValueError("Triage repeats a topic key")
         if len({record["owner"]["conversation_id"] for record in chosen}) != len(
@@ -288,6 +297,7 @@ def validate(result, records, references, limit):
             | {
                 "id": identifier,
                 "automation_id": automation_id,
+                "automation_ids": sorted(automation_ids),
                 "selection_order": position,
                 "group_ids": sorted(
                     {references["event_groups"][event_id] for event_id in selected}

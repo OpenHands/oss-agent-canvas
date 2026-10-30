@@ -182,3 +182,22 @@ def test_validation_expands_exact_signatures_without_absorbing_a_mixed_cluster()
     ]
     missing = [record("e", ""), record("f", "")]
     assert cohorts.topic_records(missing, ["e"]) == missing[:1]
+
+
+def test_shared_topic_uses_one_n_sized_cohort_across_automations():
+    client, inventory, owner, records = fixture()
+    second = identifier(999)
+    owners = client.query("SELECT DISTINCT")
+    for index, row in enumerate(owners):
+        if index % 2:
+            row["automation_id"] = second
+    result = cohorts.collect(
+        client, inventory, [owner, second], records, size=2, seed=42
+    )
+    assert result["automation_ids"] == sorted([owner, second])
+    assert result["selection"]["population_sizes"] == {"negative": 3, "non_negative": 7}
+    assert len([r for r in result["samples"] if r["classification"] == "negative"]) == 2
+    assert (
+        len([r for r in result["samples"] if r["classification"] == "non_negative"])
+        == 2
+    )

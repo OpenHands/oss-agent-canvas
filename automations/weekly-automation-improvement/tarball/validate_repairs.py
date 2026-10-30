@@ -9,7 +9,7 @@ from common import read_json, redact, write_json
 from budget import BudgetExhausted, RunBudget
 from evidence import after_publication, run
 from laminar import Laminar, META, object_value
-from patches import command, github_pages
+from github_io import command, github_pages
 from sources import github_auth
 from weekly import arguments, load_environment
 

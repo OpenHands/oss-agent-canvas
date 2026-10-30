@@ -11,23 +11,7 @@
   "github_token_secret": "GITHUB_TOKEN",
   "credentials_file": "/private/automation-improvement/credentials.json",
   "state_dir": "/private/automation-improvement/state",
-  "publish_drafts": true,
-  "require_improvement": true,
-  "revise_failed_repair": false,
   "retry_topic_ids": [],
-  "validate_existing_repairs": true,
-  "comparative_validation": {
-    "command": [
-      "/private/sdk-venv/bin/python",
-      "/private/evaluator/pr_comparison.py"
-    ],
-    "profile_id": "glm-5.3-flash",
-    "automatic_contracts": true,
-    "timeout_seconds": 7200,
-    "repeats": 2,
-    "max_run_seconds": 420,
-    "llm_timeout": 120
-  },
   "triage_model": "openai/gpt-6-luna",
   "repair_model": "openai/gpt-6.1-sol",
   "repair_agent_profile": null,
@@ -48,5 +32,20 @@
     "max_run_seconds": 600,
     "max_output_tokens": 16384
   },
-  "max_prs_per_run": 10
+  "max_topics_per_run": 10,
+  "repair_concurrency": 10,
+  "repositories": {
+    "OpenHands/software-agent-sdk": {
+      "checkout": "/private/existing-canonical-software-agent-sdk",
+      "base_branch": "main"
+    }
+  },
+  "review_agent_profile": null,
+  "review_model": "openai/gpt-6.1-sol",
+  "review_agent": {
+    "effort": "high",
+    "max_iterations": 80,
+    "max_run_seconds": 900,
+    "max_output_tokens": 16384
+  }
 }

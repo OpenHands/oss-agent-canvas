@@ -1,215 +1,164 @@
-import copy
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
 
-from test_weekly import weekly
 from budget import RunBudget
 from common import write_json
 import parallel
 
 
-def state():
-    return {"topic_weeks": {}, "events": {}, "backlog": {}}
-
-
-def topic(number):
-    return {
-        "id": str(number),
-        "automation_id": "automation",
-        "priority": number // 3,
-        "representative_event_ids": ["event-" + str(number)],
-        "group_ids": ["group-" + str(number)],
-    }
-
-
-@pytest.mark.parametrize("limit,concurrency", [(1, 3), (2, 3), (10, None)])
-def test_parallel_queue_dispatches_top_topics_without_replacing_failed_attempts(
-    tmp_path, monkeypatch, limit, concurrency
+@pytest.mark.parametrize("count,concurrency", [(1, 3), (3, 2), (10, 10)])
+def test_topic_limit_counts_dispatches_not_prs_or_successes(
+    tmp_path, monkeypatch, count, concurrency
 ):
-    initial = state()
-    path = tmp_path / "state.json"
-    write_json(path, initial)
+    state = {"events": {}, "backlog": {}, "topic_weeks": {}}
+    state_path = tmp_path / "state.json"
     context = {
         "output": str(tmp_path),
-        "state_path": str(path),
-        "dry_run": False,
+        "state_path": str(state_path),
         "week": "2026-W44",
-        "inventory": {},
-        "prs": [],
-        "limit": 3,
-        "seed": 42,
-        "previous": [],
-        "grouped": {"automation": [{"owner": {"conversation_id": "one"}}]},
     }
-    queue = [topic(n) for n in range(16)]
+    queue = [
+        {"id": str(n), "priority": n // 5, "representative_event_ids": [f"event-{n}"]}
+        for n in range(15)
+    ]
     started, running, peaks = [], [], []
-    monkeypatch.setattr(weekly, "source_revision", lambda c: "a" * 40)
-    monkeypatch.setattr(parallel.time, "sleep", lambda seconds: None)
 
-    def launch(config, context, selected, aggregation, ledger, budget, root):
-        assert config["_canonical_state_path"] == str(path)
-        assert config["_source_revision"] == "a" * 40
+    def launch(config, ctx, topic, budget, root):
         root.mkdir(parents=True)
-        number = int(selected["id"])
-        outcome = {"topic": selected, "status": "unrepaired"}
-        if number == 0:
-            outcome["status"] = "failed"
-        elif number == 1:
-            outcome["publication"] = {
-                "status": "already_tracked",
-                "created": False,
-                "pr_url": "https://github.test/existing",
-            }
-        else:
-            outcome["publication"] = {"created": True, "pr_url": str(number)}
+        assert (
+            json.loads(state_path.read_text())["topic_weeks"][
+                "2026-W44/" + topic["id"]
+            ]["status"]
+            == "dispatched"
+        )
+        n = int(topic["id"])
+        resources = (
+            [
+                {
+                    "kind": "pull",
+                    "state": "open",
+                    "url": f"https://github.com/Example/repo/pull/{n * 10 + i}",
+                }
+                for i in range(5)
+            ]
+            if n
+            else []
+        )
         write_json(
             root / "result.json",
             {
-                "outcome": {"topics": [outcome]},
-                "budget": {
-                    "unknown_cost_requests": 0,
-                    "reported_inference_cost_usd": 0.01,
+                "outcome": {
+                    "topic": topic,
+                    "status": "reviewed" if n else "failed",
+                    "resources": resources,
                 },
+                "budget": {"reported_inference_cost_usd": 0.01},
             },
         )
-        write_json(root / "state.json", ledger)
-        running.append(number)
+        started.append(n)
+        running.append(n)
         peaks.append(len(running))
-        started.append(number)
         polls = 0
 
         def poll():
             nonlocal polls
             polls += 1
-            if polls == 1:
+            if polls < 2:
                 return None
-            if number in running:
-                running.remove(number)
+            if n in running:
+                running.remove(n)
             return 0
 
         return {
-            "process": SimpleNamespace(pid=100 + number, poll=poll),
-            "topic": selected,
+            "process": SimpleNamespace(pid=100 + n, poll=poll),
             "root": root,
-            "initial": ledger,
+            "topic": topic,
+            "started": time.monotonic(),
         }
 
     monkeypatch.setattr(parallel, "launch", launch)
-    config = {"max_prs_per_run": limit}
-    if concurrency is not None:
-        config["repair_concurrency"] = concurrency
-    receipt, _ = parallel.execute(
-        config,
+    monkeypatch.setattr(parallel.time, "sleep", lambda _: None)
+    receipt, updated = parallel.execute(
+        {"max_topics_per_run": count, "repair_concurrency": concurrency},
         context,
         queue,
-        {"groups": []},
-        initial,
+        state,
         RunBudget({"max_inference_cost_usd": 100}),
     )
-    assert receipt["created_prs"] == max(0, limit - 2)
-    assert max(peaks) == min(concurrency or limit, limit)
-    assert started == list(range(limit))
-    assert receipt["stop_reason"] is None
+    assert started == list(range(count))
+    assert max(peaks) == min(count, concurrency)
+    assert len(
+        [r for o in receipt["outcomes"] for r in o.get("resources", [])]
+    ) == 5 * (count - 1)
     assert (
-        sum(o["status"] == "deferred_pr_limit" for o in receipt["outcomes"])
-        == 16 - limit
+        sum(o["status"] == "deferred_topic_limit" for o in receipt["outcomes"])
+        == 15 - count
     )
-    assert json.loads((tmp_path / "parallel-repairs.json").read_text())[
-        "created_prs"
-    ] == max(0, limit - 2)
+    assert updated["topic_weeks"]["2026-W44/0"]["status"] == "failed"
+    assert "event-0" not in updated["events"]
+    if count > 1:
+        assert len(updated["events"]["event-1"]["pr_urls"]) == 5
 
 
-def test_state_merge_preserves_sibling_results_and_publication_reservations(tmp_path):
-    initial = state()
-    first, sibling = topic(0), topic(1)
-    prefix = "2026-W44/automation/"
-    output = tmp_path / "topics/0"
-    canonical = copy.deepcopy(initial)
-    canonical["topic_weeks"][prefix + "1"] = {"status": "completed", "pr_url": "one"}
-    canonical["events"]["event-1"] = {"topic_id": "1"}
-    canonical["backlog"]["event-0"] = {"pending": True}
-    path = tmp_path / "state.json"
-    write_json(path, canonical)
-    slot = {"status": "reserved", "report": str(output / "analysis/report.json")}
-    parallel.reserve_shared(path, prefix + "0", slot)
-    with pytest.raises(ValueError, match="owns"):
-        parallel.reserve_shared(
-            path, prefix + "0", slot | {"report": "/another/report"}
-        )
-    updated = copy.deepcopy(initial)
-    updated["topic_weeks"][prefix + "0"] = {
-        "status": "completed",
-        "report": str(output / "topic-report.json"),
-    }
-    updated["events"]["event-0"] = {"topic_id": "0"}
-    merged = parallel.merge_state(path, initial, updated, first, "2026-W44", output)
-    assert merged["events"] == {
-        "event-0": {"topic_id": "0"},
-        "event-1": {"topic_id": "1"},
-    }
-    assert not merged["backlog"]
-    assert (
-        merged["topic_weeks"][prefix + sibling["id"]]
-        == canonical["topic_weeks"][prefix + "1"]
+def test_launch_failure_does_not_start_a_replacement_topic(tmp_path, monkeypatch):
+    state = {"events": {}, "backlog": {}, "topic_weeks": {}}
+    queue = [{"id": str(n), "representative_event_ids": []} for n in range(2)]
+
+    def fail(*args):
+        raise OSError("unable to start process")
+
+    monkeypatch.setattr(parallel, "launch", fail)
+    receipt, _ = parallel.execute(
+        {"max_topics_per_run": 1},
+        {
+            "output": str(tmp_path),
+            "state_path": str(tmp_path / "state.json"),
+            "week": "2026-W44",
+        },
+        queue,
+        state,
+        RunBudget({}),
     )
-    assert merged["topic_weeks"][prefix + "0"]["status"] == "completed"
+    assert [o["status"] for o in receipt["outcomes"]] == [
+        "deferred_topic_limit",
+        "failed",
+    ]
+    assert len(state["topic_weeks"]) == 1
 
 
-def test_merge_does_not_overwrite_a_different_publication_owner(tmp_path):
-    initial, updated = state(), state()
-    key = "2026-W44/automation/0"
-    initial["topic_weeks"][key] = {"status": "retryable"}
-    updated["topic_weeks"][key] = {"status": "completed"}
-    path = tmp_path / "state.json"
-    canonical = state()
-    canonical["topic_weeks"][key] = {
-        "status": "reserved",
-        "report": str(tmp_path / "other/report"),
-    }
-    write_json(path, canonical)
-    merged = parallel.merge_state(
-        path, initial, updated, topic(0), "2026-W44", tmp_path / "topics/0"
-    )
-    assert merged["topic_weeks"] == canonical["topic_weeks"]
+def test_worker_exception_keeps_partial_remote_work_visible_and_draft(
+    tmp_path, monkeypatch
+):
+    import weekly
+    import topic_agent
 
-
-def test_child_worker_preserves_result_and_budget_on_failure(tmp_path, monkeypatch):
-    def fail(*args, **kwargs):
-        args[-1].record(0.12)
-        raise ValueError("no repair")
-
-    monkeypatch.setattr(weekly, "investigate", fail)
     request = tmp_path / "request.json"
     write_json(
-        request,
-        {
-            "state": state(),
-            "budget": {},
-            "topic": topic(0),
-            "config": {},
-            "aggregation": {},
-            "context": {
-                "inventory": {},
-                "records": [],
-                "prs": [],
-                "output": str(tmp_path),
-                "week": "2026-W44",
-                "dry_run": False,
-                "limit": 3,
-                "seed": 42,
-            },
-        },
+        request, {"config": {}, "context": {}, "topic": {"id": "one"}, "budget": {}}
     )
+    write_json(tmp_path / "context.json", {"topic": {"id": "one"}})
+    monkeypatch.setattr(weekly, "prepare_topic", lambda *a: {})
+
+    def fail(*a):
+        raise RuntimeError("failure after PR creation")
+
+    monkeypatch.setattr(topic_agent, "run", fail)
+    resource = {
+        "kind": "pull",
+        "state": "open",
+        "draft": False,
+        "url": "https://github.com/Example/sdk/pull/2",
+    }
+    monkeypatch.setattr(
+        topic_agent, "discover", lambda *a: {"resources": [resource], "errors": []}
+    )
+    calls = []
+    monkeypatch.setattr(topic_agent, "command", lambda argv: calls.append(argv) or "")
     parallel.worker(request)
-    result = json.loads((tmp_path / "result.json").read_text())
-    assert result["error"] == "no repair"
-    assert result["budget"]["reported_inference_cost_usd"] == 0.12
-
-
-@pytest.mark.parametrize("name", ["max_prs_per_run", "repair_concurrency"])
-@pytest.mark.parametrize("value", [0, -1, True, 1.5, "10"])
-def test_top_level_dispatch_parameters_fail_before_access(name, value):
-    with pytest.raises(ValueError, match=name):
-        weekly.run({name: value})
+    result = json.loads((tmp_path / "result.json").read_text())["outcome"]
+    assert result["status"] == "review_incomplete"
+    assert result["resources"][0]["draft"]
+    assert "--undo" in calls[0]
