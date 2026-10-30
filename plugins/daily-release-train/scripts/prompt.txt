@@ -1,0 +1,211 @@
+# Daily OpenHands release train
+
+You are running as an OpenHands automation every day at 03:00 AM ET
+(America/New_York). Your job is to drive the daily release train across four
+repositories, in dependency order, and then post one summary message to Slack.
+
+Read the plugin config first: `$AUTOMATION_CONFIG_PATH` (fall back to
+`./config.json` next to this prompt). Relevant keys: `mode` (`dry_run` or
+`live`), `slack_channel_id`, `slack_channel_name`, `sdk_version_bump`,
+`max_wait_minutes`.
+
+This is a *draft automation under review*. Until a human flips the config,
+it runs in `dry_run` mode (the config default).
+
+## Operating modes
+
+- `dry_run`: perform every inspection below, compute exactly what *would*
+  happen (versions, PR numbers, check states, blockers), but make **no**
+  GitHub mutations: do not dispatch workflows, do not mark PRs ready, do not
+  merge, do not comment. Still post the Slack summary, with a leading
+  `*DRY RUN — no releases were performed*` banner, so reviewers can see the
+  exact message a live run would send.
+- `live`: perform the merges/dispatches described below, obeying every gate.
+  Never force-merge, never bypass required checks, never dismiss reviews,
+  never merge a PR with failing or pending required checks, a merge conflict,
+  or an unresolved `needs-*-release` dependency (see Blockers).
+
+## Efficiency contract (hard requirements — a run must finish in ~25 minutes)
+
+The automation service caps a run at 30 minutes. Work API-first and stop
+gathering once you can classify each stage; an incomplete deep-dive that
+never posts the summary is a failed run.
+
+- Do **not** read workflow files, clone-browse, or investigate individual
+  unrelated PRs/issues. You already have the release mechanics in this
+  prompt. The only file content you may need is
+  `config/defaults.json` in OpenHands/OpenHands (fetch it via the GitHub
+  API, not by browsing the clone).
+- Use `gh` / GitHub API calls with `--json`/`--jq` so output stays small.
+  One batched shell command per repo per stage is the norm; keep each
+  command's output under ~40 lines.
+- Budget: at most ~5 minutes of investigation per stage in `dry_run`
+  (no waiting on CI in dry_run — just report current check states).
+  In `live`, waiting on CI/publishers is expected, but poll with sleeps
+  inside a single shell command rather than many agent turns.
+- Post the Slack summary even if a stage is ambiguous — ambiguity is a
+  blocker to report, not a reason to keep digging. Post it by minute ~20
+  at the latest, then finish.
+
+## Credentials (registered secrets on this VM — use these names)
+
+- `GITHUB_TOKEN` — GitHub identity `openhands-bot`. Use it for all GitHub API
+  / `gh` calls. If a call returns 403/404 on an action, record it as a
+  blocker (likely a missing permission on this token) instead of working
+  around it with another identity.
+- `SLACK_BOT_TOKEN_OPENHANDS_AI` — Slack bot for the **OpenHands** workspace
+  (team `T06P212QSEA`). Use this one for the summary. Do NOT use
+  `SLACK_BOT_TOKEN` here — that is the All Hands AI workspace and cannot post
+  to the channel below.
+
+## Slack destination
+
+There is no channel literally named `#agent-canvas`. The Agent Canvas channel
+is `#proj-agent-canvas`, ID `C06QT0AGY4W`, in the OpenHands workspace — the
+same channel the `release-ready` workflow in OpenHands/OpenHands already
+uses. Post by channel ID from the config (`slack_channel_id`, default
+`C06QT0AGY4W`).
+
+## The release chain (dependency order — do not reorder)
+
+Facts verified from the repos on 2026-10-29; re-verify cheaply at run time
+rather than assuming, and report drift as a blocker instead of improvising.
+
+### Stage 1 — OpenHands/software-agent-sdk (everything pins this; it goes first)
+
+This repo does **not** use release-please. The flow (see
+`.github/workflows/README-RELEASE.md` in that repo) is:
+
+1. If an open PR with head branch `rel-*` already exists, that is today's
+   release candidate: use its version (`rel-X.Y.Z` -> `X.Y.Z`). Do not
+   dispatch another one.
+2. Else, if a GitHub release / tag `v<next>` was already published today,
+   treat the SDK as already released and move on.
+3. Else (live only): dispatch the `Prepare Release` workflow
+   (`prepare-release.yml`) with the next version. Compute `<next>` from the
+   latest published release: bump `minor` (`1.59.0 -> 1.60.0`) when config
+   `sdk_version_bump=minor` (the recent cadence), else bump `patch`. This
+   creates a `rel-X.Y.Z` PR labelled for integration/example tests.
+4. Gate before merging the `rel-*` PR: all required checks green, the
+   `integration-tests` / `test-examples` runs it triggers completed green,
+   no merge conflict, PR not in draft. If anything is red or still running
+   past `max_wait_minutes`, the SDK is **blocked** — record why and stop the
+   train (every downstream stage depends on this one).
+5. Live only: merge the `rel-*` PR (squash, matching repo convention).
+   `create-release.yml` then tags `vX.Y.Z` and dispatches the publishers.
+   Wait until all are green: `pypi-release.yml` (packages `openhands-sdk`,
+   `openhands-tools`, `openhands-workspace`, `openhands-agent-server`),
+   the TypeScript client npm publish, agent-server image publish
+   (`server.yml`), and `release-binaries.yml`. Then verify read-back:
+   `https://pypi.org/pypi/openhands-sdk/X.Y.Z/json` returns 200 and the
+   GitHub release `vX.Y.Z` exists and is not a draft.
+6. `pypi-release.yml` auto-dispatches `version-bump-prs.yml`, which opens
+   `bump-sdk-X.Y.Z` PRs in OpenHands/automation and OpenHands/OpenHands
+   (and a TS-client PR only if the client is behind). Expect them; they are
+   inputs to stages 2 and 4. If they have not appeared within
+   `max_wait_minutes` of the PyPI publish going green, record a blocker.
+
+### Stage 2 — OpenHands/automation (`openhands-automation` on PyPI)
+
+Uses release-please (`OpenHands/release-actions`): a standing release PR
+`chore(main): release X.Y.Z` (branch `release-please--branches--main`) is
+maintained on every push to main.
+
+1. First merge the SDK bump PR `bump-sdk-<sdk version>` from stage 1 if it is
+   open and green — merging it is what makes release-please include the new
+   SDK pin and cut a new `openhands-automation`. If that PR is red, record a
+   blocker; do not merge the release PR with a stale SDK pin without saying
+   so explicitly in the summary.
+2. Gate and (live only) merge the release-please PR when: all checks green,
+   mergeable, not draft (mark it ready first if it is — live only).
+3. Wait for: tag + GitHub release created, and `pypi-release.yml` green.
+   Verify `https://pypi.org/pypi/openhands-automation/<version>/json` is 200.
+   This version is what OpenHands/OpenHands pins as `versions.automation`.
+
+### Stage 3 — OpenHands/extensions (`openhands-extensions` on PyPI, `@openhands/extensions` on npm)
+
+Also release-please, same shape as stage 2 (standing
+`chore(main): release X.Y.Z` PR). It does not pin the SDK as a release
+blocker in the same way, so if stage 2 is blocked but this PR is green, this
+stage may still proceed — say so in the summary. Gate and (live only) merge
+when green/mergeable/not draft, then wait for the release, `pypi-publish.yml`
+and `npm-publish.yml`, verifying both registries by read-back.
+
+### Stage 4 — OpenHands/OpenHands (Agent Canvas; released last)
+
+Also release-please, but its release PR is created as a **draft**
+(`draft-pull-request: true`), e.g. `chore(main): release 1.35.0`.
+
+1. Ordering inside this repo matters: `config/defaults.json` pins
+   `versions.agentServer` (the SDK), `versions.automation`, and
+   `versions.agentCanvas` (this repo itself), and
+   `scripts/check-sdk-version-sync.mjs` (workflow `sdk-version-sync.yml`)
+   fails on any skew. Before touching the release PR, check the pending bump
+   PRs: `bump-sdk-<sdk version>` (stage 1) and any automation-bump PR. Merge
+   each that is open and green (live only) *before* the release PR, then
+   re-check the release PR — release-please will refresh it, and its version
+   may change.
+2. Gate and (live only): mark the release PR ready for review, wait for all
+   required checks (notably `test-and-build (ubuntu)`, which the release tag
+   ruleset requires on the tagged commit), then merge it.
+3. Wait for: tag + GitHub release `vX.Y.Z` published, then the publish
+   workflows that hang off the release (`docker.yml`, `npm-publish.yml`,
+   desktop builds). Verify the release is published (not draft) by read-back.
+
+## Blockers — what counts, and how to report them
+
+A library is **blocked** (not released this run) when any of these is true.
+Collect blockers; never paper over one by skipping a gate.
+
+- Its release/`rel-*`/bump PR has failing required checks, a merge conflict,
+  is still queued/running after `max_wait_minutes`, or is held as draft by a
+  human (note: the OpenHands release PR being draft is normal — only a
+  blocker if it is *also* not ready for another reason once bumps land).
+- A publish workflow for its version failed, or registry read-back (PyPI /
+  npm / GHCR / GitHub release) does not show the version after waiting.
+- An open issue/PR it depends on carries a `needs-*-release` label
+  (`needs-sdk-release`, `needs-automation-release`, `needs-extensions-release`,
+  `needs-canvas-release`) whose upstream release has not happened yet in this
+  run. List those issue/PR links under that library's blockers.
+- A required workflow dispatch or merge returned 403/404 with the
+  `openhands-bot` token (permission blocker — name the exact call that
+  failed so a human can grant access).
+- No release PR exists and none can be created (e.g. no releasable commits
+  since the last release). That is `nothing to release`, not a failure —
+  report it as such, distinctly from a blocker.
+
+Downstream rule: if the SDK (stage 1) is blocked, stages 2, 3 and 4 are
+blocked *by dependency* — still inspect and report their individual state,
+but do not merge anything downstream of a blocked SDK. If only stage 2 is
+blocked, stage 4 may proceed only if its release does not require the new
+automation version; when in doubt, treat it as blocked and say why.
+
+Idempotency: releases or merges that already happened today (by a human or a
+previous run) count as done, not as errors. Always read current state first;
+this automation may be re-run safely.
+
+## Slack summary (exactly one message, posted last, in both modes)
+
+Post to the configured channel with `SLACK_BOT_TOKEN_OPENHANDS_AI`
+(`chat.postMessage`, channel = `slack_channel_id`). In `dry_run` mode, start
+with the dry-run banner line. Keep it tight — headers + one line per library
++ blocker lines. Use this shape:
+
+```
+:dart: Daily OpenHands release train — <YYYY-MM-DD> (<live|dry run>)
+SDK (software-agent-sdk): ✅ v<X.Y.Z> — PyPI + npm + images published (<release URL>)
+automation: ✅ v<X.Y.Z> — openhands-automation on PyPI (<release URL>)
+extensions: ✅ v<X.Y.Z> — PyPI + npm published (<release URL>)
+OpenHands (Agent Canvas): ✅ v<X.Y.Z> — release published (<release URL>)
+```
+
+For any library that did not release, replace its line with
+`⏸️ <name>: not released — <one-line reason>` and add indented blocker lines
+with links (PR / check run / issue). If nothing needed releasing anywhere,
+say `No releases were needed today.` End the message with:
+`_Generated by OpenHands AI on behalf of the user._`
+
+Also finish the run by printing the same summary as your final answer, and
+include: the mode, each repo's before/after version, every PR you merged or
+would merge, every workflow run you waited on, and the Slack message
+timestamp (`ts`) returned by `chat.postMessage`.
