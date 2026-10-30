@@ -213,3 +213,63 @@ def test_native_runtime_captures_events_links_and_cost_on_failure(
     assert len(links) == 2
     assert len(json.loads((root / "repair-agent/events.json").read_text())) == 2
     assert (root / "repair-agent/events.json").stat().st_mode & 0o077 == 0
+
+
+def test_private_catalog_keeps_evidence_and_omits_environments_and_checkouts(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    ctx = context(tmp_path)
+    output = tmp_path / "topic"
+    validation = output / "validation"
+    files = {
+        "results/paired.txt": "baseline fails, candidate passes",
+        "harness/replay.py": "assert True",
+        ".venv/lib/dependency.py": "not evidence",
+        "baseline-env/pyvenv.cfg": "home = /python",
+        "baseline-env/lib/dependency.py": "not evidence",
+        "baseline-source/source.py": "tracked elsewhere",
+        "candidate-source/source.py": "tracked elsewhere",
+        "checkout/.git/HEAD": "main",
+        "checkout/source.py": "tracked elsewhere",
+        "private-home/settings.json": "not evidence",
+        "results/__pycache__/cache.py": "not evidence",
+    }
+    for relative, content in files.items():
+        path = validation / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    captured = []
+
+    def reference(ctx, url, directory):
+        return SimpleNamespace(
+            record=lambda title, summary, artifacts: captured.append(artifacts)
+            or {"url": url}
+        )
+
+    monkeypatch.setattr(topic_agent, "issue_reference", reference)
+    resource = {
+        "kind": "issues",
+        "repository": "Example/repo",
+        "url": "https://github.com/Example/repo/issues/1",
+    }
+    assert topic_agent.record_evidence(ctx, output, "repair", [resource]) == []
+    assert topic_agent.record_evidence(ctx, output, "repair", [resource]) == []
+    assert len(captured) == 2
+    catalog = captured[-1]
+    assert (
+        catalog["validation/results/paired.txt"]["content"]
+        == files["results/paired.txt"]
+    )
+    assert "validation/harness/replay.py" in catalog
+    assert not any(
+        "dependency.py" in name or name.endswith("source.py") or "settings.json" in name
+        for name in catalog
+    )
+    assert (
+        "baseline-env"
+        in catalog["validation-catalog.json"][
+            "omitted_environment_or_checkout_directories"
+        ]
+    )

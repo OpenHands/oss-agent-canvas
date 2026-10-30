@@ -1,6 +1,7 @@
 import argparse
 import json
 import math
+import os
 import re
 import shlex
 import signal
@@ -192,26 +193,62 @@ def record_evidence(context, output, phase, resources):
     for path in sorted((root / "completions").glob("*.json")):
         artifacts[phase + "/completions/" + path.name] = read_json(path, 32_000_000)
     validation = output / "validation"
-    for path in sorted(validation.rglob("*")):
-        if (
-            not path.is_file()
-            or path.is_symlink()
-            or not path.resolve().is_relative_to(validation.resolve())
-        ):
-            continue
-        if path.stat().st_size > 16_000_000:
-            continue
-        try:
-            artifacts["validation/" + str(path.relative_to(validation))] = {
-                "content": path.read_text()
-            }
-        except UnicodeDecodeError:
-            continue
+    omitted = []
+    for directory, children, files in os.walk(validation):
+        current = Path(directory)
+        for name in list(children):
+            child = current / name
+            if (
+                name
+                in {
+                    ".git",
+                    ".venv",
+                    "venv",
+                    "node_modules",
+                    "__pycache__",
+                    ".pytest_cache",
+                    ".mypy_cache",
+                    ".ruff_cache",
+                    ".cache",
+                    "private-home",
+                    "baseline-source",
+                    "candidate-source",
+                }
+                or (child / "pyvenv.cfg").exists()
+                or (child / ".git").exists()
+            ):
+                children.remove(name)
+                omitted.append(str(child.relative_to(validation)))
+        for name in files:
+            path = current / name
+            if (
+                not path.is_file()
+                or path.is_symlink()
+                or not path.resolve().is_relative_to(validation.resolve())
+            ):
+                continue
+            if path.stat().st_size > 16_000_000:
+                continue
+            try:
+                artifacts["validation/" + str(path.relative_to(validation))] = {
+                    "content": path.read_text()
+                }
+            except UnicodeDecodeError:
+                continue
+    artifacts["validation-catalog.json"] = {
+        "omitted_environment_or_checkout_directories": omitted,
+        "private_workspace": str(validation),
+    }
     catalogs, errors = [], []
     for reference in resources:
         if reference["kind"] != "issues":
             continue
-        directory = root / "issue-records" / reference["repository"].replace("/", "_")
+        directory = (
+            root
+            / "issue-records"
+            / reference["repository"].replace("/", "_")
+            / uuid.uuid4().hex
+        )
         directory.mkdir(parents=True, mode=0o700, exist_ok=True)
         try:
             issue = issue_reference(context, reference["url"], directory)
