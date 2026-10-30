@@ -260,6 +260,7 @@ def test_publication_requires_review_and_preserves_historical_comparison(
             assert (
                 "[Mechanism tested]" if proven else "[Validation incomplete]"
             ) in argv[argv.index("--title") + 1]
+            assert ("--draft" in argv) is (not proven)
             assert "automation-improvement" in argv
             body = Path(argv[argv.index("--body-file") + 1]).read_text()
             if proven:
@@ -298,9 +299,10 @@ def test_publication_requires_review_and_preserves_historical_comparison(
     monkeypatch.setattr(patches, "before_publication", historical)
     result = patches.propose_fix(args, report, {"source": load_source(path)})
     if public_safe and (proven or allow_inconclusive):
+        assert result["draft"] is (not proven)
         assert calls == (["historical"] if proven else []) + ["push", "create"]
         assert result["status"] == (
-            "evidence_supported_draft" if proven else "validation_incomplete_draft"
+            "ready_for_review" if proven else "validation_incomplete_draft"
         )
     else:
         assert calls == [] and result["status"] == "rejected"

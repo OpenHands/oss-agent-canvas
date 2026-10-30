@@ -654,7 +654,7 @@ def _propose_fix(args, report, snapshot):
         }
         results["behavioral_evaluation"] = verified["status"]
         results["status"] = (
-            "evidence_supported_draft"
+            "evidence_supported"
             if verified["status"] == "improvement_on_development_cases"
             else "validation_incomplete_draft"
         )
@@ -677,7 +677,7 @@ def _propose_fix(args, report, snapshot):
             if not allow_inconclusive:
                 return results
         else:
-            results["status"] = "evidence_supported_draft"
+            results["status"] = "evidence_supported"
         current = command(
             [
                 "gh",
@@ -788,6 +788,9 @@ def _propose_fix(args, report, snapshot):
     body_path = args.output / "pr-body.md"
     body_path.write_text(redact(body))
     body_path.chmod(0o600)
+    is_draft = not (
+        verified and verified["status"] == "improvement_on_development_cases"
+    )
     results["pr_url"] = command(
         [
             "gh",
@@ -799,7 +802,7 @@ def _propose_fix(args, report, snapshot):
             config["base_branch"],
             "--head",
             branch,
-            "--draft",
+            *(["--draft"] if is_draft else []),
             "--label",
             IMPROVEMENT_LABEL,
             "--title",
@@ -825,7 +828,9 @@ def _propose_fix(args, report, snapshot):
         ],
         candidate,
     )
-    results["created"] = True
+    results.update(created=True, draft=is_draft)
+    if not is_draft:
+        results["status"] = "ready_for_review"
     if not agent_checks and not allow_inconclusive:
         results["comparison"] = after_publication(
             config,

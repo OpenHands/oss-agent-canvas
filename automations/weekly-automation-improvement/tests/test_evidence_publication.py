@@ -76,7 +76,7 @@ def test_real_comparison_gates_publication_and_attaches_recorded_evidence(
             created.append(argv)
             bodies.append(Path(argv[argv.index("--body-file") + 1]).read_text())
             assert "[Evidence]" in argv[argv.index("--title") + 1]
-            assert "--draft" in argv
+            assert "--draft" not in argv
             assert argv[argv.index("--label") + 1] == "automation-improvement"
             return "https://github.com/Example/automation/pull/1"
         if argv[:3] == ["gh", "api", "repos/Example/automation/pulls/1"]:
@@ -127,6 +127,8 @@ def test_real_comparison_gates_publication_and_attaches_recorded_evidence(
         checkout,
     )
     if expected:
+        assert result["status"] == "ready_for_review"
+        assert result["draft"] is False
         assert "Before / After Evidence" in bodies[-1]
         assert "baseline 3; candidate 4" in bodies[-1]
         assert result["comparison"]["published"]

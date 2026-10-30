@@ -31,8 +31,9 @@ controls merge and deployment.
    candidate source, plus submitted candidate-only safety/integration checks.
    Independent review assesses whether the actual output supports the fix.
    Historical replay runs where supported; narrower mechanism evidence is explicit.
-6. Coherent candidates become tagged draft PRs with **Before / After Evidence**,
-   including failed or inconclusive results and explicit limitations.
+6. Candidates with accepted validation evidence become tagged PRs ready for
+   review, with **Before / After Evidence**. Coherent patches with failed or
+   inconclusive validation remain drafts with explicit limitations.
    Budget exhaustion defers lower-priority work without marking it attempted.
    Unselected and unsupported-to-repair findings remain pending as appropriate.
 
@@ -322,7 +323,10 @@ baseline/candidate worktrees with identical new test assets. A separate Sol
 review checks that failures reproduce the reported behavior rather than a
 missing import/dependency, and checks public-data safety. Configured historical
 comparisons also run. Mechanism tests are labelled with their narrower scope;
-PRs remain drafts for review. Credentials are checked before pushing.
+Accepted validation evidence permits ready-for-review publication; failed or
+inconclusive results remain drafts. Readiness reflects the stated evidence scope,
+including mechanism-only checks, and never authorizes merging. Credentials are
+checked before pushing.
 
 ```bash
 python3 -m pytest automations/weekly-automation-improvement/tests -q

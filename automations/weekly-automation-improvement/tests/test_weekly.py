@@ -1800,3 +1800,20 @@ def test_sequential_dispatch_respects_top_level_pr_limit(
     saved = json.loads((Path(config["state_dir"]) / "state.json").read_text())
     assert len(saved["backlog"]) == 2
     assert len(saved["topic_weeks"]) == 1
+
+
+def test_accepted_publication_is_recorded_as_ready(
+    configured_source, tmp_path, monkeypatch
+):
+    rows = [record(1)]
+    config, _ = prepare_grouped(configured_source, tmp_path, monkeypatch, rows)
+    publish = weekly.propose_fix
+
+    def ready(*args):
+        return publish(*args) | {"status": "ready_for_review", "draft": False}
+
+    monkeypatch.setattr(weekly, "propose_fix", ready)
+    weekly.run(config)
+    saved = json.loads((Path(config["state_dir"]) / "state.json").read_text())
+    assert saved["events"][rows[0]["event"]["id"]]["status"] == "ready_pr"
+    assert next(iter(saved["topic_weeks"].values()))["publication"]["draft"] is False

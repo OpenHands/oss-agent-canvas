@@ -596,7 +596,9 @@ def investigate_topic(
                 proposal["finding_ids"] if publication.get("pr_url") else []
             ):
                 updates[by_id[finding_id]["signal_event_id"]] = {
-                    "status": "draft_pr",
+                    "status": "draft_pr"
+                    if publication.get("draft", True)
+                    else "ready_pr",
                     "topic_id": topic["id"],
                     "pr_url": publication["pr_url"],
                     "week": week,
