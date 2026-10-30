@@ -246,8 +246,10 @@ def test_private_catalog_keeps_evidence_and_omits_environments_and_checkouts(
 
     def reference(ctx, url, directory):
         return SimpleNamespace(
+            value={"body": ""},
+            update_body=lambda body: None,
             record=lambda title, summary, artifacts: captured.append(artifacts)
-            or {"url": url}
+            or {"url": url},
         )
 
     monkeypatch.setattr(topic_agent, "issue_reference", reference)
@@ -255,6 +257,7 @@ def test_private_catalog_keeps_evidence_and_omits_environments_and_checkouts(
         "kind": "issues",
         "repository": "Example/repo",
         "url": "https://github.com/Example/repo/issues/1",
+        "state": "open",
     }
     assert topic_agent.record_evidence(ctx, output, "repair", [resource]) == []
     assert topic_agent.record_evidence(ctx, output, "repair", [resource]) == []
@@ -338,3 +341,35 @@ def test_deadline_escapes_tool_exception_shield(tmp_path, monkeypatch):
     assert report["status"] == "failed"
     assert "reached its time limit" in report["error"]
     assert captured["closed"]
+
+
+def test_evidence_index_links_all_repository_issues_and_prs_without_losing_notes(
+    tmp_path, monkeypatch
+):
+    ctx = context(tmp_path)
+    rows = resources()
+    issues = {}
+
+    class Issue:
+        def __init__(self, url):
+            self.value = {"body": "Human note stays here."}
+            self.url = url
+
+        def update_body(self, body):
+            self.value["body"] = body
+
+        def record(self, *a):
+            return {"url": self.url}
+
+    def reference(ctx, url, directory):
+        return issues.setdefault(url, Issue(url))
+
+    for row in rows:
+        if row["kind"] == "issues":
+            row["body"] = "Human note stays here."
+    monkeypatch.setattr(topic_agent, "issue_reference", reference)
+    assert topic_agent.record_evidence(ctx, tmp_path / "topic", "repair", rows) == []
+    for row in rows:
+        if row["kind"] == "issues":
+            assert row["body"].startswith("Human note stays here.")
+    assert topic_agent.link_errors(rows) == []

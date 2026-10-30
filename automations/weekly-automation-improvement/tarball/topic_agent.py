@@ -252,6 +252,19 @@ def record_evidence(context, output, phase, resources):
         directory.mkdir(parents=True, mode=0o700, exist_ok=True)
         try:
             issue = issue_reference(context, reference["url"], directory)
+            missing = [
+                r["url"]
+                for r in resources
+                if r["state"] == "open"
+                and r["url"] != reference["url"]
+                and r["url"] not in issue.value["body"]
+            ]
+            if missing:
+                issue.update_body(
+                    issue.value["body"]
+                    + "\n\n### Related repair work\n\n"
+                    + "\n".join("- " + url for url in missing)
+                )
             catalogs.append(
                 issue.record(
                     "Attempts and decisions — " + phase + " " + output.name,
@@ -259,6 +272,7 @@ def record_evidence(context, output, phase, resources):
                     artifacts,
                 )
             )
+            reference["body"] = issue.value["body"]
         except Exception as error:
             errors.append(
                 {"issue": reference["url"], "error": redact(str(error))[:1000]}
