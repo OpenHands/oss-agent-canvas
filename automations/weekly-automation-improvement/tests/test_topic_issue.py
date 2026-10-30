@@ -271,18 +271,18 @@ def test_large_catalog_uses_complete_private_index_without_losing_references(
     issue = TopicIssue.ensure(snapshot(tmp_path), tmp_path / "issue")
     artifacts = {
         f"validation/run-{number:04d}/original-input.json": {"case": number}
-        for number in range(500)
+        for number in range(700)
     }
     issue.record(
         "Evidence — large comparison", "Recorded inputs remain private.", artifacts
     )
     comment = github.comments[-1]["body"]
     assert len(comment) < 60000
-    assert "500 artifacts" in comment
+    assert "700 artifacts" in comment
     match = re.search(r"\| evidence-index.json \| `([a-f0-9]{64}\.json)`", comment)
     assert match
     index = json.loads(issue.read_artifact(match[1]))
-    assert len(index) == 500 and {row["name"] for row in index} == set(artifacts)
+    assert len(index) == 700 and {row["name"] for row in index} == set(artifacts)
     for row in (index[0], index[-1]):
         assert (
             json.loads(issue.read_artifact(row["reference"])) == artifacts[row["name"]]
