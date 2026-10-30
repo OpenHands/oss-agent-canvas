@@ -446,6 +446,12 @@ def run(config, context, output, budget):
         prompt(context, context_path, output),
         budget,
     )
+    return finish(config, context, output, budget, repair)
+
+
+def finish(config, context, output, budget, repair):
+    context_path = output / "context.json"
+    workspace = output / "workspace"
     resources = discover(context, output)
     catalog_errors = record_evidence(context, output, "repair", resources["resources"])
     prs = [
@@ -509,7 +515,7 @@ def run(config, context, output, budget):
         "link_errors": problems,
         "stale_prs": stale,
     }
-    write_json(output / "topic-report.json", result)
+    replace_json(output / "topic-report.json", result)
     return result
 
 

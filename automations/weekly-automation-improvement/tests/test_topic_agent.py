@@ -273,3 +273,33 @@ def test_private_catalog_keeps_evidence_and_omits_environments_and_checkouts(
             "omitted_environment_or_checkout_directories"
         ]
     )
+
+
+def test_saved_repair_can_finish_without_repeating_coding(tmp_path, monkeypatch):
+    ctx = context(tmp_path)
+    phases = []
+
+    def converse(config, phase, *a):
+        phases.append(phase)
+        return {"status": "finished"}
+
+    monkeypatch.setattr(topic_agent, "run_conversation", converse)
+    monkeypatch.setattr(topic_agent, "record_evidence", lambda *a: [])
+    monkeypatch.setattr(
+        topic_agent, "discover", lambda *a: {"resources": resources(), "errors": []}
+    )
+    output = tmp_path / "topic"
+    write_json(output / "topic-report.json", {"status": "review_incomplete"})
+    report = topic_agent.finish(
+        {},
+        ctx,
+        output,
+        RunBudget({}),
+        {"status": "finished", "sdk_estimated_cost_usd": 2},
+    )
+    assert phases == ["review"]
+    assert report["status"] == "reviewed"
+    assert report["repair"]["sdk_estimated_cost_usd"] == 2
+    assert (
+        json.loads((output / "topic-report.json").read_text())["status"] == "reviewed"
+    )
