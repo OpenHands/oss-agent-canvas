@@ -31,8 +31,7 @@
   "triage_model": "openai/gpt-6-luna",
   "repair_model": "openai/gpt-6.1-sol",
   "repair_agent_profile": null,
-  "triage_batch_size": 3,
-  "max_inference_cost_usd": 15.0,
+  "max_inference_cost_usd": 100,
   "max_run_seconds": 10800,
   "validation_sample_size": 5,
   "evidence_location": "Authenticated worker access: gcloud compute ssh YOUR_VM --project=YOUR_PROJECT --zone=YOUR_ZONE",
@@ -41,5 +40,13 @@
     "max_iterations": 200,
     "max_run_seconds": 3600,
     "max_output_tokens": 16384
-  }
+  },
+  "triage_agent_profile": null,
+  "triage_agent": {
+    "effort": "low",
+    "max_iterations": 40,
+    "max_run_seconds": 600,
+    "max_output_tokens": 16384
+  },
+  "max_prs_per_run": 10
 }

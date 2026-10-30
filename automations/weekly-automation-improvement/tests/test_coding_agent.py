@@ -202,14 +202,24 @@ def test_evidence_review_is_independent_and_can_reject_import_failure(
     assert not review["supported"]
 
 
+@pytest.mark.parametrize("failed_safety", [False, True])
+@pytest.mark.parametrize("allow_inconclusive", [False, True])
 @pytest.mark.parametrize(
     "supported,public_safe", [(False, True), (True, False), (True, True)]
 )
 def test_publication_requires_review_and_preserves_historical_comparison(
-    source, tmp_path, monkeypatch, supported, public_safe
+    source,
+    tmp_path,
+    monkeypatch,
+    supported,
+    public_safe,
+    allow_inconclusive,
+    failed_safety,
 ):
     checkout, path, config = source
+    proven = supported and not failed_safety
     config["comparative_validation"] = {"command": ["unused"]}
+    config["publish_inconclusive_drafts"] = allow_inconclusive
     path.write_text(json.dumps(config))
     command(
         ["git", "remote", "add", "origin", "https://github.com/Example/automation.git"],
@@ -226,7 +236,9 @@ def test_publication_requires_review_and_preserves_historical_comparison(
             "argv": [
                 sys.executable,
                 "-c",
-                "import runpy; assert runpy.run_path('value.py')['VALUE'] == 4; print('safety passed')",
+                "import runpy; assert runpy.run_path('value.py')['VALUE'] == 4; print('safety passed'); raise SystemExit("
+                + str(int(failed_safety))
+                + ")",
             ],
         }
     ]
@@ -245,14 +257,23 @@ def test_publication_requires_review_and_preserves_historical_comparison(
             return ""
         if argv[:3] == ["gh", "pr", "create"]:
             calls.append("create")
-            assert "[Mechanism tested]" in argv[argv.index("--title") + 1]
+            assert (
+                "[Mechanism tested]" if proven else "[Validation incomplete]"
+            ) in argv[argv.index("--title") + 1]
             assert "automation-improvement" in argv
             body = Path(argv[argv.index("--body-file") + 1]).read_text()
-            assert (
-                "Historical input comparison" in body
-                and "Historical inconclusive" in body
-            )
-            assert "Complete candidate safety suite | 0" in body
+            if proven:
+                assert (
+                    "Historical input comparison" in body
+                    and "Historical inconclusive" in body
+                )
+            else:
+                assert (
+                    "improvement not demonstrated" in body
+                    and "Independent review" in body
+                )
+                assert "--draft" in argv
+            assert f"Complete candidate safety suite | {int(failed_safety)}" in body
             return "https://github.com/Example/automation/pull/2"
         return original(argv, cwd, **kwargs)
 
@@ -264,7 +285,7 @@ def test_publication_requires_review_and_preserves_historical_comparison(
 
     def review(*args):
         assert len(args[-1]) == 1
-        assert args[-1][0]["exit_code"] == 0
+        assert args[-1][0]["exit_code"] == int(failed_safety)
         assert "safety passed" in args[-1][0]["excerpt"]
         return {
             "supported": supported,
@@ -275,12 +296,21 @@ def test_publication_requires_review_and_preserves_historical_comparison(
     monkeypatch.setattr(patches, "review_checks", review)
     monkeypatch.setattr(patches, "before_publication", historical)
     result = patches.propose_fix(args, report, {"source": load_source(path)})
-    if supported and public_safe:
-        assert calls == ["historical", "push", "create"]
-        assert result["status"] == "evidence_supported_draft"
+    if public_safe and (proven or allow_inconclusive):
+        assert calls == (["historical"] if proven else []) + ["push", "create"]
+        assert result["status"] == (
+            "evidence_supported_draft" if proven else "validation_incomplete_draft"
+        )
     else:
         assert calls == [] and result["status"] == "rejected"
-        assert (args.output / "paired-review-failure.json").exists()
+        assert (
+            args.output
+            / (
+                "validation.json"
+                if failed_safety and not allow_inconclusive
+                else "paired-review-failure.json"
+            )
+        ).exists()
 
 
 def test_failed_candidate_safety_check_blocks_review(source, tmp_path, monkeypatch):

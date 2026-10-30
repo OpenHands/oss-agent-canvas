@@ -1,33 +1,40 @@
 # Weekly Automation Improvement
 
-A standalone prototype for OSS-14275. Flow-1 analyzes eligible automation traces
-in self-hosted Laminar. Each week, the worker aggregates findings **per automation**,
-asks Luna to identify focused repair topics, then gives a full OpenHands agent
-powered by Sol 6.1 one focused repair task
-per topic. **A new draft PR requires executed baseline/candidate evidence and an
-independent review of whether that evidence supports the repair.** Unsupported,
-regressed or inconclusive candidates remain pending. Merges and deployment require
-human review.
+A standalone prototype for OSS-14275. Python reads persisted Flow-1 findings
+from self-hosted Laminar and prepares the backlog. One OpenHands triage agent,
+defaulting to Luna, starts from a shared weekly issue, investigates the evidence,
+merges duplicates and produces a global priority queue. OpenHands repair agents,
+defaulting to Sol 6.1, tackle the highest-priority topics in parallel. Before/after
+evidence and independent review determine whether improvement is supported.
+Coherent patches with failed/inconclusive validation remain drafts. Human review
+controls merge and deployment.
 
 ## Weekly path
 
-1. Read persisted Flow-1 findings from self-hosted Laminar and retain unresolved
-   findings in the private backlog. Group by automation, then cluster/signature.
-2. Luna selects focused repair topics from compact cards. Counts are facts;
-   detector diagnoses and cluster membership remain leads to investigate.
-3. Sol inspects the original evidence and approved source, using raw-read tools
-   when needed. It proposes one focused repair or declines. Repeating an existing
-   instruction without an enforceable improvement is not sufficient.
-4. Sol validates the real code with regressions, controls and original inputs
-   where feasible. The publisher reruns identical checks on baseline/candidate
-   code and any submitted candidate-only safety/integration checks. Their executed
-   outputs reach the independent reviewer and PR evidence. Candidate-only checks
-   supplement the paired checks; they cannot establish the baseline defect.
-   Configured historical
-   replay additionally checks task outcomes and actual deliverables.
-5. Publish a labeled repair draft only when paired evidence supports it. Reports
-   distinguish tested mechanisms, task improvements, regressions and coverage gaps.
-   Unproven findings remain pending; merge and deployment require human review.
+1. Python collects eligible findings, tracks the private backlog and groups
+   observations by automation and Laminar cluster/signature. It prepares compact
+   counts/examples plus complete selected Signal records and inventory references.
+2. A weekly triage issue holds the situation summary, source scope, prior attempts,
+   open PRs and immutable private evidence catalogs. The triage agent reads that
+   issue first and can page through all preparation output or inspect raw traces
+   with scoped read tools. Findings and clusters remain unverified leads.
+3. The triage agent selects focused topics and assigns P0–P3 priority using impact,
+   recurrence, confidence and likely repairability. Python validates references,
+   automation scope and topic identity, then orders one finite queue globally by
+   priority, preserving the agent's ordering within a priority level. There is no
+   repeated triage loop or topic-count quota.
+4. The highest-priority topics launch together in isolated worker processes.
+   Each topic gets a linked repair issue in the source repository. Its repair agent investigates source and
+   raw evidence, implements one coherent fix or returns an unsupported/unrepaired
+   conclusion.
+5. The publisher executes identical regression/control assets on baseline and
+   candidate source, plus submitted candidate-only safety/integration checks.
+   Independent review assesses whether the actual output supports the fix.
+   Historical replay runs where supported; narrower mechanism evidence is explicit.
+6. Coherent candidates become tagged draft PRs with **Before / After Evidence**,
+   including failed or inconclusive results and explicit limitations.
+   Budget exhaustion defers lower-priority work without marking it attempted.
+   Unselected and unsupported-to-repair findings remain pending as appropriate.
 
 `validation_sample_size` is a user-configurable positive integer, default **5**:
 up to N topic-linked negative conversations plus N random completed no-finding
@@ -37,15 +44,22 @@ The historical execution adapter currently supports issue triage. Explicit revie
 fault tests provide narrower publication/factual-claim evidence; they cannot stand
 in for historical-input coverage. See the [validation setup](../../evals/automation-repair/README.md).
 
-Processing continues across topic batches until no actionable topics remain or a
-resource threshold is reached. There is no total topic/PR-count quota. Each topic
-has its own source snapshot, evidence, patch and publication reservation. Existing
-PRs block duplicates; failed publication releases its reservation. Private receipts
-and candidate bundles support recovery without silently rerolling failed cases.
+`max_prs_per_run` is a top-level positive integer, default **10**. After triage,
+Python takes at most that many highest-priority topics and dispatches them in
+parallel. Each topic can produce at most one PR. Inconclusive repairs with a usable
+patch remain draft; failures without a usable patch remain on the issue. Failed
+attempts do not trigger replacement topics. The count is an upper bound, not a
+target to fill.
+
+The planner finishes once, before repair execution. The queue continues until it
+is exhausted or a resource threshold is reached. Each topic has its own snapshot,
+evidence, patch and publication reservation. Existing PRs block duplicates;
+pre-publication failures retain retry context. Private receipts and candidate
+bundles support recovery without silently rerolling failed cases.
 
 Each topic gets one coding attempt by default. `revise_failed_repair: true`
-opts into one revision after concrete validation feedback. A complete conclusion
-with no supported repair is a valid stopping outcome. Evidence-only revisions can
+opts into one revision after concrete validation feedback. A coherent patch with failed validation can be published as a draft; no coherent
+repair is also a valid stopping outcome. Evidence-only revisions can
 keep the same patch and change the submitted checks. Credible but unrepaired
 findings stay pending; unchanged source and Signal evidence do not trigger another
 coding attempt, including in a later week. Changed source/evidence or an explicit
@@ -55,6 +69,11 @@ remain eligible for independent defects. Legacy failed attempts without identity
 receipts wait conservatively for fresh Signal evidence or an explicit retry.
 
 ## Issue as the shared brief
+
+A weekly triage issue indexes the complete prepared backlog and ranking across
+automations. Public summaries contain counts and references; full Python output,
+Signals, prompts, tool events and rankings remain in its private catalogs. The
+triage agent can read the issue by section and follow its artifact references.
 
 Each selected repair topic gets one issue in the same repository as its repair PR.
 The issue uses fixed sections: **Goal**, **Problem and impact**, **Scope and source**,
@@ -103,21 +122,20 @@ Copy [weekly.example.json](weekly.example.json) outside git. Configure the proje
 Signal, endpoints, existing canonical checkout, approved repository/base branch,
 private state directory and GitHub secret name. Create the repository label `automation-improvement`
 (already installed in `OpenHands/oss-agent-canvas`). `triage_model` and `repair_model`
-are configurable. Set top-level `repair_agent_profile` to a saved OpenHands agent
-profile name, such as `factory-developer`. The profile owns the repair agent's
-model, tools, persona, condenser, skills, MCP configuration and secret references.
-The worker resolves it through the native SDK using `AGENT_SERVER_URL` and its
-session credential. An absent/null value retains the current Sol 6.1 default
-agent with terminal, editor, browser, task planning and subagents. A selected
+are configurable. Set top-level `triage_agent_profile` and `repair_agent_profile`
+to saved OpenHands agent profile names. Null retains the built-in Luna triage and
+Sol 6.1 repair defaults, with normal OpenHands terminal, editor, browser, task
+planning and subagent tools. Each profile owns its model, tools, persona, condenser,
+skills, MCP configuration and secret references. The worker resolves profiles
+through the native SDK using `AGENT_SERVER_URL` and its session credential. A selected
 profile is used as configured; an unavailable profile fails without silently
 switching agents. `repair_model` still selects the independent evidence reviewer
 and supplies the built-in agent's model when no profile is selected.
 Changing profiles does not silently retry previously blocked findings; use
 `retry_topic_ids` when a new attempt on unchanged evidence is intended.
 
-`triage_batch_size` controls topics returned per Luna call
-(default three), not a total PR limit. The obsolete `max_topics_per_automation`
-setting no longer limits output. Configure the global `comparative_validation`
+The obsolete `triage_batch_size` and `max_topics_per_automation` settings no longer
+limit output. Configure the global `comparative_validation`
 runner and use `require_improvement: true` (the default). `validate_existing_repairs`
 refreshes descriptions for existing repair PRs. `validation_sample_size: 5` is the
 default number of distinct inputs per cohort, not repetitions. At most 2N inputs
@@ -163,9 +181,10 @@ historical executed source equals current source; context and PRs disclose this.
 
 A process lock prevents overlap. `backlog` stores pending event records, `events`
 stores assessed event IDs with their topic IDs, and `topic_weeks` stores completed
-or reserved topic investigations. Repeated batches can produce any number of
-independently useful PRs; the ledger deduplicates topics rather than imposing a
-weekly count quota.
+or reserved topic investigations. Ranked plans produce focused PRs up to
+`max_prs_per_run`; the ledger deduplicates topics across invocations. Each child
+updates its own snapshot. The parent merges only that topic and its handled
+events into the canonical ledger; publication reservations use a shared lock.
 
 Before publication, reserve only that topic's slot atomically. An uncertain result
 blocks that topic rather than its siblings. Branch names derive from automation
@@ -213,14 +232,17 @@ $18–36/month in Flow-1 inference, excluding subscriptions, Luna and Sol.
 
 Reports estimate Flow-1 gross cost from token usage and the dated
 [pricing snapshot](tarball/flow1-pricing.json); that is not an invoice. Unknown
-usage remains unknown. Luna and Sol retain proxy-reported cost and request latency.
-The workload limits below are not a dollar cap.
+usage remains unknown. Per-stage receipts distinguish SDK-estimated agent costs
+from proxy-reported review costs and retain latency/completions. The shared cost
+threshold remains a safety limit; incomplete accounting blocks further inference.
 
 ## Frozen local iteration and bounds
 
 The batch directory contains `collection/input.json` with the complete lightweight
-inventory. Each automation has `triage/pass-NNN/triage-input.json` plus saved Luna
-requests, reference maps, responses and measurements. Its `topics/TOPIC_ID/` directories each contain a
+inventory. Global `triage/` contains the prepared input, reference map, validated
+priority queue and weekly issue reference. `triage/triage-agent/` retains the SDK
+prompt, context/access manifest, completions, tool events and cost/latency receipt.
+Each automation's `topics/TOPIC_ID/` directories contain a
 frozen `snapshot-with-source.json`, source config, Sol request/response, analysis,
 mechanical-validation artifacts and `topic-report.json`. `automation-report.json`
 collects the topic outcomes.
@@ -247,8 +269,10 @@ available through `main.py`; the weekly path reuses persisted Flow-1 findings.
 
 `max_inference_cost_usd` (default $15) and `max_run_seconds` (default 10800) apply to
 the whole invocation. They are checked before new model calls and topic work.
-A completed request and its publication can finish, so one request can exceed the
-spending threshold. This is not a strict provider billing cap. Proxy-reported
+Each parallel worker receives the remaining dollar/time allowance at dispatch.
+The parent accounts for its spend when it finishes and stops new dispatches when
+the threshold is reached. Already-running siblings can continue, so aggregate
+spend can exceed the threshold. This is not a strict shared provider billing cap. Proxy-reported
 costs are recorded; an unknown/invalid cost stops further inference. Timeouts and
 failed requests are not silently retried. Deferred topics stay in the backlog,
 and reports distinguish budget exhaustion from "no actionable findings".
@@ -264,9 +288,10 @@ Publication reservations begin immediately before pushing a branch. Preparation
 failures remain retryable. An uncertain write is reconciled against existing PRs
 and its remote branch; unresolved reservations appear in `pending_publications`
 and keep the weekly report incomplete.
-Retryable topics retain their identity when most finding clusters overlap,
-even if Luna renames the topic, so the same issue and private evidence remain
-available to the next coding attempt.
+The triage agent receives previous topic keys, issue context and conclusions.
+Unchanged source/Signal identities block a renamed retry before coding. Explicit
+retry requests can recover the original issue namespace from overlapping finding
+groups; cluster overlap alone does not override a new global planning decision.
 
 The repair worker is a normal OpenHands SDK `Agent`/`Conversation` powered by
 `openai/gpt-6.1-sol`, with the default terminal, editor, browser, task tracker,
@@ -277,12 +302,14 @@ The coder and its checks run under the worker identity; a Git worktree provides
 source separation, not an operating-system sandbox. Use a dedicated development
 worker with access appropriate for the source and evidence being inspected.
 
-Configure `repair_agent` for effort, iteration and conversation time limits.
+Configure `triage_agent` and `repair_agent` for effort, iteration and conversation
+time limits. Triage defaults to a 600-second, 40-iteration best-effort planning
+conversation; it does not launch repair agents itself.
 For a saved profile, LLM effort/output/retry settings come from that profile;
 iteration/time limits and the shared run budget remain controlled by the worker.
 Frozen standalone runs also accept `--repair-agent-profile NAME`. Agent profile
 name, ID/revision, actual model and tools are recorded in the private receipts.
-The SDK receives the remaining run budget. The example allows $15 and three
+The SDK receives the remaining run budget. The example allows $100 and three
 hours for the whole invocation; these are configurable resource limits.
 The coding brief includes its deadline and shared budget. Source discovery
 preserves the deployed automation's timeout and trigger settings for both the
@@ -326,3 +353,7 @@ layout. Plugin-backed automations are a second supported packaging mechanism;
 copying the controller into another package would add a second source to maintain.
 The private file ledger and lock deliberately target the current single-VM cron
 runtime. A multi-host deployment would need the platform KV dispatcher pattern.
+
+Transient provider errors get one SDK retry by default. This does not restart the
+repair conversation or reroll failed behavioral evaluations. Unknown/unsafe
+publication outcomes stay reserved for reconciliation, rather than blindly retrying writes.

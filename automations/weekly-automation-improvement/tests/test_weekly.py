@@ -344,6 +344,7 @@ def prepare_grouped(configured_source, tmp_path, monkeypatch, records):
     _, _, source = configured_source
     config = configuration(tmp_path) | {
         "publish_drafts": True,
+        "repair_concurrency": 1,
         "checkout": source["checkout"],
     }
     monkeypatch.setenv("LMNR_PROJECT_API_KEY", "test")
@@ -354,44 +355,50 @@ def prepare_grouped(configured_source, tmp_path, monkeypatch, records):
     calls = []
 
     def rank(args, pending, prs, completed_topics=()):
-        identifier = pending[0]["owner"]["automation_id"]
-        calls.append(("luna", identifier))
-        assert all(item["owner"]["automation_id"] == identifier for item in pending)
-        cards, _ = triage.group_findings(pending)
-        done = {
-            t["id"]
-            for t in completed_topics
-            if t.get("status", "completed")
-            not in (
-                "failed",
-                "deferred_validation",
-                "waiting_for_new_evidence",
-                "unrepaired",
-                "deferred_budget",
-                "retryable",
-            )
-        }
-        plans = []
-        for card in cards:
-            key = "issue-" + card["group_id"]
-            topic_id = triage.topic_id(identifier, key)
-            if topic_id not in done:
-                plans.append(
-                    {
-                        "id": topic_id,
-                        "key": key,
-                        "title": "One issue",
-                        "reason": "Investigate one failure",
-                        "group_ids": [card["group_id"]],
-                        "representative_event_ids": [card["examples"][0]["event_id"]],
-                    }
+        calls.append(("luna", "global"))
+        grouped = {}
+        for row in pending:
+            grouped.setdefault(row["owner"]["automation_id"], []).append(row)
+        plans, all_cards = [], []
+        for identifier, rows in sorted(grouped.items()):
+            cards, _ = triage.group_findings(rows)
+            done = {
+                t["id"]
+                for t in completed_topics
+                if t.get("automation_id", identifier) == identifier
+                and t.get("status", "completed")
+                not in (
+                    "failed",
+                    "deferred_validation",
+                    "waiting_for_new_evidence",
+                    "unrepaired",
+                    "deferred_budget",
+                    "retryable",
                 )
-        plans = plans[: args.max_topics]
+            }
+            for card in cards:
+                all_cards.append(card | {"automation_id": identifier})
+                key = "issue-" + card["group_id"]
+                topic_id = triage.topic_id(identifier, key)
+                if topic_id not in done:
+                    plans.append(
+                        {
+                            "id": topic_id,
+                            "automation_id": identifier,
+                            "priority": 2,
+                            "key": key,
+                            "title": "One issue",
+                            "reason": "Investigate one failure",
+                            "group_ids": [card["group_id"]],
+                            "representative_event_ids": [
+                                card["examples"][0]["event_id"]
+                            ],
+                        }
+                    )
         return plans, {
-            "automation_id": identifier,
             "total_events": len(pending),
             "affected_conversations": len(pending),
-            "groups": cards,
+            "groups": all_cards,
         }
 
     def hydrate(client, frame, chosen):
@@ -1070,8 +1077,6 @@ def test_invalid_resource_budget_fails_before_collection(tmp_path, monkeypatch):
         for value in (0, -1, True, "3", float("inf")):
             with pytest.raises(ValueError, match=name):
                 weekly.run(configuration(tmp_path) | {name: value})
-    with pytest.raises(ValueError, match="triage_batch_size"):
-        weekly.run(configuration(tmp_path) | {"triage_batch_size": 0})
 
 
 def test_completed_legacy_automation_does_not_block_new_topic(
@@ -1319,7 +1324,7 @@ def test_reusing_existing_pr_applies_model_agnostic_label(
 
     monkeypatch.setattr(patches, "command", commands)
     result = patches.propose_fix(args, fix_report(PATCH), {"source": load_source(path)})
-    assert result == {"status": "already_tracked", "pr_url": url}
+    assert result == {"status": "already_tracked", "pr_url": url, "created": False}
     assert edits == [
         [
             "gh",
@@ -1345,7 +1350,7 @@ def test_more_than_three_topics_publish_across_batches(
     topics = result["automations"][0]["topics"]
     assert len(topics) == 7
     assert len({t["publication"]["pr_url"] for t in topics}) == 7
-    assert len([c for c in calls if c[0] == "luna"]) == 4
+    assert len([c for c in calls if c[0] == "luna"]) == 1
     assert len([c for c in calls if c[0] == "publish"]) == 7
 
 
@@ -1369,10 +1374,7 @@ def test_budget_defers_unstarted_topics_and_preserves_backlog(
     assert len([c for c in calls if c[0] == "publish"]) == 1
     state = json.loads((Path(config["state_dir"]) / "state.json").read_text())
     assert len(state["backlog"]) == 2
-    assert sorted(row["status"] for row in state["topic_weeks"].values()) == [
-        "completed",
-        "retryable",
-    ]
+    assert [row["status"] for row in state["topic_weeks"].values()] == ["completed"]
 
 
 def test_default_collects_validation_inputs_without_replay_adapter(
@@ -1696,7 +1698,7 @@ def test_repeated_triage_without_new_representatives_stops(
     monkeypatch.setattr(weekly, "triage", repeat)
     result = weekly.run(config)
     assert len([c for c in calls if c[0] == "sol"]) == 1
-    assert "no progress" in result["automations"][0]["no_action_reason"]
+    assert len(result["automations"][0]["topics"]) == 1
 
 
 def test_high_level_profile_reaches_the_coding_attempt(
@@ -1723,3 +1725,78 @@ def test_invalid_profile_fails_before_collection(monkeypatch, profile):
     )
     with pytest.raises(ValueError, match="repair_agent_profile"):
         weekly.run({"repair_agent_profile": profile})
+
+
+def test_global_priority_reaches_highest_impact_automation_before_budget_exhaustion(
+    configured_source, tmp_path, monkeypatch
+):
+    rows = [record(1), record(2, automation=2)]
+    config, calls = prepare_grouped(configured_source, tmp_path, monkeypatch, rows)
+    rank, publish = weekly.triage, weekly.propose_fix
+
+    def priorities(*args):
+        topics, context = rank(*args)
+        for topic in topics:
+            topic["priority"] = (
+                0 if topic["automation_id"] == rows[1]["owner"]["automation_id"] else 3
+            )
+        return topics, context
+
+    def spend(args, report, snapshot):
+        result = publish(args, report, snapshot)
+        args.budget.record(2)
+        return result
+
+    monkeypatch.setattr(weekly, "triage", priorities)
+    monkeypatch.setattr(weekly, "propose_fix", spend)
+    result = weekly.run(config | {"max_inference_cost_usd": 1})
+    assert result["status"] == "budget_exhausted"
+    assert [c[1] for c in calls if c[0] == "sol"] == [rows[1]["owner"]["automation_id"]]
+    assert len([c for c in calls if c[0] == "luna"]) == 1
+    assert result["priority_queue"][0]["priority"] == 0
+    state = json.loads((Path(config["state_dir"]) / "state.json").read_text())
+    assert set(state["backlog"]) == {rows[0]["event"]["id"]}
+
+
+def test_triage_profile_and_limits_reach_the_single_global_planning_agent(
+    configured_source, tmp_path, monkeypatch
+):
+    config, calls = prepare_grouped(
+        configured_source, tmp_path, monkeypatch, [record(1), record(2, automation=2)]
+    )
+    rank = weekly.triage
+    inspected = []
+
+    def inspect(args, *rest):
+        inspected.append((args.triage_agent_profile, args.triage_agent_config))
+        return rank(args, *rest)
+
+    monkeypatch.setattr(weekly, "triage", inspect)
+    config.update(triage_agent_profile="my-luna", triage_agent={"max_run_seconds": 120})
+    weekly.run(config)
+    assert inspected == [("my-luna", {"max_run_seconds": 120})]
+    assert len([c for c in calls if c[0] == "luna"]) == 1
+
+
+def test_sequential_dispatch_respects_top_level_pr_limit(
+    configured_source, tmp_path, monkeypatch
+):
+    rows = [record(n, automation=n) for n in range(1, 4)]
+    config, calls = prepare_grouped(configured_source, tmp_path, monkeypatch, rows)
+    result = weekly.run(config | {"max_prs_per_run": 1})
+    assert result["max_prs_per_run"] == 1
+    assert result["created_prs"] == 1
+    assert result["pr_limit_reached"]
+    assert result["status"] == "pr_limit_reached"
+    assert len([call for call in calls if call[0] == "sol"]) == 1
+    assert (
+        sum(
+            outcome["status"] == "deferred_pr_limit"
+            for automation in result["automations"]
+            for outcome in automation["topics"]
+        )
+        == 2
+    )
+    saved = json.loads((Path(config["state_dir"]) / "state.json").read_text())
+    assert len(saved["backlog"]) == 2
+    assert len(saved["topic_weeks"]) == 1

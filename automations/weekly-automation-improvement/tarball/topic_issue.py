@@ -31,6 +31,9 @@ def brief(snapshot, evidence_root, location):
             f"- Signal event `{identifier}` (read with `read_signal`)."
             for identifier in sample.get("selected_event_ids", [])
         )
+    triage_issue = (snapshot.get("aggregation") or {}).get("triage_issue") or {}
+    if triage_issue.get("url"):
+        links.append(f"- [Weekly triage and priority context]({triage_issue['url']}).")
     texts = (
         "Investigate this topic and propose one focused repair only when current-source evidence supports it. Record the diagnosis, uncertainty and attempts here.",
         f"Investigate **{topic['key'].replace('-', ' ')}**. Supporting observations and impact assessments are in the private evidence records linked below. Signals and rankings are unverified leads, not established causes or failure rates.",
@@ -72,6 +75,21 @@ class TopicIssue:
             raise ValueError("Invalid repair issue scope")
         evidence_root = Path(snapshot["issue_evidence_dir"]).expanduser().resolve()
         body = redact(brief(snapshot, evidence_root, snapshot.get("evidence_location")))
+        return cls.ensure_brief(
+            repository,
+            output,
+            evidence_root,
+            body,
+            "Automation improvement: " + topic["key"].replace("-", " "),
+            preview,
+        )
+
+    @classmethod
+    def ensure_brief(
+        cls, repository, output, evidence_root, body, title, preview=False
+    ):
+        if not re.fullmatch(r"[\w.-]+/[\w.-]+", repository):
+            raise ValueError("Invalid issue repository")
         if preview:
             return cls(
                 repository,
@@ -100,8 +118,7 @@ class TopicIssue:
             write_json(
                 payload,
                 {
-                    "title": "Automation improvement: "
-                    + topic["key"].replace("-", " "),
+                    "title": title,
                     "body": body,
                     "labels": [IMPROVEMENT_LABEL],
                 },
@@ -183,6 +200,27 @@ class TopicIssue:
             raise ValueError("Private evidence was modified")
         return {"name": name, "reference": reference}
 
+    def update_body(self, body):
+        if self.preview:
+            self.value["body"] = body
+            return
+        self.sequence += 1
+        payload = self.output / f"issue-body-{self.sequence:04d}.json"
+        write_json(payload, {"body": body})
+        self.value = json.loads(
+            command(
+                [
+                    "gh",
+                    "api",
+                    "--method",
+                    "PATCH",
+                    self.endpoint,
+                    "--input",
+                    str(payload),
+                ]
+            )
+        )
+
     def read_artifact(self, reference):
         if not isinstance(reference, str) or not re.fullmatch(
             r"[a-f0-9]{64}\.json", reference
@@ -247,25 +285,7 @@ class TopicIssue:
         link = f"- [{title}]({item.get('html_url') or '#preview'}) — comment `{item['id']}`.\n"
         if link not in body[body.index(start) : body.index(end)]:
             body = body.replace(end, link + end, 1)
-            if self.preview:
-                self.value["body"] = body
-            else:
-                self.sequence += 1
-                payload = self.output / f"issue-body-{self.sequence:04d}.json"
-                write_json(payload, {"body": body})
-                self.value = json.loads(
-                    command(
-                        [
-                            "gh",
-                            "api",
-                            "--method",
-                            "PATCH",
-                            self.endpoint,
-                            "--input",
-                            str(payload),
-                        ]
-                    )
-                )
+            self.update_body(body)
         return {"id": item["id"], "url": item.get("html_url")}
 
     def frozen(self, snapshot):

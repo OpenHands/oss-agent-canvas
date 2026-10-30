@@ -187,7 +187,7 @@ def review_checks(
         "A narrow deterministic regression can be valid mechanism evidence without population-wide or historical LLM replay proof. Do not demand unsupported statistical proof. "
         "Judge the proposed repair's scope. Unrelated inherited failures do not invalidate a demonstrated fix; controls must establish no new violations rather than perfect existing behavior. "
         "Check runtime constraints and caller behavior: a fix must fit the outer automation timeout including overhead and preserve dispatch/concurrency behavior or provide explicit evidence for the tradeoff. Fast fixtures alone cannot establish that a newly blocking scan fits its deadline. "
-        "Also verify the proposed public patch/title/hypothesis contains no private original task, customer data, raw trace, credentials or private artifact dumps. Synthetic fixtures and existing public source are allowed. Set public_safe=false if sensitive material would be published. "
+        "Also verify the proposed public patch/title/hypothesis contains no private original task, customer data, raw trace, credentials or private artifact dumps. Synthetic fixtures and existing public source are allowed. Your reason will also appear in the public PR; include only a concise public-safe explanation. Set public_safe=false if sensitive material would be published. "
         "Explain the conclusion and any missing evidence precisely without repeating private data. Never equate a nonzero exit alone with reproduction.",
         {
             "findings": findings,
@@ -263,12 +263,15 @@ def _propose_fix(args, report, snapshot):
         args, "check_draft", False
     )
     publishing = args.publish_fix or getattr(args, "publish_draft", False)
+    allow_inconclusive = getattr(args, "publish_draft", False) and config.get(
+        "publish_inconclusive_drafts", False
+    )
     agent_checks = proposal.get("checks", [])
     checks = agent_checks or ([] if unevaluated else config["checks"])
     candidate_checks = proposal.get("candidate_checks", [])
     if not isinstance(candidate_checks, list):
         raise ValueError("Candidate checks must be a list")
-    if checks or candidate_checks or not unevaluated:
+    if not allow_inconclusive and (checks or candidate_checks or not unevaluated):
         if (
             not isinstance(checks, list)
             or not checks
@@ -361,7 +364,11 @@ def _propose_fix(args, report, snapshot):
                     IMPROVEMENT_LABEL,
                 ]
             )
-            return {"status": "already_tracked", "pr_url": existing[0]["url"]}
+            return {
+                "status": "already_tracked",
+                "pr_url": existing[0]["url"],
+                "created": False,
+            }
     checkout = Path(config["checkout"]).expanduser().resolve()
     baseline = (args.output / "baseline").resolve()
     candidate = (args.output / "candidate").resolve()
@@ -467,17 +474,15 @@ def _propose_fix(args, report, snapshot):
         "checks": checks,
         "candidate_checks": candidate_checks,
     }
-    if any(row["exit_code"] != 0 for row in candidate_only):
+    checks_passed = not any(row["exit_code"] != 0 for row in candidate_only) and all(
+        (first["exit_code"] == 0) == (check["baseline"] == "pass")
+        and second["exit_code"] == 0
+        and first["exit_code"] != 124
+        for check, first, second in zip(checks, before, after, strict=True)
+    )
+    if not checks_passed and not allow_inconclusive:
         write_json(args.output / "validation.json", results)
         return results
-    for check, first, second in zip(checks, before, after, strict=True):
-        if (
-            (first["exit_code"] == 0) != (check["baseline"] == "pass")
-            or second["exit_code"] != 0
-            or first["exit_code"] == 124
-        ):
-            write_json(args.output / "validation.json", results)
-            return results
     results["status"] = (
         "unevaluated_draft" if unevaluated else "checks_passed_not_task_quality_proven"
     )
@@ -552,10 +557,18 @@ def _propose_fix(args, report, snapshot):
             args, proposal, findings, checks, before, after, snapshot, candidate_only
         )
         results["evidence_review"] = review
-        if not review["supported"] or not review["public_safe"]:
+        if not review["public_safe"] or (
+            not review["supported"] and not allow_inconclusive
+        ):
             results["status"] = "rejected"
             write_json(args.output / "paired-review-failure.json", results)
             return results
+        mechanism_supported = (
+            checks_passed
+            and review["supported"]
+            and any(c["baseline"] == "fail" for c in checks)
+            and any(c["baseline"] == "pass" for c in checks)
+        )
         markdown = (
             "**Verdict: mechanism tested.** The same regression/control commands and test assets were executed against the actual baseline and candidate source.\n\n"
             + f"Baseline: {source['revision']}. Candidate: {results['candidate_revision']}.\n\n"
@@ -567,6 +580,21 @@ def _propose_fix(args, report, snapshot):
             + "\n\nThe regression failed before and passes after; controls pass on both versions. Exact commands, stdout/stderr and test hashes are retained privately through the linked investigation issue. "
             "This is focused mechanism evidence from executed tests, not proof of population-wide automation quality or a complete N-per-cohort historical replay."
         )
+        if not mechanism_supported:
+            markdown = (
+                "**Verdict: improvement not demonstrated. This PR must remain draft.**\n\n"
+                + f"Baseline: {source['revision']}. Candidate: {results['candidate_revision']}.\n\n"
+                + "| Check | Expected baseline | Before exit | After exit |\n|---|---|---:|---:|\n"
+                + "\n".join(
+                    f"| {check['name']} | {check['baseline']} | {first['exit_code']} | {second['exit_code']} |"
+                    for check, first, second in zip(checks, before, after, strict=True)
+                )
+                + "\n\nValidation checks did not establish the claimed improvement, or independent review did not accept the evidence. "
+                "The linked investigation issue contains the review, execution logs and remaining limitations. "
+                "Do not merge until the failed or inconclusive checks are resolved.\n\n"
+                + "Independent review: "
+                + redact(review["reason"])
+            )
         if candidate_only:
             markdown += (
                 "\n\nAdditional checks executed on the candidate (not baseline defect evidence):\n\n"
@@ -576,13 +604,15 @@ def _propose_fix(args, report, snapshot):
                 )
             )
         verified = {
-            "status": "improvement_on_development_cases",
+            "status": "improvement_on_development_cases"
+            if mechanism_supported
+            else "inconclusive",
             "baseline": source["revision"],
             "candidate": results["candidate_revision"],
             "markdown": markdown,
             "assessment": {
-                "claim": "mechanism_tested",
-                "mechanism_supported": True,
+                "claim": "mechanism_tested" if mechanism_supported else "unproven",
+                "mechanism_supported": mechanism_supported,
                 "historical_replay": False,
             },
             "checks": checks,
@@ -591,7 +621,7 @@ def _propose_fix(args, report, snapshot):
             "candidate_only": candidate_only,
             "test_assets_sha256": test_assets,
         }
-        if config.get("comparative_validation"):
+        if mechanism_supported and config.get("comparative_validation"):
             historical = before_publication(
                 config,
                 source,
@@ -610,14 +640,24 @@ def _propose_fix(args, report, snapshot):
                 results["status"] = "rejected"
                 results["comparison"] = {"status": "regressed"}
                 write_json(args.output / "publication.json", results)
-                return results
+                if not allow_inconclusive:
+                    return results
+                verified["status"] = "regressed"
+                verified["markdown"] = (
+                    "**Verdict: historical comparison regressed. Keep this PR draft; do not merge.**\n\n"
+                    + verified["markdown"]
+                )
         write_json(args.output / "paired-checks.json", verified)
         results["comparison"] = {
             "status": verified["status"],
-            "claim": "mechanism_tested",
+            "claim": "mechanism_tested" if mechanism_supported else "unproven",
         }
         results["behavioral_evaluation"] = verified["status"]
-        results["status"] = "evidence_supported_draft"
+        results["status"] = (
+            "evidence_supported_draft"
+            if verified["status"] == "improvement_on_development_cases"
+            else "validation_incomplete_draft"
+        )
     elif config.get("require_improvement", True):
         verified = before_publication(
             config,
@@ -634,8 +674,10 @@ def _propose_fix(args, report, snapshot):
         if verified["status"] != "improvement_on_development_cases":
             results["status"] = "improvement_not_demonstrated"
             write_json(args.output / "publication.json", results)
-            return results
-        results["status"] = "evidence_supported_draft"
+            if not allow_inconclusive:
+                return results
+        else:
+            results["status"] = "evidence_supported_draft"
         current = command(
             [
                 "gh",
@@ -656,8 +698,6 @@ def _propose_fix(args, report, snapshot):
             "Improvement branch already exists without a tracked PR; inspect before retrying"
         )
     validate_public_patch(expected_diff)
-    if budget:
-        budget.check()
     reserve = getattr(args, "reserve_publication", None)
     if reserve:
         reserve(branch)
@@ -759,8 +799,13 @@ def _propose_fix(args, report, snapshot):
             (
                 (
                     "[Mechanism tested] "
-                    if agent_checks
+                    if verified
+                    and verified["status"] == "improvement_on_development_cases"
+                    and agent_checks
                     else "[Evidence] "
+                    if verified
+                    and verified["status"] == "improvement_on_development_cases"
+                    else "[Validation incomplete] "
                     if verified
                     else "[Unevaluated] "
                     if unevaluated
@@ -773,6 +818,7 @@ def _propose_fix(args, report, snapshot):
         ],
         candidate,
     )
+    results["created"] = True
     if not agent_checks:
         results["comparison"] = after_publication(
             config,

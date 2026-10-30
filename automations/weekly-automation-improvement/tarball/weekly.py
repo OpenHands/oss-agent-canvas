@@ -94,7 +94,7 @@ def week_key(value):
     return f"{year}-W{week:02d}"
 
 
-def source_config(config, snapshot, output):
+def source_revision(config):
     checkout = Path(config["checkout"]).expanduser().resolve()
     repository = config["repository"]
     allowed_remotes = {
@@ -106,11 +106,25 @@ def source_config(config, snapshot, output):
         raise ValueError("Source origin differs from the approved repository")
     branch = config.get("base_branch", "main")
     command(["git", "check-ref-format", "--branch", branch], checkout)
+    if config.get("_source_revision"):
+        revision = config["_source_revision"]
+        if not re.fullmatch(r"[a-f0-9]{40}", revision):
+            raise ValueError("Invalid frozen source revision")
+        return command(
+            ["git", "rev-parse", "--verify", revision + "^{commit}"], checkout
+        )
     reference = "refs/automation-improvement/base"
     command(
         ["git", "fetch", "origin", "+refs/heads/" + branch + ":" + reference], checkout
     )
-    revision = command(["git", "rev-parse", reference], checkout)
+    return command(["git", "rev-parse", reference], checkout)
+
+
+def source_config(config, snapshot, output):
+    checkout = Path(config["checkout"]).expanduser().resolve()
+    repository = config["repository"]
+    branch = config.get("base_branch", "main")
+    revision = source_revision(config)
     index = repository_index(checkout, revision)
     files, identifiers, samples, errors, roots = set(), set(), [], [], {"tests/"}
     for sample in snapshot["samples"]:
@@ -147,6 +161,7 @@ def source_config(config, snapshot, output):
         "editable_roots": sorted(roots),
         "checks": [],
         "require_improvement": config.get("require_improvement", True),
+        "publish_inconclusive_drafts": True,
         "validation_sample_size": config.get("validation_sample_size", 5),
         "runtime": {
             sample["automation_id"]: sample["source_resolution"].get("runtime", {})
@@ -171,21 +186,30 @@ def source_config(config, snapshot, output):
 
 
 def run(config, *, dry_run=False, limit=3, seed=None):
-    profile = config.get("repair_agent_profile")
-    if profile is not None and (
-        not isinstance(profile, str) or not re.fullmatch(r"[\w.-]+", profile)
+    if (
+        type(config.get("max_prs_per_run", 10)) is not int
+        or config.get("max_prs_per_run", 10) < 1
     ):
-        raise ValueError(
-            "repair_agent_profile must be a saved OpenHands profile name or null"
-        )
+        raise ValueError("max_prs_per_run must be a positive integer")
+    if (
+        type(config.get("repair_concurrency", config.get("max_prs_per_run", 10)))
+        is not int
+        or config.get("repair_concurrency", config.get("max_prs_per_run", 10)) < 1
+    ):
+        raise ValueError("repair_concurrency must be a positive integer")
+    for role in ("repair", "triage"):
+        profile = config.get(role + "_agent_profile")
+        if profile is not None and (
+            not isinstance(profile, str) or not re.fullmatch(r"[\w.-]+", profile)
+        ):
+            raise ValueError(
+                role + "_agent_profile must be a saved OpenHands profile name or null"
+            )
     size = config.get("validation_sample_size", 5)
     if type(size) is not int or size < 1:
         raise ValueError("validation_sample_size must be a positive integer")
     if not 1 <= limit <= 3:
         raise ValueError("Select one to three representatives per topic")
-    batch_size = config.get("triage_batch_size", 3)
-    if type(batch_size) is not int or batch_size < 1:
-        raise ValueError("triage_batch_size must be a positive integer")
     budget = RunBudget(config)
     load_environment(config)
     state_dir = Path(config["state_dir"]).expanduser()
@@ -476,12 +500,17 @@ def investigate_topic(
             key = week + "/" + automation_id + "/" + topic["id"]
 
             def reserve(branch):
-                state["topic_weeks"][key] = {
+                slot = {
                     "topic": topic,
                     "status": "reserved",
                     "branch": branch,
                     "report": str(args.output / "report.json"),
                 }
+                if config.get("_canonical_state_path"):
+                    from parallel import reserve_shared
+
+                    reserve_shared(Path(config["_canonical_state_path"]), key, slot)
+                state["topic_weeks"][key] = slot
                 save_state(state_path, state)
 
             args.reserve_publication = reserve
@@ -772,6 +801,7 @@ def investigate(
     limit,
     seed,
     budget=None,
+    planned=None,
 ):
     automation_id = records[0]["owner"]["automation_id"]
     prefix = week + "/" + automation_id + "/"
@@ -803,218 +833,206 @@ def investigate(
         in pr["body"]
     ]
     by_id = {record["event"]["id"]: record for record in records}
-    pending = list(records)
-    seen, attempted, exhausted = set(), set(), False
-    while pending:
-        previously_attempted = len(attempted)
-        try:
-            if budget:
-                budget.check()
-            args = arguments(
-                config,
-                output / "triage" / f"pass-{len(result['triage_passes']) + 1:03d}",
-                limit,
-                seed,
-            )
-            args.budget = budget
-            args.max_topics = config.get("triage_batch_size", 3)
-            args.output.mkdir(parents=True, mode=0o700)
-            topics, aggregation = triage(args, pending, scoped_prs, completed)
-        except BudgetExhausted as error:
-            result["stop_reason"] = str(error)
-            exhausted = True
-            break
-        result["triage_passes"].append(aggregation)
-        if not topics:
-            result["no_action_reason"] = aggregation.get("luna_triage", {}).get(
-                "no_action_reason", "No further promising topics"
-            )
-            break
-        for topic in topics:
-            topic = reuse_topic(
-                topic,
-                (
-                    value["topic"]
-                    for key, value in state["topic_weeks"].items()
-                    if value["status"] == "retryable"
-                    and key.split("/")[1] == automation_id
-                ),
-            )
-            attempted.update(topic["representative_event_ids"])
-            if topic["id"] in seen:
-                continue
-            seen.add(topic["id"])
-            key = prefix + topic["id"]
-            directory = output / "topics" / topic["id"]
-            directory.mkdir(parents=True, mode=0o700)
-            tracked = published_for(scoped_prs, automation_id, week, topic)
-            if not dry_run and (
-                state["topic_weeks"].get(key, {}).get("status")
-                in ("completed", "reserved")
-                or tracked
-            ):
-                outcome = {
-                    "topic": topic,
-                    "status": "publication_reserved"
-                    if not tracked and state["topic_weeks"][key]["status"] == "reserved"
-                    else "topic_already_completed_or_tracked",
-                    "pr_url": tracked["url"]
-                    if tracked
-                    else state["topic_weeks"][key].get("pr_url"),
-                }
-            else:
-                context = {
-                    **aggregation,
-                    "groups": [
-                        card
-                        for card in aggregation["groups"]
-                        if card["group_id"] in topic["group_ids"]
-                    ],
-                    "luna_triage": {"topics": [topic], "no_action_reason": ""},
-                }
-                try:
-                    if budget:
-                        budget.check()
-                    outcome = investigate_topic(
-                        config,
-                        inventory,
-                        [
-                            by_id[event_id]
-                            for event_id in topic["representative_event_ids"]
-                        ],
-                        scoped_prs,
-                        directory,
-                        state,
-                        state_path,
-                        week,
-                        dry_run,
-                        limit,
-                        seed,
-                        topic,
-                        context,
-                        budget,
-                        validation_records=topic_records(
-                            records, topic["representative_event_ids"]
-                        ),
-                    )
-                    if not dry_run and outcome["status"] not in (
-                        "deferred_validation",
-                        "waiting_for_new_evidence",
-                        "unrepaired",
-                    ):
-                        state["topic_weeks"][key] = {
-                            "status": "completed",
-                            "topic": topic,
-                            "report": str(directory / "topic-report.json"),
-                            "publication": outcome["publication"],
-                            "pr_url": outcome["publication"].get("pr_url")
-                            if isinstance(outcome["publication"], dict)
-                            else None,
-                        }
-                        save_state(state_path, state)
-                    if isinstance(outcome.get("publication"), dict) and outcome[
-                        "publication"
-                    ].get("pr_url"):
-                        report = read_json(
-                            Path(
-                                outcome.get(
-                                    "analysis_report",
-                                    directory / "analysis/report.json",
-                                )
-                            )
-                        )
-                        proposal = report["proposals"][0]
-                        scoped_prs.append(
-                            {
-                                "url": outcome["publication"]["pr_url"],
-                                "title": proposal["title"],
-                                "body": "\n".join(
-                                    (
-                                        "<!-- automation-improvement-automation: "
-                                        + automation_id
-                                        + " -->",
-                                        "<!-- automation-improvement-topic: "
-                                        + topic["id"]
-                                        + " -->",
-                                        "<!-- automation-improvement-topic-key: "
-                                        + topic["key"]
-                                        + " -->",
-                                        proposal["hypothesis"],
-                                    )
-                                ),
-                                "state": "OPEN",
-                                "createdAt": dt.datetime.now(dt.UTC).isoformat(),
-                            }
-                        )
-                except BudgetExhausted as error:
-                    outcome = {
-                        "topic": topic,
-                        "status": "deferred_budget",
-                        "reason": str(error),
-                    }
-                    exhausted = True
-                except Exception as error:
-                    outcome = {
-                        "topic": topic,
-                        "status": "failed",
-                        "error": str(error)[:1000],
-                    }
-            publication = outcome.get("publication")
-            reason = (
-                outcome.get("error")
-                or outcome.get("reason")
-                or (
-                    publication.get("evidence_review", {}).get("reason")
-                    if isinstance(publication, dict)
-                    else None
+    seen, exhausted = set(), False
+    if planned is None:
+        args = arguments(config, output / "triage", limit, seed)
+        args.budget = budget
+        configure_triage(
+            args,
+            config,
+            state_path.parent,
+            week,
+            dry_run,
+            output.parent / "collection/input.json",
+        )
+        args.output.mkdir(parents=True, mode=0o700)
+        topics, aggregation = triage(args, records, scoped_prs, completed)
+    else:
+        topics, aggregation = planned
+    result["triage_passes"].append(
+        {
+            "triage_issue": aggregation.get("triage_issue"),
+            "triage_measurement": aggregation.get("triage_measurement"),
+        }
+    )
+    if not topics:
+        result["no_action_reason"] = aggregation.get("luna_triage", {}).get(
+            "no_action_reason", "No further promising topics"
+        )
+    for topic in topics:
+        topic = reuse_topic(
+            topic,
+            (
+                value["topic"]
+                for key, value in state["topic_weeks"].items()
+                if value["status"] == "retryable"
+                and key.split("/")[1] == automation_id
+                and (
+                    planned is None
+                    or value["topic"]["id"] in config.get("retry_topic_ids", [])
                 )
-                or "; ".join(r["reason"] for r in outcome.get("rejections", []))
-                or ""
-            )
-            conclusion = {
-                "status": outcome["status"],
-                "reason": reason[:1600],
-                "assessed_event_ids": topic["representative_event_ids"],
+            ),
+        )
+        if topic["id"] in seen:
+            continue
+        seen.add(topic["id"])
+        key = prefix + topic["id"]
+        directory = output / "topics" / topic["id"]
+        directory.mkdir(parents=True, mode=0o700)
+        tracked = published_for(scoped_prs, automation_id, week, topic)
+        if not dry_run and (
+            state["topic_weeks"].get(key, {}).get("status") in ("completed", "reserved")
+            or tracked
+        ):
+            outcome = {
+                "topic": topic,
+                "status": "publication_reserved"
+                if not tracked and state["topic_weeks"][key]["status"] == "reserved"
+                else "topic_already_completed_or_tracked",
+                "pr_url": tracked["url"]
+                if tracked
+                else state["topic_weeks"][key].get("pr_url"),
             }
-            completed.append(topic | conclusion)
-            if (
-                not dry_run
-                and outcome["status"]
-                in (
-                    "failed",
-                    "deferred_budget",
+        else:
+            context = {
+                **aggregation,
+                "groups": [
+                    card
+                    for card in aggregation["groups"]
+                    if card["group_id"] in topic["group_ids"]
+                ],
+                "luna_triage": {"topics": [topic], "no_action_reason": ""},
+            }
+            try:
+                if budget:
+                    budget.check()
+                outcome = investigate_topic(
+                    config,
+                    inventory,
+                    [by_id[event_id] for event_id in topic["representative_event_ids"]],
+                    scoped_prs,
+                    directory,
+                    state,
+                    state_path,
+                    week,
+                    dry_run,
+                    limit,
+                    seed,
+                    topic,
+                    context,
+                    budget,
+                    validation_records=topic_records(
+                        records, topic["representative_event_ids"]
+                    ),
+                )
+                if not dry_run and outcome["status"] not in (
                     "deferred_validation",
                     "waiting_for_new_evidence",
                     "unrepaired",
-                )
-                and state["topic_weeks"].get(key, {}).get("status") != "reserved"
-            ):
-                state["topic_weeks"][key] = {
-                    "status": "retryable",
+                ):
+                    state["topic_weeks"][key] = {
+                        "status": "completed",
+                        "topic": topic,
+                        "report": str(directory / "topic-report.json"),
+                        "publication": outcome["publication"],
+                        "pr_url": outcome["publication"].get("pr_url")
+                        if isinstance(outcome["publication"], dict)
+                        else None,
+                    }
+                    save_state(state_path, state)
+                if isinstance(outcome.get("publication"), dict) and outcome[
+                    "publication"
+                ].get("pr_url"):
+                    report = read_json(
+                        Path(
+                            outcome.get(
+                                "analysis_report",
+                                directory / "analysis/report.json",
+                            )
+                        )
+                    )
+                    proposal = report["proposals"][0]
+                    scoped_prs.append(
+                        {
+                            "url": outcome["publication"]["pr_url"],
+                            "title": proposal["title"],
+                            "body": "\n".join(
+                                (
+                                    "<!-- automation-improvement-automation: "
+                                    + automation_id
+                                    + " -->",
+                                    "<!-- automation-improvement-topic: "
+                                    + topic["id"]
+                                    + " -->",
+                                    "<!-- automation-improvement-topic-key: "
+                                    + topic["key"]
+                                    + " -->",
+                                    proposal["hypothesis"],
+                                )
+                            ),
+                            "state": "OPEN",
+                            "createdAt": dt.datetime.now(dt.UTC).isoformat(),
+                        }
+                    )
+            except BudgetExhausted as error:
+                outcome = {
                     "topic": topic,
-                    "report": str(directory / "topic-report.json"),
-                    "reason": reason[:1600],
+                    "status": "deferred_budget",
+                    "reason": str(error),
                 }
-            if not dry_run and key in state["topic_weeks"]:
-                slot = state["topic_weeks"][key]
-                slot["conclusion"] = conclusion
-                if (directory / "attempt.json").exists():
-                    slot["attempt"] = read_json(directory / "attempt.json")
-                save_state(state_path, state)
-            write_json(directory / "topic-report.json", redact(outcome))
-            result["topics"].append(outcome)
-            if exhausted:
-                break
+                exhausted = True
+            except Exception as error:
+                outcome = {
+                    "topic": topic,
+                    "status": "failed",
+                    "error": str(error)[:1000],
+                }
+        publication = outcome.get("publication")
+        reason = (
+            outcome.get("error")
+            or outcome.get("reason")
+            or (
+                publication.get("evidence_review", {}).get("reason")
+                if isinstance(publication, dict)
+                else None
+            )
+            or "; ".join(r["reason"] for r in outcome.get("rejections", []))
+            or ""
+        )
+        conclusion = {
+            "status": outcome["status"],
+            "reason": reason[:1600],
+            "assessed_event_ids": topic["representative_event_ids"],
+        }
+        completed.append(topic | conclusion)
+        if (
+            not dry_run
+            and outcome["status"]
+            in (
+                "failed",
+                "deferred_budget",
+                "deferred_validation",
+                "waiting_for_new_evidence",
+                "unrepaired",
+            )
+            and state["topic_weeks"].get(key, {}).get("status") != "reserved"
+        ):
+            state["topic_weeks"][key] = {
+                "status": "retryable",
+                "topic": topic,
+                "report": str(directory / "topic-report.json"),
+                "reason": reason[:1600],
+            }
+        if not dry_run and key in state["topic_weeks"]:
+            slot = state["topic_weeks"][key]
+            slot["conclusion"] = conclusion
+            if (directory / "attempt.json").exists():
+                slot["attempt"] = read_json(directory / "attempt.json")
+            save_state(state_path, state)
+        write_json(directory / "topic-report.json", redact(outcome))
+        result["topics"].append(outcome)
         if exhausted:
             break
-        if len(attempted) == previously_attempted:
-            result["no_action_reason"] = (
-                "Triage made no progress beyond assessed evidence"
-            )
-            break
-        pending = [
-            record for record in records if record["event"]["id"] not in attempted
-        ]
     return result | {
         "budget_exhausted": exhausted,
         "status": "partial_failure"
@@ -1036,6 +1054,39 @@ def investigate(
         if result["topics"]
         else "no_promising_findings",
     }
+
+
+def configure_triage(args, config, state_dir, week, dry_run, inventory_path):
+    args.repository = config["repository"]
+    args.checkout = config["checkout"]
+    args.state_dir = str(state_dir)
+    args.triage_week = week
+    args.dry_run = dry_run
+    args.inventory_path = str(inventory_path)
+    args.evidence_location = config.get("evidence_location")
+    args.triage_agent_profile = config.get("triage_agent_profile")
+    args.triage_agent_config = config.get("triage_agent", {})
+
+
+def automation_status(topics, exhausted=False):
+    if any(item["status"] == "failed" for item in topics):
+        return "partial_failure"
+    if exhausted or any(item["status"] == "deferred_budget" for item in topics):
+        return "budget_exhausted"
+    if any(item["status"] == "deferred_pr_limit" for item in topics):
+        return "pr_limit_reached"
+    if any(
+        item["status"]
+        in (
+            "deferred_validation",
+            "publication_reserved",
+            "waiting_for_new_evidence",
+            "unrepaired",
+        )
+        for item in topics
+    ):
+        return "validation_incomplete"
+    return "completed" if topics else "no_promising_findings"
 
 
 def run_locked(config, state_dir, *, dry_run, limit, seed, budget=None):
@@ -1087,49 +1138,203 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget=None):
     summary["pending_events"] = len(state["backlog"])
     summary["incompatible_pending_events"] = len(state["backlog"]) - len(records)
     legacy = state.get("publications", {}).get(week)
-    for automation_id, pending in sorted(grouped.items()):
-        key = week + "/" + automation_id
-        directory = output / automation_id
-        directory.mkdir(mode=0o700)
+    results = {
+        identifier: {
+            "automation_id": identifier,
+            "automation_name": rows[0]["owner"]["automation_name"],
+            "topics": [],
+            "triage_passes": [],
+            "status": "no_promising_findings",
+        }
+        for identifier, rows in grouped.items()
+    }
+    eligible_records = []
+    for identifier, rows in grouped.items():
+        key = week + "/" + identifier
         if not dry_run and (
             state.get("automation_weeks", {}).get(key, {}).get("status") == "reserved"
             or legacy
             and legacy.get("status") == "reserved"
         ):
-            result = {
-                "automation_id": automation_id,
-                "status": "legacy_publication_reserved",
-            }
+            results[identifier]["status"] = "legacy_publication_reserved"
         else:
-            try:
-                result = investigate(
-                    config,
-                    inventory,
-                    pending,
-                    prs,
-                    directory,
-                    state,
-                    state_path,
-                    week,
-                    dry_run,
-                    limit,
-                    seed,
-                    budget,
+            eligible_records.extend(rows)
+    if eligible_records:
+        triage_args = arguments(config, output / "triage", limit, seed)
+        triage_args.output.mkdir(mode=0o700)
+        triage_args.budget = budget
+        configure_triage(
+            triage_args,
+            config,
+            state_dir,
+            week,
+            dry_run,
+            output / "collection/input.json",
+        )
+        previous = [
+            value["topic"]
+            | {
+                "automation_id": key.split("/")[1],
+                "status": value["status"],
+                "report": value.get("report"),
+            }
+            | value.get("conclusion", {})
+            for key, value in state["topic_weeks"].items()
+            if value["status"] in ("retryable", "reserved")
+            or key.startswith(week + "/")
+        ]
+        previous = list({(t["automation_id"], t["id"]): t for t in previous}.values())
+        try:
+            if budget:
+                budget.check()
+            queue, aggregation = triage(triage_args, eligible_records, prs, previous)
+            queue = sorted(
+                queue,
+                key=lambda topic: (topic["priority"], topic.get("selection_order", 0)),
+            )
+            summary["triage_issue"] = aggregation.get("triage_issue")
+            summary["priority_queue"] = queue
+        except Exception as error:
+            queue, aggregation = [], {}
+            summary["triage_error"] = redact(str(error))
+            if (triage_args.output / "triage-issue.json").exists():
+                summary["triage_issue"] = read_json(
+                    triage_args.output / "triage-issue.json"
                 )
-            except BudgetExhausted as error:
-                result = {
-                    "automation_id": automation_id,
-                    "status": "budget_exhausted",
-                    "reason": str(error),
-                }
-            except Exception as error:
-                result = {
-                    "automation_id": automation_id,
-                    "status": "failed",
-                    "error": str(error)[:1000],
-                }
-        write_json(directory / "automation-report.json", redact(result))
-        summary["automations"].append(result)
+            for value in results.values():
+                value["status"] = (
+                    "budget_exhausted"
+                    if isinstance(error, BudgetExhausted)
+                    else "failed"
+                )
+        if (
+            queue
+            and config.get("repair_concurrency", config.get("max_prs_per_run", 10)) > 1
+        ):
+            from parallel import execute
+
+            context = {
+                "inventory": inventory,
+                "grouped": grouped,
+                "prs": prs,
+                "output": str(output),
+                "state_path": str(state_path),
+                "week": week,
+                "dry_run": dry_run,
+                "limit": limit,
+                "seed": seed,
+                "previous": previous,
+            }
+            execution, state = execute(
+                config, context, queue, aggregation, state, budget
+            )
+            summary["parallel_repairs"] = {
+                k: v for k, v in execution.items() if k != "outcomes"
+            }
+            for outcome in execution["outcomes"]:
+                identifier = (
+                    outcome.get("automation_id") or outcome["topic"]["automation_id"]
+                )
+                results[identifier]["topics"].append(outcome)
+            for value in results.values():
+                value["status"] = automation_status(value["topics"])
+        else:
+            for position, topic in enumerate(queue):
+                if position >= config.get("max_prs_per_run", 10):
+                    for deferred in queue[position:]:
+                        target = results[deferred["automation_id"]]
+                        target["topics"].append(
+                            {"topic": deferred, "status": "deferred_pr_limit"}
+                        )
+                        target["status"] = automation_status(target["topics"])
+                    break
+                identifier = topic["automation_id"]
+                pending = grouped[identifier]
+                value = results[identifier]
+                key = week + "/" + identifier
+                directory = output / identifier
+                directory.mkdir(mode=0o700, exist_ok=True)
+                if not dry_run and (
+                    state.get("automation_weeks", {}).get(key, {}).get("status")
+                    == "reserved"
+                    or legacy
+                    and legacy.get("status") == "reserved"
+                ):
+                    value["status"] = "legacy_publication_reserved"
+                    continue
+                try:
+                    if budget:
+                        budget.check()
+                    scoped = {
+                        k: v
+                        for k, v in aggregation.items()
+                        if k
+                        not in (
+                            "automations",
+                            "event_catalog",
+                            "groups",
+                            "previous_attempts",
+                            "luna_triage",
+                        )
+                    }
+                    scoped.update(
+                        automation_id=identifier,
+                        total_events=len(pending),
+                        affected_conversations=len(
+                            {row["owner"]["conversation_id"] for row in pending}
+                        ),
+                        groups=[
+                            card
+                            for card in aggregation["groups"]
+                            if card.get("automation_id", identifier) == identifier
+                        ],
+                        previous_attempts=[
+                            t for t in previous if t["automation_id"] == identifier
+                        ],
+                        luna_triage={"topics": [topic], "no_action_reason": ""},
+                    )
+                    outcome = investigate(
+                        config,
+                        inventory,
+                        pending,
+                        prs,
+                        directory,
+                        state,
+                        state_path,
+                        week,
+                        dry_run,
+                        limit,
+                        seed,
+                        budget,
+                        planned=([topic], scoped),
+                    )
+                    value["topics"].extend(outcome["topics"])
+                    value["triage_passes"].extend(outcome["triage_passes"])
+                    value["status"] = automation_status(
+                        value["topics"], outcome.get("budget_exhausted", False)
+                    )
+                except BudgetExhausted:
+                    for deferred in queue[position:]:
+                        target = results[deferred["automation_id"]]
+                        target["topics"].append(
+                            {"topic": deferred, "status": "deferred_budget"}
+                        )
+                        target["status"] = automation_status(target["topics"], True)
+                    break
+                except Exception as error:
+                    value["topics"].append(
+                        {
+                            "topic": topic,
+                            "status": "failed",
+                            "error": redact(str(error))[:1000],
+                        }
+                    )
+                    value["status"] = "partial_failure"
+    for identifier, value in results.items():
+        directory = output / identifier
+        directory.mkdir(mode=0o700, exist_ok=True)
+        write_json(directory / "automation-report.json", redact(value))
+        summary["automations"].append(value)
     if grouped:
         summary["status"] = (
             "partial_failure"
@@ -1155,6 +1360,19 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget=None):
         for topic in automation.get("topics", [])
     ):
         summary["status"] = "validation_incomplete"
+    from parallel import created_prs
+
+    summary["max_prs_per_run"] = config.get("max_prs_per_run", 10)
+    summary["created_prs"] = created_prs(
+        [topic for value in results.values() for topic in value["topics"]]
+    )
+    summary["pr_limit_reached"] = any(
+        topic["status"] == "deferred_pr_limit"
+        for value in results.values()
+        for topic in value["topics"]
+    )
+    if summary["pr_limit_reached"] and summary["status"] == "completed":
+        summary["status"] = "pr_limit_reached"
     summary["budget"] = budget.snapshot() if budget else None
     summary["pending_publications"] = [
         {"key": key, "branch": value.get("branch"), "report": value.get("report")}

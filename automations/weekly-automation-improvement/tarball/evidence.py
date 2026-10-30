@@ -200,6 +200,7 @@ def run_locked(request_path, command, budget=None):
     )
     payload["body"] = body
     for previous in (
+        "[Validation incomplete] ",
         "[Unevaluated] ",
         "[Evidence] ",
         "[Inconclusive] ",
