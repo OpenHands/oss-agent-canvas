@@ -145,6 +145,8 @@ def test_normal_prompt_delegates_full_workflow_without_patch_or_repo_restriction
     assert "initially leave it draft" in repair
     assert "Treat the fixer's report as a claim" in review
     assert "Do not edit/push repair source" in review
+    assert "task tool is blocking" in repair and "task tool is blocking" in review
+    assert "freeze candidate source before delegating" in repair
 
 
 def test_discovery_recovers_links_outside_catalog_from_actual_native_events(

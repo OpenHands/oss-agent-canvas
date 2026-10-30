@@ -365,6 +365,7 @@ def prompt(context, context_path, output, review=False):
         f"For paged raw evidence: {cli} --automation-id UUID --tool search_runs/list_spans/read_trace/read_signal --arguments JSON. Topic automation IDs: {context['automation_ids']}; additional prepared automations you may inspect: {context.get('evidence_automation_ids', context['automation_ids'])}. "
         f"For issue sections/catalogs: {cli} --issue-url URL --tool read_issue/read_issue_comment/read_issue_artifact --arguments JSON. "
         "Use targeted reads rather than dumping full histories. Your normal terminal, editor, browser, task and subagent tools are available; give any child the same issue/context/evidence access and a precise task. "
+        "The built-in task tool is blocking. Complete a child's prerequisites before delegation; freeze candidate source before delegating its evaluation. A child missing a prerequisite must return its blocker immediately, never wait for the parent to create files after the task returns. "
         "Do not merge, deploy, mutate Kubernetes, publish credentials/private tasks, or run external writes against real customer issues/reviews during validation. GitHub issues/PRs for this repair are authorized. "
     )
     if review:
