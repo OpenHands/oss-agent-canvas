@@ -51,7 +51,8 @@ findings stay pending; unchanged source and Signal evidence do not trigger anoth
 coding attempt, including in a later week. Changed source/evidence or an explicit
 topic ID in `retry_topic_ids` allows reconsideration. Triage receives prior
 outcomes and reasons, and stops when it cannot select new evidence. Mixed clusters
-remain eligible for independent defects.
+remain eligible for independent defects. Legacy failed attempts without identity
+receipts wait conservatively for fresh Signal evidence or an explicit retry.
 
 ## Issue as the shared brief
 
@@ -87,6 +88,14 @@ native-agent reporting repair in [PR #66](https://github.com/OpenHands/oss-agent
 Recorded-event projections cover two negatives and five randomly sampled
 non-negative inputs. A real SDK/server check verified persisted report delivery.
 This demonstrates a reporting mechanism, not general model-quality improvement.
+
+[PR #78](https://github.com/OpenHands/oss-agent-canvas/pull/78) reuses a saved native
+provider-recovery repair. Two regressions fail before/pass after, 13 controls pass
+on both, and the full 48-test candidate suite covers safety, failure notifications
+and worker deadlines. Restoring the omitted safety receipts required no new coding
+conversation: one independent review reported $0.1447 and publication completed
+in 89.3 seconds. This is a recovered candidate, not a new unattended generation
+run or historical review-quality replay.
 
 ## Configure and run
 

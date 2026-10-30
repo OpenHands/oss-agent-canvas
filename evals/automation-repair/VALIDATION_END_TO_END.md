@@ -74,7 +74,7 @@ them on the actual candidate, retains output/exit receipts, blocks publication o
 failure and includes successful results in independent review and PR evidence.
 They provide new-feature safety coverage, not baseline-defect evidence. The coding
 prompt explicitly requests the relevant safety/full-suite commands. The saved
-provider candidate is being revalidated without another code-generation attempt.
+provider candidate was revalidated without another code-generation attempt.
 
 An independent execution audit found seven Sol conversations across five triage
 passes, rather than one infinite conversation. Sol consumed $14.584; automatic
@@ -96,6 +96,17 @@ repair or an honest unresolved conclusion without reconstructing missing history
 The saved provider candidate's full 48-test suite passed independently in 27.881
 seconds, with no inference. This verifies the missing safety-suite receipt; it
 does not bypass independent review or establish historical review quality.
+
+The evidence-only recovery then published [PR #78](https://github.com/OpenHands/oss-agent-canvas/pull/78)
+at the unchanged saved commit `8fecac473371b8741ed787d5862fae544cb509a7`.
+The publisher reran two behavioral regressions failing before/passing after,
+13 paired controls passing on both, and all 48 candidate tests. Independent Sol
+review accepted bounded recovery, PR-facing failure status and deadline mechanisms.
+The recovery took 89.275 seconds and reported $0.1447345 for one review request;
+there was no new coding conversation. The PR is a labeled draft for human review.
+This recovers existing work after a harness fix; it does not claim fresh unattended
+weekly success, historical model replay or production review-quality improvement.
+The complete worker/evaluator suite passes 307 tests; lint/format checks pass.
 
 ## Qualified reporting repair: PR #66
 
