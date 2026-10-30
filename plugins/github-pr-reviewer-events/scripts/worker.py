@@ -3,14 +3,17 @@
 import json
 import os
 import re
+import signal
 import sys
+from datetime import datetime, timezone
 from functools import cached_property
+from time import monotonic
 from urllib.error import HTTPError
 from urllib.parse import quote
 
 import main as workflow
 from agent_conversation import AgentConversationDispatcher
-from github_client import GitHubRepository, run_repositories
+from github_client import GitHubRepository, github_request, run_repositories
 from maintainer_handoff import (
     HandoffConfigurationError,
     parse_maintainers,
@@ -194,7 +197,7 @@ class PullRequestReviewer(GitHubRepository):
 
     @cached_property
     def github_login(self):
-        return self.api("GET", "/user")["login"]
+        return github_request(self.token, "GET", "/user", timeout=10)[0]["login"]
 
     @cached_property
     def trigger_reviewer(self):
@@ -1131,6 +1134,75 @@ class PullRequestReviewer(GitHubRepository):
                 + ", ".join(f"#{number}" for number in failures)
             )
 
+    def _recovery_request(self, method, path, *, deadline=None, timeout=10, **kwargs):
+        if deadline is not None:
+            timeout = min(timeout, deadline - monotonic())
+        if timeout <= 0:
+            raise TimeoutError("Review failure notification budget exhausted")
+        return github_request(self.token, method, path, timeout=timeout, **kwargs)[0]
+
+    def _can_retry_review(self, number, sha, started_at=None, *, deadline=None):
+        path = f"/repos/{self.repository}/pulls/{number}"
+        current = self._recovery_request("GET", path, deadline=deadline)
+        if current["state"] != "open" or current["head"]["sha"] != sha:
+            return False
+        reviews = self._recovery_request(
+            "GET", path + "/reviews", deadline=deadline,
+            params={"per_page": 100, "page": 1},
+        )
+        # A full page cannot prove the absence of a later review within this budget.
+        if len(reviews) >= 100:
+            return False
+        if reviews and "github_login" not in self.__dict__:
+            self.__dict__["github_login"] = self._recovery_request(
+                "GET", "/user", deadline=deadline,
+            )["login"]
+        for review in reviews:
+            if (
+                review.get("commit_id") != sha
+                or ((review.get("user") or {}).get("login") or "").lower()
+                != self.github_login.lower()
+            ):
+                continue
+            submitted = review.get("submitted_at")
+            if started_at is None or not submitted:
+                return False
+            # An earlier pass may have been followed by a legitimate re-review request.
+            submitted_at = datetime.fromisoformat(submitted.replace("Z", "+00:00"))
+            if submitted_at.timestamp() >= int(started_at):
+                return False
+        return True
+
+    def _report_review_failure(self, number, sha, started_at, still_failed, deadline=None):
+        if deadline is None:
+            deadline = monotonic() + 60
+        marker = f"<!-- openhands-review-interrupted:{sha}:{started_at} -->"
+        body = (
+            f"{marker}\nThe automated review was interrupted and could not finish. "
+            f"No new native review was confirmed for `{sha}`. This is not a review verdict.\n\n"
+            "After the service recovers, remove the outstanding bot review request "
+            "and re-request it to start a fresh attempt.\n\n"
+            "_This status was posted by an AI agent (OpenHands)._"
+        )
+        path = f"/repos/{self.repository}/issues/{number}/comments"
+        params = {"per_page": 100}
+        if started_at:
+            params["since"] = datetime.fromtimestamp(started_at, timezone.utc).isoformat()
+        comments = self._recovery_request(
+            "GET", path, params=params, timeout=5, deadline=deadline,
+        )
+        if len(comments) >= 100:
+            raise RuntimeError("Failure status comment history exceeds notification budget")
+        if comments and "github_login" not in self.__dict__:
+            self.__dict__["github_login"] = self._recovery_request(
+                "GET", "/user", deadline=deadline,
+            )["login"]
+        if any(marker in (item.get("body") or "") and self._owns_comment(item)
+               for item in comments):
+            return
+        if self._can_retry_review(number, sha, started_at, deadline=deadline) and still_failed():
+            self._recovery_request("POST", path, body={"body": body}, timeout=5, deadline=deadline)
+
     def _start_review(
         self, repository_id, pr, trigger, sha, trigger_label, delivery_key=None
     ):
@@ -1147,6 +1219,10 @@ class PullRequestReviewer(GitHubRepository):
             prompt=self._prompt(pr, trigger, trigger_label, delivery_key),
             head=sha,
             metadata=metadata,
+            can_retry=lambda started_at: self._can_retry_review(pr["number"], sha, started_at),
+            on_failure=lambda started_at, still_failed, deadline: self._report_review_failure(
+                pr["number"], sha, started_at, still_failed, deadline,
+            ),
         )
         print(
             json.dumps(
@@ -1187,6 +1263,28 @@ def run_scan(dispatcher):
         raise failure
 
 
+# The configured outer timeout is 1200s. Reserve time for SDK callback/cleanup.
+WORKER_TIMEOUT_SECONDS = 1080
+
+
+class WorkerDeadlineExceeded(BaseException):
+    # Bypass the per-repository Exception handlers: no more work may start.
+    pass
+
+
+def run_worker():
+    def deadline_exceeded(signum, frame):
+        raise WorkerDeadlineExceeded("Reviewer worker exceeded its runtime budget")
+
+    previous = signal.signal(signal.SIGALRM, deadline_exceeded)
+    signal.setitimer(signal.ITIMER_REAL, WORKER_TIMEOUT_SECONDS)
+    try:
+        with AgentConversationDispatcher() as dispatcher:
+            run_scan(dispatcher)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
 if __name__ == "__main__":
-    with AgentConversationDispatcher() as dispatcher:
-        run_scan(dispatcher)
+    run_worker()

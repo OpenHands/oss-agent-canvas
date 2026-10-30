@@ -1,0 +1,3 @@
+openhands-sdk==1.56.0
+openhands-tools==1.56.0
+aiohttp==3.14.5

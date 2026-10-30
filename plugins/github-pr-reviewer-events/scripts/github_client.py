@@ -42,6 +42,7 @@ def github_request(
     params: dict | None = None,
     body: dict | None = None,
     accept: str = "application/vnd.github+json",
+    timeout: float = 90,
 ) -> tuple:
     url = f"https://api.github.com{path}"
     if params:
@@ -54,7 +55,7 @@ def github_request(
     }
     data = json.dumps(body).encode() if body is not None else None
     req = Request(url, data=data, headers=headers, method=method)
-    with urlopen(req, timeout=90) as r:
+    with urlopen(req, timeout=timeout) as r:
         raw = r.read()
         return (json.loads(raw) if raw.strip() else {}), dict(r.headers)
 
