@@ -397,6 +397,42 @@ def test_coding_agent_diff_reaches_regression_checks(source, tmp_path, monkeypat
     assert (checkout / "value.py").read_text() == "VALUE = 3\n"
 
 
+def test_credible_unrepaired_finding_is_a_complete_agent_conclusion(
+    source, tmp_path, monkeypatch
+):
+    _, source_path, _ = source
+    value = snapshot()
+    value["source"] = load_source(source_path)
+    value["topic"] = {"id": "topic", "key": "topic"}
+    path = tmp_path / "snapshot.json"
+    path.write_text(encode(value))
+    args = arguments(tmp_path / "analysis", input=path, source_config=source_path)
+    monkeypatch.setattr(app, "call_model", lambda *a: ({"findings": [candidate()]}, {}))
+    monkeypatch.setattr(
+        app,
+        "coding_coordinate",
+        lambda *a: (
+            {
+                "proposals": [],
+                "rejections": [
+                    {
+                        "finding_id": "c1f1",
+                        "reason": "The replay still exhibits the defect",
+                        "disposition": "unrepaired",
+                    }
+                ],
+            },
+            {},
+            "",
+        ),
+    )
+    app.run(args)
+    report = json.loads((args.output / "report.json").read_text())
+    assert not report["errors"]
+    assert not report["proposals"]
+    assert report["rejected_findings"][0]["disposition"] == "unrepaired"
+
+
 def test_fix_validation_uses_isolated_worktrees_and_keeps_baseline_unchanged(
     source, tmp_path
 ):

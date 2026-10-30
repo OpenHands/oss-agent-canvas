@@ -358,7 +358,19 @@ def prepare_grouped(configured_source, tmp_path, monkeypatch, records):
         calls.append(("luna", identifier))
         assert all(item["owner"]["automation_id"] == identifier for item in pending)
         cards, _ = triage.group_findings(pending)
-        done = {t["id"] for t in completed_topics}
+        done = {
+            t["id"]
+            for t in completed_topics
+            if t.get("status", "completed")
+            not in (
+                "failed",
+                "deferred_validation",
+                "waiting_for_new_evidence",
+                "unrepaired",
+                "deferred_budget",
+                "retryable",
+            )
+        }
         plans = []
         for card in cards:
             key = "issue-" + card["group_id"]
@@ -572,6 +584,7 @@ def test_one_repair_revision_keeps_failed_evidence_and_only_consumes_proven_find
 ):
     records = [record()]
     config, calls = prepare_grouped(configured_source, tmp_path, monkeypatch, records)
+    config["revise_failed_repair"] = True
     original = weekly.analysis.run
     attempts = []
 
@@ -1471,7 +1484,14 @@ def test_failure_before_external_write_remains_retryable(
 
     monkeypatch.setattr(weekly, "triage", rename)
     second = weekly.run(config)
-    assert second["status"] == "completed" and len(attempts) == 2
+    assert second["automations"][0]["topics"][0]["status"] == "waiting_for_new_evidence"
+    assert len(attempts) == 1
+    state = json.loads(state_path.read_text())
+    config["retry_topic_ids"] = [
+        next(iter(state["topic_weeks"].values()))["topic"]["id"]
+    ]
+    third = weekly.run(config)
+    assert third["status"] == "completed" and len(attempts) == 2
     assert attempts[0].parent.name == attempts[1].parent.name
     assert not json.loads(state_path.read_text())["backlog"]
 
@@ -1528,3 +1548,152 @@ def test_retry_preserves_issue_namespace_when_luna_renames_overlapping_clusters(
     ] == ["new-evidence"]
     unrelated = current | {"group_ids": ["c", "d", "e"]}
     assert weekly.reuse_topic(unrelated, [previous]) == unrelated
+
+
+@pytest.mark.parametrize("revision", ["unsupported", "unrepaired", "same", "checks"])
+def test_revision_adopts_conclusions_and_evidence_without_requiring_new_code(
+    configured_source, tmp_path, monkeypatch, revision
+):
+    config, calls = prepare_grouped(
+        configured_source, tmp_path, monkeypatch, [record()]
+    )
+    config["revise_failed_repair"] = True
+    original = weekly.analysis.run
+    publications = []
+
+    def analyze(args):
+        original(args)
+        if args.output.name != "revision":
+            return
+        path = args.output / "report.json"
+        report = json.loads(path.read_text())
+        if revision in ("unsupported", "unrepaired"):
+            report["proposals"] = []
+            report["rejected_findings"] = [
+                {
+                    "finding_id": "c1f1",
+                    "disposition": revision,
+                    "reason": "The available experiment does not support a fix",
+                }
+            ]
+        elif revision == "checks":
+            report["proposals"][0]["candidate_checks"] = [
+                {"name": "Safety suite", "argv": ["python", "tests/test_safety.py"]}
+            ]
+        path.write_text(json.dumps(report))
+
+    def publish(args, report, snapshot):
+        publications.append(report["proposals"][0])
+        if len(publications) == 2:
+            assert revision == "checks"
+            assert publications[0]["patch"] == publications[1]["patch"]
+            return {
+                "status": "evidence_supported_draft",
+                "pr_url": "https://example.test/pr/1",
+            }
+        failed = {
+            "status": "rejected",
+            "baseline": [],
+            "candidate": [],
+            "evidence_review": {
+                "supported": False,
+                "reason": "Missing executed safety tests",
+            },
+        }
+        (args.output / "paired-review-failure.json").write_text(json.dumps(failed))
+        return failed
+
+    monkeypatch.setattr(weekly.analysis, "run", analyze)
+    monkeypatch.setattr(weekly, "propose_fix", publish)
+    result = weekly.run(config)
+    topic = result["automations"][0]["topics"][0]
+    assert len(publications) == (2 if revision == "checks" else 1)
+    assert topic["analysis_report"].endswith("revision/report.json")
+    if revision in ("unsupported", "unrepaired"):
+        assert topic["publication"]["status"] == "not_proposed"
+        assert topic["proposals"] == 0
+        assert topic["rejections"][0]["disposition"] == revision
+    weekly.run(config)
+    assert len([c for c in calls if c[0] == "sol"]) == 2
+    state = json.loads((Path(config["state_dir"]) / "state.json").read_text())
+    assert bool(state["backlog"]) == (revision in ("same", "unrepaired"))
+
+
+@pytest.mark.parametrize("change", ["source", "signal", "explicit", "legacy"])
+def test_failed_attempt_waits_across_weeks_until_inputs_change(
+    configured_source, tmp_path, monkeypatch, change
+):
+    rows = [record()]
+    config, calls = prepare_grouped(configured_source, tmp_path, monkeypatch, rows)
+    original = weekly.propose_fix
+    publications = []
+
+    def publish(args, report, snapshot):
+        publications.append(args.output)
+        if len(publications) == 1:
+            failure = {
+                "status": "rejected",
+                "baseline": [],
+                "candidate": [],
+                "evidence_review": {
+                    "supported": False,
+                    "reason": "No behavioral improvement",
+                },
+            }
+            (args.output / "paired-review-failure.json").write_text(json.dumps(failure))
+            return failure
+        return original(args, report, snapshot)
+
+    monkeypatch.setattr(weekly, "propose_fix", publish)
+    weekly.run(config)
+    assert len([c for c in calls if c[0] == "sol"]) == 1
+    state_path = Path(config["state_dir"]) / "state.json"
+    state = json.loads(state_path.read_text())
+    key, value = next(iter(state["topic_weeks"].items()))
+    if change == "legacy":
+        value.pop("attempt")
+        value.pop("conclusion")
+    state["topic_weeks"] = {"2026-W01/" + key.split("/", 1)[1]: value}
+    state_path.write_text(json.dumps(state))
+    again = weekly.run(config)
+    assert again["budget"]["stop_reason"] is None
+    assert again["automations"][0]["topics"][0]["status"] == "waiting_for_new_evidence"
+    assert len([c for c in calls if c[0] == "sol"]) == 1
+    if change == "legacy":
+        return
+    if change == "signal":
+        rows[0]["run"]["updated_at"] = "2026-10-31T12:00:00Z"
+    elif change == "source":
+        checkout, _, source = configured_source
+        (checkout / "value.py").write_text("VALUE = 3\nEXTRA = 1\n")
+        command(["git", "add", "."], checkout)
+        command(["git", "commit", "-qm", "new source"], checkout)
+        source["revision"] = command(["git", "rev-parse", "HEAD"], checkout)
+    else:
+        config["retry_topic_ids"] = [value["topic"]["id"]]
+    weekly.run(config)
+    assert len([c for c in calls if c[0] == "sol"]) == 2
+    assert len(publications) == 2
+
+
+def test_repeated_triage_without_new_representatives_stops(
+    configured_source, tmp_path, monkeypatch
+):
+    config, calls = prepare_grouped(
+        configured_source, tmp_path, monkeypatch, [record(1), record(2)]
+    )
+    rank = weekly.triage
+    selected = []
+    contexts = []
+
+    def repeat(args, pending, prs, completed_topics=()):
+        if not selected:
+            plans, context = rank(args, pending, prs, completed_topics)
+            selected.extend(plans)
+            contexts.append(context)
+        return selected, contexts[0]
+
+    monkeypatch.setattr(weekly, "triage", repeat)
+    result = weekly.run(config)
+    assert len([c for c in calls if c[0] == "sol"]) == 1
+    assert "no progress" in result["automations"][0]["no_action_reason"]

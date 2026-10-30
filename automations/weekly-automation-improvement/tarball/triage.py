@@ -201,7 +201,30 @@ def triage(args, records, prs, completed_topics=()):
         "groups": compact_cards,
         "existing_improvement_prs": prs,
         "completed_or_reserved_topics_this_week": [
-            {key: topic[key] for key in ("key", "title")} for topic in completed_topics
+            {key: topic[key] for key in ("key", "title")}
+            for topic in completed_topics
+            if topic.get("status", "completed")
+            not in (
+                "failed",
+                "deferred_validation",
+                "waiting_for_new_evidence",
+                "unrepaired",
+                "deferred_budget",
+                "retryable",
+            )
+        ],
+        "previous_attempts": [
+            {
+                key: topic[key]
+                for key in ("key", "title", "status", "reason", "assessed_event_ids")
+                if key in topic
+            }
+            for topic in completed_topics
+        ],
+        "explicit_retry_topics": [
+            topic["key"]
+            for topic in completed_topics
+            if topic["id"] in getattr(args, "retry_topic_ids", [])
         ],
     }
     write_json(args.output / "triage-input.json", context)
@@ -237,6 +260,8 @@ def triage(args, records, prs, completed_topics=()):
         "Topic keys appear in public issue titles: describe only the generic failure mode, without customer/user/project identifiers, secrets or private quotations. "
         "Reuse an existing topic key when the issue matches; do not rename a topic to evade an existing PR or weekly reservation. "
         "Exclude topics already addressed by open PRs or completed/reserved this week. "
+        "Read previous_attempts and their conclusions. Do not rename or rephrase an exhausted repair mechanism to launch another attempt. New events from the same known failure are not a new repair approach. Select it again only when the supplied evidence supports a materially different mechanism or invalidates the previous conclusion; explain that difference in reason. A mixed cluster can still contain an independent, unassessed defect. If only exhausted approaches remain, return no topics. "
+        "An explicit_retry_topics request authorizes a fresh best-effort investigation of that topic without requiring changed evidence. "
         "You select leads for Sol, not validated fixes. Counts are facts; summaries, severity and causes are unverified judgments. "
         "Prefer material unresolved workflow defects, repeated costly friction and supported severe single incidents. "
         "Account for recovery, clipped evidence and external/provider causes. Cleanup does not undo an explicit instruction or permission violation. "

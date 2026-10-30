@@ -13,6 +13,8 @@
   "state_dir": "/private/automation-improvement/state",
   "publish_drafts": true,
   "require_improvement": true,
+  "revise_failed_repair": false,
+  "retry_topic_ids": [],
   "validate_existing_repairs": true,
   "comparative_validation": {
     "command": [

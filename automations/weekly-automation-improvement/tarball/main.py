@@ -95,7 +95,12 @@ TOPIC_COORDINATION = object_schema(
                     "reason": TEXT,
                     "disposition": {
                         "type": "string",
-                        "enum": ["unsupported", "other_topic", "already_tracked"],
+                        "enum": [
+                            "unsupported",
+                            "unrepaired",
+                            "other_topic",
+                            "already_tracked",
+                        ],
                     },
                 }
             ),
@@ -463,7 +468,12 @@ def run(args):
                     or (
                         snapshot.get("topic")
                         and rejection.get("disposition")
-                        not in ("unsupported", "other_topic", "already_tracked")
+                        not in (
+                            "unsupported",
+                            "unrepaired",
+                            "other_topic",
+                            "already_tracked",
+                        )
                     )
                     or rejection["finding_id"] not in ids - accepted - rejected_ids
                     or not isinstance(rejection["reason"], str)

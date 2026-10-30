@@ -1,6 +1,7 @@
 import argparse
 import datetime as dt
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -205,6 +206,7 @@ def arguments(config, output, limit, seed=None):
     args.coordinator = config.get("repair_model", "openai/gpt-6.1-sol")
     args.limit, args.seed = limit, seed
     args.population_limit = 10000
+    args.retry_topic_ids = config.get("retry_topic_ids", [])
     args.output = output
     return args
 
@@ -347,6 +349,42 @@ def investigate_topic(
     snapshot["source"] = load_source(path)
     if set(snapshot["source"]["automation_ids"]) != {automation_id}:
         raise ValueError("Repair source must be scoped to exactly this automation")
+    attempt = {
+        "source": hashlib.sha256(
+            encode(
+                {key: snapshot["source"].get(key) for key in ("files", "runtime")}
+            ).encode()
+        ).hexdigest(),
+        "events": {
+            record["event"]["id"]: hashlib.sha256(encode(record).encode()).hexdigest()
+            for record in records
+        },
+    }
+    write_json(output / "attempt.json", attempt)
+    if topic["id"] not in config.get("retry_topic_ids", []):
+        for key, previous in state["topic_weeks"].items():
+            prior = previous.get("attempt", {})
+            if (
+                key.split("/")[1] == automation_id
+                and previous["status"] == "retryable"
+                and (
+                    prior.get("source") == attempt["source"]
+                    and all(
+                        prior.get("events", {}).get(identifier) == identity
+                        for identifier, identity in attempt["events"].items()
+                    )
+                    or not prior
+                    and set(attempt["events"])
+                    <= set(previous["topic"].get("representative_event_ids", []))
+                )
+            ):
+                return result | {
+                    "status": "waiting_for_new_evidence",
+                    "reason": previous.get(
+                        "reason", "Unchanged source and Signal evidence"
+                    ),
+                    "previous_report": previous.get("report"),
+                }
     snapshot["aggregation"] = aggregation
     snapshot["topic"] = topic
     snapshot["existing_improvement_prs"] = prs
@@ -407,20 +445,13 @@ def investigate_topic(
             "Topic analysis incomplete; retain findings for another attempt"
         )
     by_id = {finding["id"]: finding for finding in report["findings"]}
-    updates = {}
-    for rejection in report["rejected_findings"]:
-        if rejection.get("disposition") == "other_topic":
-            continue
-        event_id = by_id[rejection["finding_id"]]["signal_event_id"]
-        updates[event_id] = {
-            "status": "rejected",
-            "topic_id": topic["id"],
-            "disposition": rejection.get("disposition", "unsupported"),
-            "reason": rejection["reason"],
-            "week": week,
-        }
+    updates = rejection_updates(report, by_id, topic, week)
     result.update(
-        status="analyzed",
+        status="unrepaired"
+        if any(
+            r.get("disposition") == "unrepaired" for r in report["rejected_findings"]
+        )
+        else "analyzed",
         findings=len(report["findings"]),
         proposals=len(report["proposals"]),
         rejections=report["rejected_findings"],
@@ -454,7 +485,7 @@ def investigate_topic(
             if (
                 not publication.get("pr_url")
                 and feedback
-                and config.get("revise_failed_repair", True)
+                and config.get("revise_failed_repair", False)
             ):
                 state["topic_weeks"].pop(key, None)
                 save_state(state_path, state)
@@ -470,32 +501,63 @@ def investigate_topic(
                 args.publish_draft = False
                 analyze_with_evidence(args, issue)
                 revised = read_json(args.output / "report.json")
-                if (
-                    not revised.get("errors")
-                    and revised.get("proposals")
-                    and revised["proposals"][0]["patch"]
-                    and revised["proposals"][0]["patch"] != previous_patch
-                ):
-                    report, proposal = revised, revised["proposals"][0]
-                    args.publish_draft = True
-                    publication = propose_with_evidence(args, report, snapshot, issue)
+                if not revised.get("errors"):
+                    report = revised
+                    by_id = {finding["id"]: finding for finding in report["findings"]}
+                    updates = rejection_updates(report, by_id, topic, week)
                     result["repair_revision"] = {
                         "feedback": feedback,
                         "report": str(args.output / "report.json"),
                     }
                     result["analysis_report"] = str(args.output / "report.json")
+                    result["rejections"] = report["rejected_findings"]
+                    result["proposals"] = len(report["proposals"])
+                    result["findings"] = len(report["findings"])
+                    result["coordinator_measurements"].extend(
+                        item
+                        for item in report["measurements"]
+                        if item.get("backend") != "persisted_flow1_signals"
+                    )
+                    if report["proposals"]:
+                        revised_proposal = report["proposals"][0]
+                        if any(
+                            proposal.get(field, []) != revised_proposal.get(field, [])
+                            for field in ("patch", "checks", "candidate_checks")
+                        ):
+                            proposal = revised_proposal
+                            args.publish_draft = True
+                            publication = propose_with_evidence(
+                                args, report, snapshot, issue
+                            )
+                        else:
+                            issue.attempt(args.output, report)
+                    else:
+                        issue.attempt(args.output, report)
+                        publication = {"status": "not_proposed"}
+                        result["status"] = (
+                            "unrepaired"
+                            if any(
+                                r.get("disposition") == "unrepaired"
+                                for r in report["rejected_findings"]
+                            )
+                            else "analyzed"
+                        )
                 else:
                     issue.attempt(args.output, revised)
             result["publication"] = publication
             result["behavioral_evaluation"] = publication.get("comparison", {}).get(
                 "status", "not_performed"
             )
-            if not publication.get("pr_url"):
+            if not publication.get("pr_url") and report["proposals"]:
                 result["status"] = "deferred_validation"
                 state["topic_weeks"].pop(key, None)
                 save_state(state_path, state)
+                if not dry_run:
+                    state["events"].update(updates)
                 return result
-            for finding_id in proposal["finding_ids"]:
+            for finding_id in (
+                proposal["finding_ids"] if publication.get("pr_url") else []
+            ):
                 updates[by_id[finding_id]["signal_event_id"]] = {
                     "status": "draft_pr",
                     "topic_id": topic["id"],
@@ -520,6 +582,20 @@ def investigate_topic(
         for event_id in updates:
             state["backlog"].pop(event_id, None)
     return result
+
+
+def rejection_updates(report, by_id, topic, week):
+    return {
+        by_id[rejection["finding_id"]]["signal_event_id"]: {
+            "status": "rejected",
+            "topic_id": topic["id"],
+            "disposition": rejection.get("disposition", "unsupported"),
+            "reason": rejection["reason"],
+            "week": week,
+        }
+        for rejection in report["rejected_findings"]
+        if rejection.get("disposition") not in ("other_topic", "unrepaired")
+    }
 
 
 def analyze_with_evidence(args, issue):
@@ -691,11 +767,20 @@ def investigate(
 ):
     automation_id = records[0]["owner"]["automation_id"]
     prefix = week + "/" + automation_id + "/"
-    completed = [
-        value["topic"]
-        for key, value in state["topic_weeks"].items()
-        if key.startswith(prefix) and value["status"] == "completed"
-    ]
+    completed = list(
+        {
+            value["topic"]["id"]: value["topic"]
+            | {"status": value["status"]}
+            | value.get("conclusion", {})
+            for key, value in sorted(state["topic_weeks"].items())
+            if key.split("/")[1] == automation_id
+            and (
+                key.startswith(prefix)
+                and value["status"] == "completed"
+                or value["status"] == "retryable"
+            )
+        }.values()
+    )
     result = {
         "automation_id": automation_id,
         "automation_name": records[0]["owner"]["automation_name"],
@@ -713,6 +798,7 @@ def investigate(
     pending = list(records)
     seen, attempted, exhausted = set(), set(), False
     while pending:
+        previously_attempted = len(attempted)
         try:
             if budget:
                 budget.check()
@@ -750,7 +836,6 @@ def investigate(
             if topic["id"] in seen:
                 continue
             seen.add(topic["id"])
-            completed.append(topic)
             key = prefix + topic["id"]
             directory = output / "topics" / topic["id"]
             directory.mkdir(parents=True, mode=0o700)
@@ -804,7 +889,11 @@ def investigate(
                             records, topic["representative_event_ids"]
                         ),
                     )
-                    if not dry_run and outcome["status"] != "deferred_validation":
+                    if not dry_run and outcome["status"] not in (
+                        "deferred_validation",
+                        "waiting_for_new_evidence",
+                        "unrepaired",
+                    ):
                         state["topic_weeks"][key] = {
                             "status": "completed",
                             "topic": topic,
@@ -862,23 +951,58 @@ def investigate(
                         "status": "failed",
                         "error": str(error)[:1000],
                     }
+            publication = outcome.get("publication")
+            reason = (
+                outcome.get("error")
+                or outcome.get("reason")
+                or (
+                    publication.get("evidence_review", {}).get("reason")
+                    if isinstance(publication, dict)
+                    else None
+                )
+                or "; ".join(r["reason"] for r in outcome.get("rejections", []))
+                or ""
+            )
+            conclusion = {
+                "status": outcome["status"],
+                "reason": reason[:1600],
+                "assessed_event_ids": topic["representative_event_ids"],
+            }
+            completed.append(topic | conclusion)
             if (
                 not dry_run
                 and outcome["status"]
-                in ("failed", "deferred_budget", "deferred_validation")
+                in (
+                    "failed",
+                    "deferred_budget",
+                    "deferred_validation",
+                    "waiting_for_new_evidence",
+                    "unrepaired",
+                )
                 and state["topic_weeks"].get(key, {}).get("status") != "reserved"
             ):
                 state["topic_weeks"][key] = {
                     "status": "retryable",
                     "topic": topic,
                     "report": str(directory / "topic-report.json"),
+                    "reason": reason[:1600],
                 }
+            if not dry_run and key in state["topic_weeks"]:
+                slot = state["topic_weeks"][key]
+                slot["conclusion"] = conclusion
+                if (directory / "attempt.json").exists():
+                    slot["attempt"] = read_json(directory / "attempt.json")
                 save_state(state_path, state)
             write_json(directory / "topic-report.json", redact(outcome))
             result["topics"].append(outcome)
             if exhausted:
                 break
         if exhausted:
+            break
+        if len(attempted) == previously_attempted:
+            result["no_action_reason"] = (
+                "Triage made no progress beyond assessed evidence"
+            )
             break
         pending = [
             record for record in records if record["event"]["id"] not in attempted
@@ -891,7 +1015,13 @@ def investigate(
         if exhausted
         else "validation_incomplete"
         if any(
-            item["status"] in ("deferred_validation", "publication_reserved")
+            item["status"]
+            in (
+                "deferred_validation",
+                "publication_reserved",
+                "waiting_for_new_evidence",
+                "unrepaired",
+            )
             for item in result["topics"]
         )
         else "completed"
@@ -1011,7 +1141,8 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget=None):
     ):
         summary["status"] = "budget_exhausted"
     if summary["status"] not in ("partial_failure", "budget_exhausted") and any(
-        topic["status"] == "deferred_validation"
+        topic["status"]
+        in ("deferred_validation", "waiting_for_new_evidence", "unrepaired")
         for automation in summary["automations"]
         for topic in automation.get("topics", [])
     ):

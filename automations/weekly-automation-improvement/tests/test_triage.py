@@ -63,6 +63,34 @@ def test_luna_sees_compact_refs_and_returns_scoped_topics(tmp_path, monkeypatch)
     assert len(calls) == 1 and (tmp_path / "triage-references.json").exists()
 
 
+def test_retryable_conclusions_and_explicit_requests_reach_real_triage(
+    tmp_path, monkeypatch
+):
+    previous = [
+        {
+            "id": "prior",
+            "key": "provider-recovery",
+            "title": "Recover provider failures",
+            "status": "retryable",
+            "reason": "Previous experiment did not establish improvement",
+            "assessed_event_ids": ["old-event"],
+        }
+    ]
+
+    def model(args, model, policy, context, name, schema):
+        assert context["completed_or_reserved_topics_this_week"] == []
+        assert context["previous_attempts"][0]["status"] == "retryable"
+        assert context["previous_attempts"][0]["reason"] == previous[0]["reason"]
+        assert context["explicit_retry_topics"] == ["provider-recovery"]
+        assert "Do not rename or rephrase an exhausted repair mechanism" in policy
+        return {"topics": [], "no_action_reason": "No new repair approach"}, {}
+
+    monkeypatch.setattr(triage, "call_model", model)
+    args = arguments(tmp_path, retry_topic_ids=["prior"])
+    plans, _ = triage.triage(args, [record()], [], previous)
+    assert not plans
+
+
 @pytest.mark.parametrize(
     "bad",
     [

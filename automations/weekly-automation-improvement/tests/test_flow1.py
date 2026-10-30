@@ -309,7 +309,8 @@ def test_shared_webhook_trace_cannot_be_attributed_to_one_automation():
 
 
 @pytest.mark.parametrize(
-    "disposition", ["unsupported", "other_topic", "already_tracked", "invalid", None]
+    "disposition",
+    ["unsupported", "unrepaired", "other_topic", "already_tracked", "invalid", None],
 )
 def test_topic_rejections_are_typed_and_preserve_separate_issue_dispositions(
     tmp_path, monkeypatch, disposition
@@ -328,7 +329,7 @@ def test_topic_rejections_are_typed_and_preserve_separate_issue_dispositions(
         assert context["repair_topic"] == value["topic"]
         assert schema["properties"]["rejections"]["items"]["properties"]["disposition"][
             "enum"
-        ] == ["unsupported", "other_topic", "already_tracked"]
+        ] == ["unsupported", "unrepaired", "other_topic", "already_tracked"]
         rejection = {
             "finding_id": context["findings"][0]["id"],
             "reason": "Evidence belongs to another independently reviewable issue",

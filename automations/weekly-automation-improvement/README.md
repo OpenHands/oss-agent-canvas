@@ -43,6 +43,16 @@ has its own source snapshot, evidence, patch and publication reservation. Existi
 PRs block duplicates; failed publication releases its reservation. Private receipts
 and candidate bundles support recovery without silently rerolling failed cases.
 
+Each topic gets one coding attempt by default. `revise_failed_repair: true`
+opts into one revision after concrete validation feedback. A complete conclusion
+with no supported repair is a valid stopping outcome. Evidence-only revisions can
+keep the same patch and change the submitted checks. Credible but unrepaired
+findings stay pending; unchanged source and Signal evidence do not trigger another
+coding attempt, including in a later week. Changed source/evidence or an explicit
+topic ID in `retry_topic_ids` allows reconsideration. Triage receives prior
+outcomes and reasons, and stops when it cannot select new evidence. Mixed clusters
+remain eligible for independent defects.
+
 ## Issue as the shared brief
 
 Each selected repair topic gets one issue in the same repository as its repair PR.
