@@ -7,6 +7,7 @@ import subprocess
 import uuid
 
 from common import encode, redact
+from attribution import candidates, conversation_ids
 from laminar import SESSION, message_projection, object_value
 from raw_evidence import population
 from repository_snapshot import capture as repository_snapshot, capture_reads
@@ -103,12 +104,21 @@ def collect(client, inventory, automation_id, negative_records, size=5, seed=Non
             )
         }
     )
-    if not automation_ids:
-        raise ValueError("Select at least one automation")
     seed = secrets.randbits(64) if seed is None else seed
     rng = random.Random(seed)
-    negative = {}
+    negative, attribution_gaps, unassigned_conversations = {}, [], set()
     for record in negative_records:
+        if not record.get("owner"):
+            attribution_gaps.append(
+                {
+                    "event_id": record["event"]["id"],
+                    "trace_id": record["event"]["trace_id"],
+                    "owner_candidates": candidates(record),
+                    "status": record.get("attribution_status", "unresolved"),
+                }
+            )
+            unassigned_conversations.update(conversation_ids(record))
+            continue
         if record["owner"]["automation_id"] not in automation_ids:
             raise ValueError("Validation inputs must belong to the repaired automation")
         owner, run = record["owner"], record["run"]
@@ -123,12 +133,13 @@ def collect(client, inventory, automation_id, negative_records, size=5, seed=Non
                 "definition": record["definition"],
             },
         )
-    rows = population(client, inventory, automation_ids)
+    rows = population(client, inventory, automation_ids) if automation_ids else []
     controls = {}
     for row in rows:
         if (
             row["classification"] == "non_negative"
             and row["conversation_id"] not in negative
+            and row["conversation_id"] not in unassigned_conversations
         ):
             controls.setdefault(row["conversation_id"], row)
     frames = {"negative": sorted(negative), "non_negative": sorted(controls)}
@@ -155,6 +166,7 @@ def collect(client, inventory, automation_id, negative_records, size=5, seed=Non
             "replacement_on_failure": False,
         },
         "samples": [],
+        "attribution_gaps": attribution_gaps,
         "errors": [],
     }
     for classification, identifiers in selected.items():
@@ -209,6 +221,7 @@ def collect(client, inventory, automation_id, negative_records, size=5, seed=Non
         bool(selected["negative"])
         and len(selected["non_negative"]) == size
         and not result["errors"]
+        and not attribution_gaps
     )
     result["scope"] = (
         "Non-negative means completed Flow-1 with recorded usage and no finding in this window; unscored runs are excluded. No input is assumed healthy."

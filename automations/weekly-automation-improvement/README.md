@@ -10,7 +10,8 @@ agent reviews the actual changes and execution records. Humans merge and deploy.
 1. Laminar runs Flow-1 on matching finished automation traces according to its sampling
    configuration. Python reads the persisted Signals, tracks a private backlog and
    prepares compact counts/examples by automation and cluster/signature. Clusters
-   are leads, not confirmed root causes.
+   are leads, not confirmed root causes. Findings with missing or ambiguous owners
+   remain selectable, with candidate origins and attribution warnings.
 2. A native OpenHands triage agent, default Luna, reads a structured weekly issue
    indexing the preparation output, raw data, previous attempts and existing PRs.
    It merges duplicates, splits independent problems and ranks one finite queue
@@ -58,6 +59,15 @@ receives the frozen inputs/cohort, repository revisions, live automation metadat
 prior attempts and the full prepared inventory. It can inspect additional prepared
 automations when a shared failure requires it. Missing source/runtime access is
 explicit context, not a reason to force an automation-only fix.
+
+The evidence CLI also accepts `--finding-id EVENT_UUID` instead of
+`--automation-id`: it exposes only that prepared finding's Signal and trace,
+including findings carried over from earlier windows. Agents can inspect cited
+spans and conversation/task boundaries before assigning an owner. Candidate
+conversations are not counted as confirmed failures or selected arbitrarily for
+replay; unresolved attribution stays in the cohort's `attribution_gaps`. Possible
+owners are excluded from non-negative controls. Automation origin never limits
+which repository the repair agent may fix.
 
 The repository catalog is starting context, not an allowed-repository list.
 Existing canonical checkouts supply isolated worktrees; there are no file-count
@@ -230,12 +240,21 @@ handling, filters non-evidence directories, stores oversized catalogs as complet
 private indexes, and maintains related-work links while preserving human content.
 Completed repair/review records can be finalized without another coding run.
 
-All **235 pipeline tests pass**, including recovery, deadline, large-catalog and
+All **249 pipeline tests pass**, including recovery, deadline, large-catalog and
 cross-repository reference checks. The pilot exercised the stages with recovery;
 a clean uninterrupted unattended run and a net-improvement acceptance remain
 unproven. Original partial receipts, SDK-resume failure and corrected attempts
 remain private and indexed from the issues. The scheduled worker and Laminar
 Signal configuration were not replaced by this one-off validation.
+
+A separate read-only attribution regression check reloaded the same 63 candidate
+findings from Laminar. All 59 previously retained findings remained, and all four
+previously excluded findings became selectable, including an SDK-recovery lead.
+Their two possible conversations remain explicit; none was arbitrarily assigned a
+negative replay input. Both agents' finding-scoped readers retrieved the original
+Signal and trace, and rejected access to an unrelated trace. This check used no
+LLM inference and created no repair PRs; it verifies collection/evidence access,
+not that any recovered lead is a confirmed defect or a successful repair.
 
 Earlier [validation reports](TOPIC_VALIDATION.md) concern previous versions and
 should not be treated as validation of this architecture.

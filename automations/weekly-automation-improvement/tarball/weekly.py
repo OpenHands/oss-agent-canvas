@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from budget import RunBudget
+from attribution import automation_ids as origin_automations
 from cohorts import collect as collect_cohort, topic_records
 from common import encode, read_json, redact, replace_json, timestamp, write_json
 from events import collect_events, hydrate_events
@@ -179,9 +180,12 @@ def prepare_topic(config, context, topic, root):
     inventory = read_json(Path(context["inventory_path"]), 32_000_000)
     by_id = {record["event"]["id"]: record for record in context["records"]}
     selected = [by_id[identifier] for identifier in topic["representative_event_ids"]]
-    automation_ids = sorted({r["owner"]["automation_id"] for r in selected})
+    automation_ids = sorted({a for r in selected for a in origin_automations(r)})
     scoped = [
-        r for r in context["records"] if r["owner"]["automation_id"] in automation_ids
+        r
+        for r in context["records"]
+        if set(origin_automations(r)).intersection(automation_ids)
+        or r["event"]["id"] in topic["representative_event_ids"]
     ]
     negatives = topic_records(scoped, topic["representative_event_ids"])
     args = arguments(config, root, context["limit"], context["seed"])
@@ -209,6 +213,8 @@ def prepare_topic(config, context, topic, root):
             "complete": False,
         }
     write_json(cohort_path, cohort)
+    signal_records_path = root / "signal-records.json"
+    write_json(signal_records_path, context["records"])
     runtime = {}
     for identifier in automation_ids:
         try:
@@ -225,7 +231,7 @@ def prepare_topic(config, context, topic, root):
         "topic": topic,
         "automation_ids": automation_ids,
         "evidence_automation_ids": sorted(
-            {r["owner"]["automation_id"] for r in context["records"]}
+            {a for r in context["records"] for a in origin_automations(r)}
         ),
         "triage_issue": context["aggregation"]["triage_issue"],
         "triage_evidence_dir": str(
@@ -236,6 +242,7 @@ def prepare_topic(config, context, topic, root):
             / context["week"]
         ),
         "inventory_path": context["inventory_path"],
+        "signal_records_path": str(signal_records_path),
         "snapshot_path": str(snapshot_path),
         "cohort_path": str(cohort_path),
         "state_dir": context["state_dir"],
@@ -316,6 +323,7 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
         "output": str(output),
         "status": "no_unhandled_findings",
         "collection_errors": inventory.get("collection_errors", []),
+        "attribution_warnings": inventory.get("attribution_warnings", []),
         "discovery_errors": discovery_errors,
         "topics": [],
         "max_topics_per_run": config.get("max_topics_per_run", 10),

@@ -3,6 +3,7 @@ import hashlib
 from collections import Counter
 
 from common import encode, timestamp, topic_id, write_json
+from attribution import automation_ids, candidates, conversation_ids, unit
 from triage_agent import rank
 from laminar import object_value
 
@@ -97,15 +98,20 @@ def group_findings(records):
         )
         examples, conversations = [], set()
         for record in members:
-            conversation = record["owner"]["conversation_id"]
-            if conversation in conversations:
+            identity = unit(record)
+            if identity in conversations:
                 continue
-            conversations.add(conversation)
+            conversations.add(identity)
             payload = object_value(record["event"]["payload"])
             examples.append(
                 {
                     "event_id": record["event"]["id"],
-                    "conversation_id": conversation,
+                    "conversation_id": record["owner"]["conversation_id"]
+                    if record.get("owner")
+                    else None,
+                    "conversation_ids": conversation_ids(record),
+                    "trace_id": record["event"]["trace_id"],
+                    "attribution_status": record.get("attribution_status", "resolved"),
                     "severity": record["event"].get("severity"),
                     "finding": {
                         field: str(payload.get(field, ""))[:1200]
@@ -130,8 +136,16 @@ def group_findings(records):
                 else "exact_signature",
                 "events": len(members),
                 "affected_conversations": len(
-                    {item["owner"]["conversation_id"] for item in members}
+                    {
+                        item["owner"]["conversation_id"]
+                        for item in members
+                        if item.get("owner")
+                    }
                 ),
+                "candidate_conversations": len(
+                    {c for item in members for c in conversation_ids(item)}
+                ),
+                "affected_traces": len({item["event"]["trace_id"] for item in members}),
                 "outcomes": dict(
                     Counter(
                         str(
@@ -166,37 +180,69 @@ def prepare(records, prs, previous_attempts, retry_topic_ids=()):
         "e" + str(i): identifier for i, identifier in enumerate(sorted(by_event), 1)
     }
     event_refs = {identifier: reference for reference, identifier in events.items()}
-    grouped = {}
-    for record in records:
-        grouped.setdefault(record["owner"]["automation_id"], []).append(record)
     conversations = {
         identifier: "c" + str(i)
         for i, identifier in enumerate(
-            sorted({r["owner"]["conversation_id"] for r in records}), 1
+            sorted({c for r in records for c in conversation_ids(r)}), 1
         )
     }
-    automations, cards, event_groups = {}, [], {}
-    for i, (automation, rows) in enumerate(sorted(grouped.items()), 1):
-        reference = "a" + str(i)
-        automations[automation] = {
-            "ref": reference,
-            "name": rows[0]["owner"]["automation_name"],
+    traces = {
+        identifier: "t" + str(i)
+        for i, identifier in enumerate(
+            sorted({r["event"]["trace_id"] for r in records}), 1
+        )
+    }
+    known_automations = sorted({a for r in records for a in automation_ids(r)})
+    automations = {}
+    for i, identifier in enumerate(known_automations, 1):
+        rows = [r for r in records if identifier in automation_ids(r)]
+        names = [
+            o.get("automation_name", "")
+            for r in rows
+            for o in candidates(r)
+            if o.get("automation_id") == identifier
+        ]
+        automations[identifier] = {
+            "ref": "a" + str(i),
+            "name": next((n for n in names if n), ""),
             "events": len(rows),
         }
+    grouped = {}
+    for record in records:
+        grouped.setdefault(tuple(automation_ids(record)), []).append(record)
+    cards, event_groups = [], {}
+    for owners, rows in sorted(grouped.items()):
         groups, membership = group_findings(rows)
         for card in groups:
-            card = card | {"automation_id": automation, "automation_ref": reference}
+            card |= {
+                "automation_id": owners[0] if len(owners) == 1 else None,
+                "automation_ref": automations[owners[0]]["ref"]
+                if len(owners) == 1
+                else None,
+                "automation_ids": list(owners),
+                "automation_refs": [automations[a]["ref"] for a in owners],
+            }
             for record in membership[card["group_id"]]:
                 event_groups[record["event"]["id"]] = card["group_id"]
             card["examples"] = [
                 {
-                    key: value
-                    for key, value in example.items()
-                    if key not in ("event_id", "conversation_id")
+                    k: v
+                    for k, v in example.items()
+                    if k
+                    not in (
+                        "event_id",
+                        "conversation_id",
+                        "conversation_ids",
+                        "trace_id",
+                    )
                 }
                 | {
                     "event_ref": event_refs[example["event_id"]],
-                    "conversation_ref": conversations[example["conversation_id"]],
+                    "conversation_ref": conversations.get(example["conversation_id"]),
+                    "conversation_refs": [
+                        conversations[c] for c in example["conversation_ids"]
+                    ],
+                    "trace_ref": traces[example["trace_id"]],
                 }
                 for example in card["examples"]
             ]
@@ -204,22 +250,38 @@ def prepare(records, prs, previous_attempts, retry_topic_ids=()):
     references = {
         "events": events,
         "conversations": {v: k for k, v in conversations.items()},
+        "traces": {v: k for k, v in traces.items()},
         "event_groups": event_groups,
     }
     context = {
         "total_events": len(records),
-        "affected_conversations": len(conversations),
+        "affected_conversations": len(
+            {r["owner"]["conversation_id"] for r in records if r.get("owner")}
+        ),
+        "candidate_conversations": len(conversations),
+        "affected_traces": len(traces),
+        "unresolved_attribution_events": sum(not r.get("owner") for r in records),
         "automations": automations,
         "groups": cards,
         "event_catalog": [
             {
                 "event_ref": reference,
-                "automation_ref": automations[
-                    by_event[identifier]["owner"]["automation_id"]
-                ]["ref"],
-                "conversation_ref": conversations[
+                "automation_ref": automations[owners[0]]["ref"]
+                if len(owners := automation_ids(by_event[identifier])) == 1
+                else None,
+                "automation_refs": [automations[a]["ref"] for a in owners],
+                "conversation_ref": conversations.get(
                     by_event[identifier]["owner"]["conversation_id"]
+                )
+                if by_event[identifier].get("owner")
+                else None,
+                "conversation_refs": [
+                    conversations[c] for c in conversation_ids(by_event[identifier])
                 ],
+                "trace_ref": traces[by_event[identifier]["event"]["trace_id"]],
+                "attribution_status": by_event[identifier].get(
+                    "attribution_status", "resolved"
+                ),
             }
             for reference, identifier in events.items()
         ],
@@ -229,10 +291,11 @@ def prepare(records, prs, previous_attempts, retry_topic_ids=()):
             t for t in previous_attempts if t["id"] in retry_topic_ids
         ],
     }
-    prepared_records = [
-        record | {"event_ref": event_refs[record["event"]["id"]]} for record in records
-    ]
-    return context, references, prepared_records
+    return (
+        context,
+        references,
+        [r | {"event_ref": event_refs[r["event"]["id"]]} for r in records],
+    )
 
 
 def validate(result, records, references, limit):
@@ -277,15 +340,19 @@ def validate(result, records, references, limit):
         if set(selected).intersection(seen_events):
             raise ValueError("Topic repeats evidence from another topic")
         chosen = [by_id[event_id] for event_id in selected]
-        automation_ids = {record["owner"]["automation_id"] for record in chosen}
-        automation_id = sorted(automation_ids)[0]
+        owners = sorted({a for record in chosen for a in automation_ids(record)})
+        automation_id = owners[0] if len(owners) == 1 else None
         identifier = topic_id("shared", topic["key"])
         if identifier in seen_topics:
             raise ValueError("Triage repeats a topic key")
-        if len({record["owner"]["conversation_id"] for record in chosen}) != len(
-            chosen
-        ):
-            raise ValueError("Topic representatives repeat a conversation")
+        used_conversations, used_traces = set(), set()
+        for record in chosen:
+            conversations = set(conversation_ids(record))
+            trace = record["event"]["trace_id"]
+            if trace in used_traces or conversations.intersection(used_conversations):
+                raise ValueError("Topic representatives repeat a conversation or trace")
+            used_conversations.update(conversations)
+            used_traces.add(trace)
         seen_events.update(selected)
         seen_topics.add(identifier)
         plans.append(
@@ -297,7 +364,7 @@ def validate(result, records, references, limit):
             | {
                 "id": identifier,
                 "automation_id": automation_id,
-                "automation_ids": sorted(automation_ids),
+                "automation_ids": owners,
                 "selection_order": position,
                 "group_ids": sorted(
                     {references["event_groups"][event_id] for event_id in selected}

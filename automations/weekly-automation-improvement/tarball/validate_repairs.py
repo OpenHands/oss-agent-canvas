@@ -5,6 +5,7 @@ import re
 import uuid
 from pathlib import Path
 
+from attribution import automation_ids
 from common import read_json, redact, write_json
 from budget import BudgetExhausted, RunBudget
 from evidence import after_publication, run
@@ -42,7 +43,7 @@ def historical_cohort(config, body, revision, output):
         records = [
             record
             for record in inventory["events"]
-            if record["owner"]["automation_id"] == owner[1]
+            if owner[1] in automation_ids(record)
         ]
         records = topic_records(records, marked)
         value = collect(client, inventory, owner[1], records, size=size)

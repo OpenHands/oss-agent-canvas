@@ -2,6 +2,7 @@ import json
 import uuid
 
 from common import encode, redact, write_json
+from attribution import conversation_ids, ownership
 from laminar import META, SESSION
 
 
@@ -47,12 +48,15 @@ def population(client, inventory, automation_id):
         )
         for row in rows:
             owners.setdefault(row["trace_id"], {})[encode(row)] = row
-    result = []
+    result, ambiguous_conversations = [], set()
     for run in latest:
-        matching = list(owners.get(run["trace_id"], {}).values())
-        if len(matching) != 1 or matching[0]["automation_id"] not in automation_ids:
+        attribution = ownership(list(owners.get(run["trace_id"], {}).values()))
+        if attribution["owner"] is None:
+            ambiguous_conversations.update(conversation_ids(attribution))
             continue
-        owner = matching[0]
+        owner = attribution["owner"]
+        if owner["automation_id"] not in automation_ids:
+            continue
         owner["conversation_id"] = str(uuid.UUID(owner["conversation_id"]))
         event = run.get("event_id")
         has_event = event not in (None, "", str(uuid.UUID(int=0)))
@@ -71,7 +75,7 @@ def population(client, inventory, automation_id):
                 "signal_run": run,
             }
         )
-    uncertain = {
+    uncertain = ambiguous_conversations | {
         row["conversation_id"]
         for row in result
         if row["classification"] != "non_negative"
@@ -126,15 +130,34 @@ class EvidenceReader:
         ),
     ]
 
-    def __init__(self, client, automation_id, inventory, output):
+    def __init__(self, client, automation_id, inventory, output, *, finding_id=None):
         self.client = client
-        self.automation_id = str(uuid.UUID(automation_id))
+        self.finding = None
+        if finding_id is not None:
+            if automation_id is not None:
+                raise ValueError("Choose either automation scope or finding scope")
+            identifier = str(uuid.UUID(finding_id))
+            matching = [
+                r for r in inventory.get("events", []) if r["event"]["id"] == identifier
+            ]
+            if len(matching) != 1:
+                raise ValueError("Finding is outside the prepared inventory")
+            self.finding = matching[0]
+        elif automation_id is None:
+            raise ValueError("Choose an automation or prepared finding")
+        self.automation_id = (
+            str(uuid.UUID(automation_id)) if automation_id is not None else None
+        )
         self.inventory = inventory
         self.output = output
         self.calls = 0
 
     def owner(self, trace_id):
         trace = str(uuid.UUID(trace_id))
+        if self.finding is not None:
+            if trace != self.finding["event"]["trace_id"]:
+                raise ValueError("Trace is outside this finding")
+            return trace
         owners = self.client.query(
             f"SELECT DISTINCT JSONExtractString(attributes,'{META}automation.id') AS automation_id FROM spans WHERE trace_id='{trace}' AND JSONExtractString(attributes,'{META}automation.id') != ''"
         )
@@ -157,7 +180,24 @@ class EvidenceReader:
         if name == "search_runs":
             if arguments["classification"] not in ("negative", "non_negative", "all"):
                 raise ValueError("Invalid run classification")
-            rows = population(self.client, self.inventory, self.automation_id)
+            if self.finding is not None:
+                rows = [
+                    {
+                        "trace_id": self.finding["event"]["trace_id"],
+                        "signal_event_id": self.finding["event"]["id"],
+                        "classification": "negative",
+                        "attribution_status": self.finding.get(
+                            "attribution_status", "resolved"
+                        ),
+                        **{
+                            k: v
+                            for k, v in self.finding.items()
+                            if k in ("owner", "owner_candidates")
+                        },
+                    }
+                ]
+            else:
+                rows = population(self.client, self.inventory, self.automation_id)
             rows = [
                 row
                 for row in rows
@@ -171,12 +211,19 @@ class EvidenceReader:
             }
         elif name == "read_signal":
             identifier = str(uuid.UUID(arguments["event_id"]))
+            if self.finding is not None and identifier != self.finding["event"]["id"]:
+                raise ValueError("Signal is outside this finding")
             rows = self.client.query(
                 f"SELECT id,trace_id,signal_id,signal_version,severity,payload FROM signal_events WHERE id='{identifier}' LIMIT 2"
             )
             if len(rows) != 1:
                 raise ValueError("Signal is missing or ambiguous")
             self.owner(rows[0]["trace_id"])
+            if self.finding is not None and any(
+                rows[0][key] != self.finding["event"][key]
+                for key in ("signal_id", "signal_version")
+            ):
+                raise ValueError("Signal differs from the prepared finding")
             payload = rows[0].pop("payload")
             text = payload if isinstance(payload, str) else json.dumps(payload)
             result = {
@@ -189,7 +236,7 @@ class EvidenceReader:
             trace = self.owner(arguments["trace_id"])
             if name == "list_spans":
                 rows = self.client.query(
-                    f"SELECT span_id,name,span_type,status,start_time,length(input) AS input_bytes,length(output) AS output_bytes FROM spans WHERE trace_id='{trace}' ORDER BY start_time,span_id LIMIT 21 OFFSET {offset}"
+                    f"SELECT span_id,name,span_type,status,start_time,JSONExtractString(attributes,'{SESSION}') AS conversation_id,length(input) AS input_bytes,length(output) AS output_bytes FROM spans WHERE trace_id='{trace}' ORDER BY start_time,span_id LIMIT 21 OFFSET {offset}"
                 )
                 result = {
                     "spans": rows[:20],

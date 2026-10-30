@@ -8,6 +8,7 @@ from collections import Counter
 from pathlib import Path
 
 from common import encode, redact, timestamp, write_json
+from attribution import automation_ids, candidates as owner_candidates, ownership
 from flow1 import estimated_cost, signal_definition
 from laminar import META, SESSION, object_value
 
@@ -134,6 +135,7 @@ def collect_events(client, handled, *, aggregate=False):
         },
         "samples": [],
         "collection_errors": [],
+        "attribution_warnings": [],
     }
     if aggregate:
         snapshot["latest_runs"] = list(latest.values())
@@ -209,7 +211,8 @@ def collect_cards(client, snapshot, candidates):
             f"FROM signal_events WHERE signal_id='{snapshot['flow1_signal']['id']}' "
             f"AND id IN ({event_ids}) LIMIT {len(batch) + 1}"
         )
-        if len(owners) > len(batch) * 3 or len(events) > len(batch):
+        ownership_incomplete = len(owners) > len(batch) * 3
+        if len(events) > len(batch):
             snapshot["collection_errors"].extend(
                 {
                     "event_id": key,
@@ -227,13 +230,10 @@ def collect_cards(client, snapshot, candidates):
                 owner for owner in owners if owner["trace_id"] == run["trace_id"]
             ]
             try:
-                if len(matches) != 1 or len(by_id.get(event_id, [])) != 1:
-                    raise ValueError(
-                        "Missing or ambiguous event/conversation ownership"
-                    )
-                owner, event = matches[0], by_id[event_id][0]
-                for key in ("conversation_id", "automation_id", "run_id"):
-                    uuid.UUID(owner[key])
+                if len(by_id.get(event_id, [])) != 1:
+                    raise ValueError("Missing or ambiguous Signal event")
+                event = by_id[event_id][0]
+                attribution = ownership(matches, ownership_incomplete)
                 if any(
                     event[key] != run[key]
                     for key in ("signal_id", "signal_version", "run_id", "trace_id")
@@ -245,13 +245,21 @@ def collect_cards(client, snapshot, candidates):
                 records.append(
                     {
                         "event": event,
-                        "owner": owner,
+                        **attribution,
                         "run": run,
                         "definition": snapshot["flow1_definitions"][
                             str(event["signal_version"])
                         ],
                     }
                 )
+                if attribution["owner"] is None:
+                    snapshot.setdefault("attribution_warnings", []).append(
+                        {
+                            "event_id": event_id,
+                            "status": attribution["attribution_status"],
+                            "candidate_count": len(matches),
+                        }
+                    )
             except (ValueError, KeyError, TypeError) as error:
                 snapshot["collection_errors"].append(
                     {"event_id": event_id, "error": str(error)}
@@ -263,6 +271,22 @@ def hydrate_events(client, inventory, records):
     grouped = {}
     for record in records:
         owner, event = record["owner"], record["event"]
+        if owner is None:
+            grouped["trace:" + event["trace_id"]] = {
+                "conversation_id": None,
+                "automation_id": next(iter(automation_ids(record)), None)
+                if len(automation_ids(record)) == 1
+                else None,
+                "trace_id": event["trace_id"],
+                "owner_candidates": owner_candidates(record),
+                "attribution_status": record["attribution_status"],
+                "selected_event_ids": [event["id"]],
+                "flow1_required_trace_ids": [event["trace_id"]],
+                "flow1_signal": record["definition"],
+                "flow1_events": [event],
+                "flow1_runs": [record["run"]],
+            }
+            continue
         conversation = owner["conversation_id"]
         if conversation in grouped:
             raise ValueError("Select at most one representative per conversation")
@@ -277,6 +301,21 @@ def hydrate_events(client, inventory, records):
         sample = {**owner, "case_id": f"c{index}", "spans": [], "signals": []}
         samples.append(sample)
         try:
+            if sample.get("attribution_status"):
+                trace = str(uuid.UUID(sample["trace_id"]))
+                sample["trace_ids"] = [trace]
+                sample["signals"] = sample["flow1_events"]
+                sample["attribution_warning"] = (
+                    "Trace-level finding; candidate conversations are not confirmed negative inputs. Resolve attribution from cited spans before replay."
+                )
+                sample["span_index"] = client.query(
+                    f"SELECT span_id,parent_span_id,name,span_type,status,start_time,end_time,JSONExtractString(attributes,'{SESSION}') AS conversation_id,length(input) AS input_bytes,length(output) AS output_bytes FROM spans WHERE trace_id='{trace}' ORDER BY start_time,span_id LIMIT {client.args.max_spans + 1}"
+                )
+                sample["span_index_clipped"] = (
+                    len(sample["span_index"]) > client.args.max_spans
+                )
+                sample["span_index"] = sample["span_index"][: client.args.max_spans]
+                continue
             client.load_sample(sample)
             client.load_flow1(sample, sample["flow1_signal"])
         except (ValueError, KeyError, OSError) as error:
