@@ -552,7 +552,7 @@ def _propose_fix(args, report, snapshot):
     bundle.chmod(0o600)
     results["candidate_bundle"] = str(bundle)
     verified = None
-    if agent_checks:
+    if agent_checks or allow_inconclusive:
         review = review_checks(
             args, proposal, findings, checks, before, after, snapshot, candidate_only
         )
@@ -819,7 +819,7 @@ def _propose_fix(args, report, snapshot):
         candidate,
     )
     results["created"] = True
-    if not agent_checks:
+    if not agent_checks and not allow_inconclusive:
         results["comparison"] = after_publication(
             config,
             source,

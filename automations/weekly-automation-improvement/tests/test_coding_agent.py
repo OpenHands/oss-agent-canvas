@@ -580,3 +580,62 @@ def test_saved_profile_owns_model_tools_and_secrets(
     for file in (output / "coding-agent").glob("*.json"):
         assert "profile-model-key" not in file.read_text()
         assert "profile-secret-value" not in file.read_text()
+
+
+@pytest.mark.parametrize("public_safe", [True, False])
+def test_draft_without_paired_checks_still_requires_public_safety_review(
+    source, tmp_path, monkeypatch, public_safe
+):
+    checkout, path, config = source
+    config["publish_inconclusive_drafts"] = True
+    path.write_text(json.dumps(config))
+    command(
+        ["git", "remote", "add", "origin", "https://github.com/Example/automation.git"],
+        checkout,
+    )
+    args = arguments(tmp_path / "draft", source_config=path, publish_draft=True)
+    args.output.mkdir()
+    report = fix_report(PATCH)
+    report["proposals"][0]["checks"] = []
+    report["findings"][0]["trace_urls"] = []
+    original = patches.command
+    published = []
+
+    def transport(argv, cwd=None, **kwargs):
+        if argv[:2] == ["gh", "api"]:
+            return config["revision"]
+        if argv[:3] == ["gh", "pr", "list"]:
+            return "[]"
+        if argv[:2] == ["git", "ls-remote"]:
+            return ""
+        if argv[:2] == ["git", "push"]:
+            assert public_safe
+            return ""
+        if argv[:3] == ["gh", "pr", "create"]:
+            assert public_safe and "--draft" in argv
+            body = Path(argv[argv.index("--body-file") + 1]).read_text()
+            assert "No paired checks were provided" in body
+            assert "improvement not demonstrated" in body
+            published.append(True)
+            return "https://github.com/Example/automation/pull/3"
+        return original(argv, cwd, **kwargs)
+
+    reviews = []
+
+    def review(*args):
+        assert args[3:6] == ([], [], [])
+        reviews.append(True)
+        return {
+            "public_safe": public_safe,
+            "supported": False,
+            "reason": "No paired checks were provided",
+        }
+
+    monkeypatch.setattr(patches, "command", transport)
+    monkeypatch.setattr(patches, "review_checks", review)
+    result = patches.propose_fix(args, report, {"source": load_source(path)})
+    assert reviews == [True]
+    assert bool(published) == public_safe
+    assert result["status"] == (
+        "validation_incomplete_draft" if public_safe else "rejected"
+    )
