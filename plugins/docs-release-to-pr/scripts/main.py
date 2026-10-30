@@ -59,7 +59,7 @@ Common env vars:
   AUTOMATION_RUN_ID          - run ID for the callback payload (optional)
   AUTOMATION_USER_ID         - owner user ID for observability attribution (optional)
   AUTOMATION_ORG_ID          - owner org ID for observability context (optional)
-  AUTOMATION_EVENT_PAYLOAD   - JSON with trigger info and event payload (optional)
+  AUTOMATION_EVENT_PAYLOAD   - required JSON with a webhook object at event.payload
   AUTOMATION_MODEL           - model profile name to load instead of default (optional)
 
 Runtime-injected secrets (via conversation.update_secrets after Conversation creation):
@@ -250,15 +250,19 @@ with workspace_ctx as workspace:
     # -- All remaining setup happens inside the workspace context --
     # This ensures failures trigger the __exit__ callback
 
-    # Parse event payload if present (for event-triggered automations)
-    event_context = None
-    if event_payload_json := os.environ.get("AUTOMATION_EVENT_PAYLOAD"):
-        try:
-            event_context = json.loads(event_payload_json)
-        except json.JSONDecodeError as e:
-            print(
-                f"ERROR: Failed to parse AUTOMATION_EVENT_PAYLOAD: {e}", file=sys.stderr
-            )
+    try:
+        event_context = json.loads(os.environ.get("AUTOMATION_EVENT_PAYLOAD", ""))
+    except json.JSONDecodeError:
+        event_context = None
+    if (
+        not isinstance(event_context, dict)
+        or not isinstance(event_context.get("event"), dict)
+        or not isinstance(event_context["event"].get("payload"), dict)
+    ):
+        raise ValueError(
+            "Missing or invalid webhook payload: AUTOMATION_EVENT_PAYLOAD "
+            "must contain a JSON object at event.payload"
+        )
 
     # Clone repositories if repos_config.json exists
     SCRIPT_DIR = os.path.dirname(__file__)
