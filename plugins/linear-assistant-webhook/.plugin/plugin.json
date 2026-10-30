@@ -24,7 +24,7 @@
     "runtime": {
       "agent_profile": {
         "required": true,
-        "default_name": "linear-assistant"
+        "default_name": "linear-assistant-org"
       },
       "plugins": []
     },
@@ -39,6 +39,18 @@
         "linear_api_key_secret": {
           "type": "string",
           "default": "LINEAR_BOT_READ_AND_MENTION_TOKEN"
+        },
+        "linear_refresh_token_secret": {
+          "type": "string",
+          "default": "LINEAR_BOT_REFRESH_TOKEN"
+        },
+        "linear_client_id_secret": {
+          "type": "string",
+          "default": "LINEAR_OAUTH_CLIENT_ID"
+        },
+        "linear_client_secret_secret": {
+          "type": "string",
+          "default": "LINEAR_OAUTH_CLIENT_SECRET"
         },
         "linear_team_keys": {
           "type": "array",

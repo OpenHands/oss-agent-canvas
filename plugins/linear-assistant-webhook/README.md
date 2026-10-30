@@ -42,7 +42,22 @@ service drops redelivered webhooks by `Linear-Delivery` id.
 ## Setup
 
 Secrets (names are configurable): `LINEAR_BOT_READ_AND_MENTION_TOKEN` with
-`read` and `comments:create`, and `GITHUB_TOKEN`.
+`read` and `comments:create`, and `GITHUB_TOKEN`. The bot must have been
+authorized with `app:mentionable` and `app:assignable` (browser flow with
+`actor=app`); a `client_credentials` token cannot be mentioned.
+
+Linear's app access tokens last 24 hours, so the script renews them. Add
+`LINEAR_BOT_REFRESH_TOKEN`, `LINEAR_OAUTH_CLIENT_ID` and
+`LINEAR_OAUTH_CLIENT_SECRET`, all from the same authorization. Refresh tokens
+rotate, and each run starts in a fresh sandbox, so the current pair is kept in
+the automation KV store (`linear-oauth-v1`) and the secrets only seed it. To
+switch to a newly authorized token pair, replace the three secrets; stored state
+from the old refresh token is ignored. Without these secrets the access token
+is used as given and stops working after a day.
+
+The agent profile is `linear-assistant-org` (org scope: the automation service
+cannot read a personal-scope profile's details). It must exist before the
+automation is created.
 
 1. Create the webhook on the automation service. `event_id_header` is what lets
    it drop Linear redeliveries; keep the returned `webhook_secret`:

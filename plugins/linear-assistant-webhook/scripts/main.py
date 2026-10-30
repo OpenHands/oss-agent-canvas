@@ -27,18 +27,25 @@ Replying needs the Linear token to carry the `comments:create` (or `write`)
 scope; reading the notification only needs `read`.
 """
 
+import hashlib
 import json
 import os
 import shutil
 import subprocess
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
 CONFIG = json.loads((Path(os.environ.get("AUTOMATION_CONFIG_PATH") or Path(__file__).with_name("config.json"))).read_text())
 LINEAR_BOT_USER_ID = CONFIG["linear_bot_user_id"]
 LINEAR_API_KEY_SECRET = CONFIG.get("linear_api_key_secret", "LINEAR_BOT_READ_AND_MENTION_TOKEN")
+# Linear's app access tokens last 24h. With these three secrets set, the script
+# renews the token itself; without them it uses the access token as given.
+LINEAR_REFRESH_TOKEN_SECRET = CONFIG.get("linear_refresh_token_secret", "LINEAR_BOT_REFRESH_TOKEN")
+LINEAR_CLIENT_ID_SECRET = CONFIG.get("linear_client_id_secret", "LINEAR_OAUTH_CLIENT_ID")
+LINEAR_CLIENT_SECRET_SECRET = CONFIG.get("linear_client_secret_secret", "LINEAR_OAUTH_CLIENT_SECRET")
 # Only tickets in these teams are handled: the repos below are this team's.
 LINEAR_TEAM_KEYS = set(CONFIG.get("linear_team_keys") or [])
 REPOS: list[str] = CONFIG["repos"]
@@ -196,7 +203,11 @@ def _linear_auth_header(key: str) -> str:
     return key if key.startswith("lin_api_") else f"Bearer {key}"
 
 
-def _linear(key: str, query: str, variables: dict | None = None) -> dict:
+class _LinearAuthError(RuntimeError):
+    """Linear rejected the access token (expired or revoked)."""
+
+
+def _linear_request(key: str, query: str, variables: dict | None = None) -> dict:
     req = urllib.request.Request(
         LINEAR_API_URL, data=json.dumps({"query": query, "variables": variables or {}}).encode(),
         headers={"Authorization": _linear_auth_header(key), "Content-Type": "application/json"},
@@ -205,10 +216,138 @@ def _linear(key: str, query: str, variables: dict | None = None) -> dict:
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
             result = json.loads(r.read())
     except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"Linear API -> {exc.code}: {exc.read().decode()[:300]}")
+        message = f"Linear API -> {exc.code}: {exc.read().decode()[:300]}"
+        raise (_LinearAuthError if exc.code == 401 else RuntimeError)(message)
     if result.get("errors"):
         raise RuntimeError(f"Linear API errors: {json.dumps(result['errors'])[:500]}")
     return result["data"]
+
+
+def _linear(key: str, query: str, variables: dict | None = None) -> dict:
+    # `key` is the secret as given; after a renewal the fresher token wins.
+    token = _linear_token["current"] or key
+    try:
+        return _linear_request(token, query, variables)
+    except _LinearAuthError:
+        _linear_token["current"] = _refresh_linear_token(token)
+        return _linear_request(_linear_token["current"], query, variables)
+
+
+# ── Linear token renewal ────────────────────────────────────────────────────
+#
+# Refresh tokens rotate: redeeming one invalidates it. Every run starts in a
+# fresh sandbox, so the current pair lives in the automation KV store (the
+# secrets only seed it). The state records which seed it came from, so putting
+# a freshly authorized token pair in the secrets takes over from stale state.
+
+LINEAR_TOKEN_URL = "https://api.linear.app/oauth/token"
+LINEAR_TOKEN_KV_KEY = "linear-oauth-v1"
+REFRESH_SKEW = 300
+_linear_token: dict = {"current": None}
+
+
+def _token_kv(method: str, suffix: str = "", body: dict | None = None) -> dict:
+    base = os.environ.get("AUTOMATION_API_URL", "").rstrip("/")
+    kv_token = os.environ.get("AUTOMATION_KV_TOKEN", "")
+    if not (base and kv_token):
+        raise RuntimeError("Automation KV store is required to renew the Linear token")
+    req = urllib.request.Request(
+        f"{base}/v1/kv/{LINEAR_TOKEN_KV_KEY}{suffix}", method=method,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Authorization": f"Bearer {kv_token}", "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as response:
+        raw = response.read()
+        return json.loads(raw) if raw else {}
+
+
+def _seed_fingerprint(refresh_token: str) -> str:
+    return hashlib.sha256(refresh_token.encode()).hexdigest()[:16]
+
+
+def _load_token_state(seed: str) -> tuple[dict, int]:
+    """The stored token pair and its KV version; empty if it came from another seed."""
+    try:
+        data = _token_kv("GET", "?meta=true")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return {}, 0
+        raise
+    state, version = data.get("value") or {}, int(data.get("version", 0))
+    return (state if state.get("seed") == _seed_fingerprint(seed) else {}), version
+
+
+def _save_token_state(state: dict, version: int) -> bool:
+    try:
+        _token_kv("PUT", "?nx=true" if version == 0 else f"?if_version={version}", state)
+        return True
+    except urllib.error.HTTPError as exc:
+        if exc.code in (409, 412):
+            return False
+        raise
+
+
+def _redeem_refresh_token(refresh_token: str, client_id: str, client_secret: str) -> dict:
+    body = urllib.parse.urlencode({
+        "grant_type": "refresh_token", "refresh_token": refresh_token,
+        "client_id": client_id, "client_secret": client_secret,
+    }).encode()
+    try:
+        with urllib.request.urlopen(urllib.request.Request(LINEAR_TOKEN_URL, data=body, method="POST"),
+                                    timeout=HTTP_TIMEOUT) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"Linear token refresh -> {exc.code}: {exc.read().decode()[:300]}")
+
+
+def _usable(state: dict) -> bool:
+    return bool(state.get("access_token")) and float(state.get("expires_at", 0)) - time.time() > REFRESH_SKEW
+
+
+def _refresh_linear_token(stale: str) -> str:
+    """Return an access token that works, renewing it once if nobody else has."""
+    try:
+        seed = get_secret(LINEAR_REFRESH_TOKEN_SECRET)
+    except Exception as exc:
+        raise RuntimeError(f"Linear rejected the access token and no refresh token is set "
+                           f"({LINEAR_REFRESH_TOKEN_SECRET}): {exc}")
+    state, version = _load_token_state(seed)
+    if _usable(state) and state["access_token"] != stale:
+        return state["access_token"]  # another run already renewed it
+    log("Renewing the Linear access token")
+    try:
+        tokens = _redeem_refresh_token(state.get("refresh_token") or seed,
+                                       get_secret(LINEAR_CLIENT_ID_SECRET), get_secret(LINEAR_CLIENT_SECRET_SECRET))
+    except RuntimeError:
+        # A concurrent run may have redeemed the same refresh token first.
+        latest, _ = _load_token_state(seed)
+        if latest.get("access_token") and latest["access_token"] != stale:
+            return latest["access_token"]
+        raise
+    renewed = {
+        "seed": _seed_fingerprint(seed), "access_token": tokens["access_token"],
+        "refresh_token": tokens.get("refresh_token") or state.get("refresh_token") or seed,
+        "expires_at": time.time() + int(tokens.get("expires_in", 86400)),
+    }
+    if not _save_token_state(renewed, version):
+        latest, _ = _load_token_state(seed)  # lost the race: use the winner's pair
+        if latest.get("access_token"):
+            return latest["access_token"]
+    return renewed["access_token"]
+
+
+def _prepare_linear_token(seed_access_token: str) -> None:
+    """Start from the stored token when there is a good one, and renew ahead of
+    expiry; otherwise the first 401 triggers the renewal."""
+    try:
+        seed = get_secret(LINEAR_REFRESH_TOKEN_SECRET)
+    except Exception:
+        return  # renewal not configured: use the token as given
+    state, _ = _load_token_state(seed)
+    if _usable(state):
+        _linear_token["current"] = state["access_token"]
+    elif state.get("access_token"):
+        _linear_token["current"] = _refresh_linear_token(state["access_token"])
 
 
 def _get_notification(key: str, notification_id: str) -> dict:
@@ -535,6 +674,10 @@ def main() -> str | None:
         return None
 
     linear_key = get_secret(LINEAR_API_KEY_SECRET)
+    try:
+        _prepare_linear_token(linear_key)
+    except Exception as exc:
+        log(f"Warning: could not prepare the Linear token ({exc}); using it as given")
     notification = _get_notification(linear_key, notification_id)
     task = _task_from_notification(notification) if notification else None
     if not task:

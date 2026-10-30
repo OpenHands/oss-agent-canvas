@@ -1,6 +1,9 @@
 {
   "linear_bot_user_id": "95876836-8eac-4548-8abe-00c00515e19f",
   "linear_api_key_secret": "LINEAR_BOT_READ_AND_MENTION_TOKEN",
+  "linear_refresh_token_secret": "LINEAR_BOT_REFRESH_TOKEN",
+  "linear_client_id_secret": "LINEAR_OAUTH_CLIENT_ID",
+  "linear_client_secret_secret": "LINEAR_OAUTH_CLIENT_SECRET",
   "linear_team_keys": ["OSS"],
   "repos": [
     "OpenHands/agent-canvas",
