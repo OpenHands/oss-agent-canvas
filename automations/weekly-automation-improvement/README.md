@@ -196,10 +196,46 @@ usage remains unknown. Per-stage receipts distinguish SDK-estimated agent costs
 from proxy-reported review costs and retain latency/completions. The shared cost
 threshold remains a safety limit; incomplete accounting blocks further inference.
 
-## Local implementation status
+## Live validation — 2026-10-30
 
-This architecture is implemented locally. Focused mocked unit checks cover its
-orchestration and metadata safeguards; live end-to-end validation is deliberately
-pending. Earlier [validation reports](TOPIC_VALIDATION.md) describe previous
-versions and do not validate this redesign. No existing PRs were changed as part
-of the local implementation.
+The pilot loaded 59 findings across ten automations upfront. After accounting for
+previous work, Luna ranked 43 eligible findings across eight automations and
+selected two topics. Both Sol workers launched in parallel; each had three
+negative and five randomly selected no-finding original inputs.
+
+- [PR #90](https://github.com/OpenHands/oss-agent-canvas/pull/90), linked to
+  [issue #73](https://github.com/OpenHands/oss-agent-canvas/issues/73), adds an
+  isolated-baseline worktree recipe. Independent review kept it draft: the
+  decision-point replay observed zero target mutations on both baseline and
+  candidate, so behavioral improvement was not demonstrated.
+- [PR #91](https://github.com/OpenHands/oss-agent-canvas/pull/91), linked to
+  [issue #89](https://github.com/OpenHands/oss-agent-canvas/issues/89), adds a
+  priority-evidence checkpoint. Its three selected negatives change from
+  high/medium/medium to low/low/low. Independent review kept it draft because
+  one original control's SDK-timeout reproduction changes medium to low and
+  its intended treatment needs policy adjudication. The 32 recorded decisions
+  include separate synthetic controls; they are not 32 historical incidents.
+
+These are checkpoint projections with captured context, not complete historical
+replays or evidence of population-wide benefit. Both candidate suites retain the
+same unrelated Dependabot-default failure present in baseline; neither has green
+GitHub CI. Independent reviewers did not treat that inherited failure as a reason
+to reject a scoped improvement.
+
+The run required operator recovery. It exposed blocking task delegation waiting
+on a parent-owned candidate update, oversized evidence catalogs, expensive indexing
+of environments/checkouts, and a missing issue-to-PR body link. The implementation
+now documents blocking delegation, enforces deadlines outside ordinary tool error
+handling, filters non-evidence directories, stores oversized catalogs as complete
+private indexes, and maintains related-work links while preserving human content.
+Completed repair/review records can be finalized without another coding run.
+
+All **235 pipeline tests pass**, including recovery, deadline, large-catalog and
+cross-repository reference checks. The pilot exercised the stages with recovery;
+a clean uninterrupted unattended run and a net-improvement acceptance remain
+unproven. Original partial receipts, SDK-resume failure and corrected attempts
+remain private and indexed from the issues. The scheduled worker and Laminar
+Signal configuration were not replaced by this one-off validation.
+
+Earlier [validation reports](TOPIC_VALIDATION.md) concern previous versions and
+should not be treated as validation of this architecture.
