@@ -22,6 +22,14 @@
       "command": "python3 main.py"
     },
     "runtime": {
+      "agent_profile": {
+        "required": true,
+        "default_name": "linear-assistant",
+        "allowed_secret_refs": [
+          "LINEAR_BOT_READ_AND_MENTION_TOKEN",
+          "GITHUB_TOKEN"
+        ]
+      },
       "plugins": []
     },
     "config_schema": {

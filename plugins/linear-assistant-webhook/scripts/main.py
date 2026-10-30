@@ -73,6 +73,10 @@ def _get_env_key() -> str:
 
 
 def get_secret(name: str) -> str:
+    # Secrets exposed through the agent profile arrive as environment variables.
+    value = os.environ.get(name)
+    if value:
+        return value.strip()
     req = urllib.request.Request(
         f"{_agent_url()}/api/settings/secrets/{name}",
         headers={"X-Session-API-Key": _get_env_key()},
@@ -512,7 +516,17 @@ def _release_workspace(workspace_dir: Path, conv_id: str) -> None:
         log(f"Conversation {conv_id} not confirmed stopped; leaving {workspace_dir} in place")
 
 
+def _require_agent_server() -> None:
+    """Fail at once, naming what the runtime did provide, instead of hanging on
+    a default address that does not exist in this sandbox."""
+    if os.environ.get("AGENT_SERVER_URL"):
+        return
+    provided = sorted(k for k in os.environ if k.startswith(("AUTOMATION_", "AGENT_", "SESSION_", "OH_")))
+    raise RuntimeError(f"AGENT_SERVER_URL is not set (is an agent profile bound?). Provided: {provided}")
+
+
 def main() -> str | None:
+    _require_agent_server()
     payload = json.loads(os.environ.get("AUTOMATION_EVENT_PAYLOAD") or "{}")
     event = payload.get("event") or {}
     notification_id = _notification_id_from_event(event)
