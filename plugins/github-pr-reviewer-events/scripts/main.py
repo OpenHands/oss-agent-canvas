@@ -18,6 +18,7 @@ import io
 import json
 import os
 import re
+import shlex
 import shutil
 import sys
 import tarfile
@@ -754,6 +755,44 @@ def _load_repo_review_guide(workspace_dir: Path) -> str | None:
     return None
 
 
+def _validation_instructions(head_sha: str) -> str:
+    return (
+        "Validation isolation:\n"
+        "- After the initial exact-head checkout, keep the reviewed source, HEAD and "
+        "index unchanged, even temporarily. Do not stash, swap in base files with "
+        "checkout/restore, copy over source, or edit it and restore it later. "
+        "Do not use `git --work-tree` for isolation: it still shares the review index.\n"
+        "- Run focused head tests against the untouched reviewed checkout. If a "
+        "base comparison is useful after the scope gate, create a disposable "
+        "detached worktree outside the reviewed checkout, starting at the exact "
+        "head so HEAD's regression tests remain available. Example setup (TMPDIR "
+        "must also be outside the reviewed checkout):\n"
+        "```sh\n"
+        "review_root=$(git rev-parse --show-toplevel) &&\n"
+        'comparison_parent=$(mktemp -d "${TMPDIR:-/tmp}/review-baseline.XXXXXX") &&\n'
+        'comparison="$comparison_parent/tree" &&\n'
+        'git -C "$review_root" worktree add --detach "$comparison" '
+        f"{shlex.quote(head_sha)}\n"
+        "```\n"
+        "- Only inside that comparison worktree, use "
+        "`git -C \"$comparison\" restore --source=<base-sha> --staged --worktree "
+        "-- <implementation-paths>` for the specific base implementation under "
+        "test, retaining head regression tests. Run comparisons with that directory "
+        "as cwd and isolated dependencies; do not symlink source or editable "
+        "installs back to the review checkout. Record the source/test/dependency "
+        "combination and test exit status. These are baseline-comparison results, "
+        "not head-test results. Remove only the disposable comparison worktree "
+        "with `git -C \"$review_root\" worktree remove --force \"$comparison\"`, "
+        "then remove its empty parent directory.\n"
+        "- If isolation, base objects or dependencies are unavailable, report the "
+        "baseline comparison as unverified; never fall back to in-place swaps. "
+        "Check the review HEAD, working-tree diff and cached diff before and after "
+        "validation. A clean final diff does not excuse temporary source/index "
+        "changes. If a check unexpectedly changes tracked files, stop validation "
+        "and report the limitation rather than restoring and treating it as clean.\n"
+    )
+
+
 def _build_review_prompt(
     repo: str,
     pr: dict,
@@ -795,8 +834,8 @@ def _build_review_prompt(
 
     return (
         "You are an AI code reviewer. Review the GitHub pull request below and publish "
-        "the review directly to GitHub. Do not modify files, push commits, or merge "
-        "the pull request.\n\n"
+        "the review directly to GitHub. Do not modify the reviewed checkout, push "
+        "commits, or merge the pull request.\n\n"
         f"Repository : {repo}\n"
         f"PR #{number}: \"{title}\"\n"
         f"Author     : @{author}\n"
@@ -868,6 +907,7 @@ def _build_review_prompt(
         "or `🔄 CHANGES REQUESTED`.\n"
         "11. If there are no material issues, still publish a review saying so, with the "
         "disclosure and the verdict.\n"
+        f"\n{_validation_instructions(head_sha)}"
         f"\nReview instructions:\n{tone}{extra}{guide_section}\n\n"
         "After GitHub accepts the review, output exactly `GITHUB_REVIEW_POSTED`. "
         "If publishing still fails after the fallback in step 8, output the complete review text "
