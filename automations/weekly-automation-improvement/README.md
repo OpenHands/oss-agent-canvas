@@ -212,6 +212,35 @@ usage remains unknown. Per-stage receipts distinguish SDK-estimated agent costs
 from proxy-reported review costs and retain latency/completions. The shared cost
 threshold remains a safety limit; incomplete accounting blocks further inference.
 
+## Latest staged repair validation
+
+The saved 63-finding inventory and five-topic Luna queue were continued through
+parallel Sol 6.1 repair workers and independent review. The shared entry point is
+[weekly issue #92](https://github.com/OpenHands/oss-agent-canvas/issues/92).
+
+| Topic | Output | Original negative / non-negative cohort | Independent outcome |
+| --- | --- | --- | --- |
+| Credential-safe diagnostics | [#84](https://github.com/OpenHands/oss-agent-canvas/pull/84) | 1 / 0 | Ready for human review; scoped SDK execution/persistence mechanism accepted |
+| Failed reviewer execution outcomes | [#94](https://github.com/OpenHands/oss-agent-canvas/pull/94) | 2 / 5 | Ready for human review; reporting-boundary improvement, no provider-recovery claim |
+| Complete candidate pagination | [#86](https://github.com/OpenHands/oss-agent-canvas/pull/86) | 1 / 1 | Draft; incomplete autonomous evidence and a conditional API rate-budget concern |
+| Reviewer check-result integrity | [#93](https://github.com/OpenHands/oss-agent-canvas/pull/93) | 2 / 5 | Draft; partial prompt improvement with control regressions |
+| Publication content verification | [extensions #878](https://github.com/OpenHands/extensions/pull/878) | 3 / 5 | Scoped source mechanism accepted; draft until the required human PR-template note is supplied |
+
+The outputs include Before / After Evidence, source versions, tested/available
+counts, limitations and private evidence links. Cohort counts are per topic;
+controls can overlap across topics and are not presumed healthy. Boundary/action
+projections and synthetic perturbations are identified separately from full
+historical task execution. The canvas candidates retain the same unrelated
+Dependabot-default suite failure as baseline; no green-CI claim is made.
+
+This was staged validation with recovery, rather than a clean unattended run:
+the worker needed tmux with a usable service-account shell, the missing canonical
+extensions checkout was supplied from an existing canonical repository, and one
+pagination continuation preserved its worktrees/inputs after an inference timeout.
+The setup/source-catalog fixes are included here. Original failures and subsequent
+attempts remain in the private receipts. No existing PR was closed, merged or
+deployed, and no production Signal configuration was changed.
+
 ## Live validation — 2026-10-30
 
 The pilot loaded 59 findings across ten automations upfront. After accounting for
