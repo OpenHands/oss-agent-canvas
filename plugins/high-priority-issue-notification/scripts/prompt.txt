@@ -28,7 +28,7 @@ Pick, **per repository**, up to **5 issues that look the most important to fix q
 3. **Staleness and momentum.** Long-open high-priority issues and issues with recent activity that is about to stall deserve attention.
 4. **Traction.** Number of reactions/comments and whether a maintainer is already engaged.
 
-Cross-check each candidate against the repo's open pull requests (search `repo:<repo>+is:pr+is:open`, and look at the issue's timeline / `closed_by` / cross-references) to determine whether a PR is in flight. Say so explicitly when it is.
+Cross-check each candidate against the repo's complete `pull_requests` pool in the supplied snapshot, and look at the issue's timeline / `closed_by` / cross-references to determine whether a PR is in flight. Fetch linked PR details, reviews and checks before judging mergeability; search records alone do not establish that status. Say explicitly when a PR is in flight.
 
 ## Maintainers
 

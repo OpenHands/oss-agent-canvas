@@ -59,7 +59,7 @@ def github_server(datasets, *, transform=None, stream_delay=0):
             elif parsed.path == "/search/issues":
                 query = params["q"][0]
                 repo = query.split("repo:", 1)[1].split()[0]
-                label = query.split('label:"', 1)[1].split('"')[0]
+                label = query.split('label:"', 1)[1].split('"')[0] if 'label:"' in query else "is:pr"
                 page = int(params.get("page", ["1"])[0])
                 items = datasets.get((repo, label), [])
                 payload = {
@@ -223,7 +223,7 @@ class Runner:
             runpy.run_path(str(SCRIPTS / "main.py"), run_name="__main__")
 
 
-class CandidateRegressionTests(unittest.TestCase):
+class CandidateHandoffTests(unittest.TestCase):
     def test_all_114_candidates_are_available_before_ranking(self):
         items = [issue(n) for n in range(114, 0, -1)]
         with tempfile.TemporaryDirectory() as directory, github_server(
@@ -285,12 +285,32 @@ class CandidateFetchTests(unittest.TestCase):
                 self.assertEqual(pages, [str(n) for n in range(1, max(1, (count + 99) // 100) + 1)])
                 for method, _, params, headers in requests:
                     self.assertEqual(method, "GET")
-                    self.assertIn("is:issue is:open", params["q"][0])
+                    self.assertIn("is:open", params["q"][0])
                     self.assertEqual(params["sort"], ["created"])
                     self.assertEqual(params["order"], ["asc"])
                     self.assertEqual(params["per_page"], ["100"])
                     self.assertEqual(headers["Authorization"], "Bearer fixture-token")
                     self.assertEqual(headers["Accept"], "application/vnd.github+json")
+
+    def test_open_prs_include_links_beyond_page_five(self):
+        linked_pr = {**issue(572), "body": "Fixes #42", "pull_request": {"url": "fixture"}}
+        prs = [{**issue(n), "pull_request": {"url": "fixture"}} for n in range(1, 572)]
+        prs.append(linked_pr)
+        with github_server({(REPO, "is:pr"): prs}) as (_, requests):
+            data = self.fetcher.fetch_candidates("fixture-token")["repositories"][REPO]
+        self.assertEqual(len(data.get("pull_requests", [])), 572)
+        self.assertIn(linked_pr, data["pull_requests"])
+        pages = [r[2]["page"][0] for r in requests
+                 if r[2]["q"][0] == f"repo:{REPO} is:pr is:open"]
+        self.assertEqual(pages, ["1", "2", "3", "4", "5", "6"])
+        self.assertEqual(data["pr_search"], {"fetched_count": 572, "total_count": 572})
+
+    def test_incomplete_pr_search_does_not_produce_a_snapshot(self):
+        with github_server(
+            {(REPO, "is:pr"): [issue(n) for n in range(101)]},
+            transform=lambda p, n: {**p, "incomplete_results": n == 2},
+        ), self.assertRaisesRegex(RuntimeError, "Incomplete"):
+            self.fetcher.fetch_candidates("fixture-token")
 
     def test_aliases_overlap_repository_collisions_and_pr_exclusion(self):
         sdk_issue = issue(1, repo=SDK_REPO)
