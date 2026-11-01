@@ -74,6 +74,8 @@ import os
 import sys
 import time
 
+from process_audit import get_process_audit_hook
+
 # Detect execution mode based on AGENT_SERVER_URL presence
 agent_server_url = os.environ.get("AGENT_SERVER_URL", "").rstrip("/")
 IS_LOCAL_MODE = bool(agent_server_url)
@@ -355,6 +357,7 @@ This automation was triggered by a webhook event:
         "agent": agent,
         "workspace": workspace,
         "callbacks": [event_callback],
+        "hook_config": get_process_audit_hook(),
         "delete_on_close": False,  # Keep conversation history after completion
     }
     if automation_user_id and _conversation_supports_user_id():
