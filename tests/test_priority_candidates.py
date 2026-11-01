@@ -1,4 +1,5 @@
 import contextlib
+from copy import copy
 import importlib.util
 import io
 import json
@@ -121,6 +122,7 @@ class Runner:
 
     def __init__(self, directory, requests):
         self.directory = directory
+        self.runtime_directory = directory
         self.requests = requests
         self.uploads = {}
         self.prompts = []
@@ -157,7 +159,14 @@ class Runner:
             def get_mcp_config(self):
                 return {}
 
+            def model_copy(self, *, update):
+                workspace = copy(self)
+                workspace.__dict__.update(update)
+                return workspace
+
             def file_upload(self, source, destination):
+                if self.runtime_conversation_id != "fixture-conversation":
+                    raise AssertionError("Upload must use the conversation runtime")
                 if runner.upload_success:
                     Path(destination).write_bytes(source)
                     runner.uploads[destination] = json.loads(source)
@@ -167,6 +176,9 @@ class Runner:
             def __init__(self, **kwargs):
                 runner.conversations += 1
                 self.id = "fixture-conversation"
+                self.state = types.SimpleNamespace(
+                    workspace={"working_dir": runner.runtime_directory}
+                )
                 self.conversation_stats = types.SimpleNamespace(
                     get_combined_metrics=lambda: types.SimpleNamespace(accumulated_cost=0)
                 )
@@ -418,7 +430,7 @@ class RunnerSafetyTests(unittest.TestCase):
             runner = Runner(directory, requests)
             with self.assertRaisesRegex(RuntimeError, "Incomplete"):
                 runner.run(base)
-            self.assertEqual(runner.conversations, 0)
+            self.assertEqual(runner.conversations, 1)
             self.assertEqual(runner.prompts, [])
             self.assertEqual(runner.uploads, {})
             self.assertEqual(runner.exits, [RuntimeError])
@@ -429,9 +441,20 @@ class RunnerSafetyTests(unittest.TestCase):
             runner.upload_success = False
             with self.assertRaisesRegex(RuntimeError, "upload"):
                 runner.run(base)
-            self.assertEqual(runner.conversations, 0)
-            self.assertEqual(runner.events, [])
+            self.assertEqual(runner.conversations, 1)
+            self.assertEqual(runner.events, ["secrets", "close"])
             self.assertEqual(runner.exits, [RuntimeError])
+
+    def test_local_handoff_uses_runtime_directory_instead_of_host_directory(self):
+        with tempfile.TemporaryDirectory() as host, tempfile.TemporaryDirectory() as runtime:
+            with github_server({}) as (base, requests):
+                runner = Runner(host, requests)
+                runner.runtime_directory = runtime
+                runner.run(base)
+                self.assertEqual(runner.workspace_kwargs["working_dir"], host)
+                self.assertEqual(Path(next(iter(runner.uploads))).parent, Path(runtime))
+                self.assertIn(next(iter(runner.uploads)), runner.prompts[0])
+                self.assertEqual(runner.events, ["secrets", "send", "run", "close"])
 
     def test_cloud_handoff_uses_workspace_path_and_preserves_lifecycle(self):
         with tempfile.TemporaryDirectory() as directory, github_server({}) as (base, requests):

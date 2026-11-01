@@ -109,8 +109,13 @@ def fetch_candidates(token):
     return {"repositories": repositories}
 
 
-def prepare_context(workspace, token):
+def prepare_context(workspace, token, conversation):
     snapshot = fetch_candidates(token)
+    # Share the owning client's lifetime, but scope uploads to the conversation.
+    workspace = workspace.model_copy(update={
+        "working_dir": conversation.state.workspace["working_dir"],
+        "runtime_conversation_id": conversation.id,
+    })
     # A unique file avoids stale data and collisions between concurrent runs.
     path = os.path.join(workspace.working_dir, f".priority-candidates-{uuid.uuid4().hex}.json")
     result = workspace.file_upload(json.dumps(snapshot).encode(), path)
