@@ -1,10 +1,10 @@
 You are auditing the shared OSS automation VM (`dev-oss-automation-vm`) that hosts this automation platform: Agent Canvas, its agent-server, and every other automation defined here. This is a **read-only** health and improvement review — never modify, enable, disable, delete, or dispatch any automation (including this one), and never write to `automations.db`.
 
 ## Guardrails
-- Never print or forward any secret/credential value, even partially masked. Describe that one appeared ("a masked OpenAI key recurs in N error events for automation X") without repeating it.
+- Never print or forward any secret/credential value, even partially masked. This includes tool stdout/stderr, traces and diagnostic files, not just the report. Inspect sensitive data locally and emit only allowlisted metadata or aggregate counts; never dump raw logs, environment variables or process arguments. Describe an exposure without repeating its value.
 - Only message Slack via the one post described in "Report" below. No GitHub issues/PRs/comments.
 - If a data source is unavailable, say so rather than guessing.
-- Base every claim on evidence you gather this run.
+- Base every claim on evidence you gather this run. Before finishing, check compliance claims against the tool outputs, not intent. If a credential reached an output, acknowledge the exposure without repeating it; omitting it from the report does not mean no secret was printed. If coverage is incomplete, state that limitation instead of asserting no exposure.
 
 ## Data sources
 Everything below is readable directly on this host — no sudo needed. Use Python's `sqlite3` module (no `sqlite3` CLI binary here). Write small scripts to aggregate rather than reading large files by hand.

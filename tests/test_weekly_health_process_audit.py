@@ -11,7 +11,9 @@ import tempfile
 import unittest
 import uuid
 from contextlib import closing
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from threading import Thread
 
 # SDK imports can initialize telemetry; tool setup can discover user plugins.
 os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
@@ -143,6 +145,35 @@ class ToolReplay(unittest.TestCase):
         self.assertFalse(executed, "The blocked compound command was executed")
         self.assertIn("credential-option audit", result.rejection_reason)
 
+    def test_value_free_finding_reaches_persisted_observation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            (proc / "23").mkdir()
+            (proc / "23/cmdline").write_bytes(
+                b"/usr/bin/openvscode-server\0--connection-token\0"
+                + SYNTHETIC_SECRET.encode() + b"\0"
+            )
+            config = configured_hook()
+            script = (
+                "import runpy; from pathlib import Path; "
+                f"m = runpy.run_path({str(SCRIPTS / 'process_audit.py')!r}); "
+                f"m['run_hook'](Path({str(proc)!r}))"
+            )
+            config.pre_tool_use[0].hooks[0].command = (
+                shlex.quote(sys.executable) + " -c " + shlex.quote(script)
+            )
+            result, persisted, executed = self.execute("ps -eo pid,user,cmd", config)
+            self.assertIsInstance(result, UserRejectObservation)
+            audit = json.loads(result.rejection_reason.split(": ", 1)[1])
+            self.assertEqual(audit["status"], "complete")
+            self.assertEqual(audit["findings"], [{
+                "pid": 23, "program": "openvscode-server",
+                "options": ["--connection-token"],
+            }])
+            self.assertIn("--connection-token", persisted)
+            self.assertNotIn(SYNTHETIC_SECRET, persisted)
+            self.assertFalse(executed)
+
     def test_safe_diagnostic_still_executes(self):
         result, _, executed = self.execute(
             "printf 'healthy\\n'; printf done > witness"
@@ -173,32 +204,43 @@ class ToolReplay(unittest.TestCase):
         config = configured_hook()
         captured = []
 
-        def capture(request):
-            self.assertEqual((request.method, request.url.path),
-                             ("POST", "/api/conversations"))
-            captured.append(json.loads(request.content))
-            # Stop before a remote conversation or websocket can be created.
-            return httpx.Response(422, json={"detail": "capture-only boundary"})
+        class CaptureHandler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers["Content-Length"]))
+                captured.append((self.path, json.loads(body)))
+                self.send_response(422)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"detail":"capture-only boundary"}')
 
-        workspace = RemoteWorkspace(
-            host="http://capture.invalid", working_dir="/workspace"
-        )
-        agent = Agent(
-            llm=LLM(model="test/not-called", api_key="unused", log_completions=False),
-            tools=[], include_default_tools=[],
-        )
-        with (
-            closing(agent),
-            httpx.Client(base_url=workspace.host, trust_env=False,
-                         transport=httpx.MockTransport(capture)) as client,
-        ):
-            workspace._client = client
-            with self.assertRaises(httpx.HTTPStatusError) as error:
-                Conversation(agent=agent, workspace=workspace, hook_config=config,
-                             visualizer=None, delete_on_close=False)
-            self.assertEqual(error.exception.response.status_code, 422)
+            def log_message(self, *args):
+                pass
+
+        with HTTPServer(("127.0.0.1", 0), CaptureHandler) as server:
+            thread = Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            workspace = RemoteWorkspace(
+                host=f"http://127.0.0.1:{server.server_port}", working_dir="/workspace"
+            )
+            agent = Agent(
+                llm=LLM(model="test/not-called", api_key="unused", log_completions=False),
+                tools=[], include_default_tools=[],
+            )
+            try:
+                with closing(agent), httpx.Client(
+                    base_url=workspace.host, trust_env=False
+                ) as client:
+                    workspace._client = client
+                    with self.assertRaises(httpx.HTTPStatusError) as error:
+                        Conversation(agent=agent, workspace=workspace, hook_config=config,
+                                     visualizer=None, delete_on_close=False)
+                    self.assertEqual(error.exception.response.status_code, 422)
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
         self.assertEqual(len(captured), 1)
-        self.assertEqual(HookConfig.model_validate(captured[0]["hook_config"]), config)
+        self.assertEqual(captured[0][0], "/api/conversations")
+        self.assertEqual(HookConfig.model_validate(captured[0][1]["hook_config"]), config)
         self.assertTrue(config.pre_tool_use)
 
     def test_stalled_audit_denies_before_outer_hook_timeout(self):
