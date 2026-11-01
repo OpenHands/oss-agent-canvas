@@ -73,6 +73,12 @@ The repository catalog is starting context, not an allowed-repository list.
 Existing canonical checkouts supply isolated worktrees; there are no file-count
 or patch-size limits. A worktree separates source, not operating-system access.
 Use a dedicated development worker with the intended source/data permissions.
+The default source catalog includes sibling `software-agent-sdk` and `extensions`
+canonical checkouts; configure other locations through `repositories`. Missing
+checkouts remain explicit prerequisites. Install `tmux` on the worker before
+setup so native terminals support reliable interruption. A login-disabled service
+account also needs a usable tmux default shell, for example
+`set -g default-shell /bin/bash` in its `~/.tmux.conf`.
 
 ## Validation
 

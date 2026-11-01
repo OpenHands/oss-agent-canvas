@@ -305,6 +305,8 @@ def test_missing_sdk_checkout_is_context_not_a_repair_gate(tmp_path, monkeypatch
     )
     assert catalog["Example/automation"]["revision"] == "a" * 40
     assert "unavailable" in catalog["OpenHands/software-agent-sdk"]["error"]
+    assert catalog["OpenHands/extensions"]["revision"] == "a" * 40
+    assert catalog["OpenHands/extensions"]["checkout"] == str(tmp_path / "extensions")
 
 
 def test_frozen_inventory_preview_never_launches_repair_or_changes_ledger(

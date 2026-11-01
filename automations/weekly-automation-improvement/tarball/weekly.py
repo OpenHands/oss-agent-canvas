@@ -118,12 +118,14 @@ def repository_catalog(config):
             "base_branch": config.get("base_branch", "main"),
         }
     }
-    if config["repository"] != "OpenHands/software-agent-sdk":
-        configured["OpenHands/software-agent-sdk"] = {
-            "checkout": str(
-                Path(config["checkout"]).expanduser().parent / "software-agent-sdk"
-            )
-        }
+    for repository in ("OpenHands/software-agent-sdk", "OpenHands/extensions"):
+        if repository != config["repository"]:
+            configured[repository] = {
+                "checkout": str(
+                    Path(config["checkout"]).expanduser().parent
+                    / repository.split("/")[1]
+                )
+            }
     configured.update(config.get("repositories", {}))
     catalog = {}
     for repository, value in configured.items():

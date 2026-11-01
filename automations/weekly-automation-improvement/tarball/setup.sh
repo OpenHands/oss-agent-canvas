@@ -2,6 +2,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+command -v tmux >/dev/null || { echo "Install tmux on the worker before setup" >&2; exit 1; }
+
 SDK_VERSION=$(curl -fsS "${AUTOMATION_API_URL}/sdk-version" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')
 uv venv .venv --python '>=3.12' --quiet --allow-existing
 uv pip install --python .venv/bin/python --quiet \
