@@ -1,7 +1,7 @@
 {
   "name": "fix-failing-version-bump",
-  "version": "0.1.0",
-  "description": "Executable automation plugin for Fix Failing Version Bump (dependabot): extensions, OpenHands, software-agent-sdk, automation, enterprise.",
+  "version": "0.2.0",
+  "description": "Executable automation plugin for Fix Failing Version Bump: diagnoses and fixes failing CI on dependabot version-bump PRs, and can auto-approve and merge green version-only bumps or minimal companion fixes while handing larger changes to a maintainer for review.",
   "author": {
     "name": "OpenHands",
     "email": "contact@all-hands.dev"
@@ -26,7 +26,46 @@
     "config_schema": {
       "type": "object",
       "additionalProperties": false,
-      "properties": {}
+      "properties": {
+        "repos": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "default": "OpenHands/extensions"
+          },
+          "default": [
+            "OpenHands/extensions",
+            "OpenHands/OpenHands",
+            "OpenHands/software-agent-sdk",
+            "OpenHands/automation",
+            "OpenHands/enterprise"
+          ]
+        },
+        "maintainers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "default": "neubig"
+          },
+          "default": []
+        },
+        "auto_merge_dependabot": {
+          "type": "boolean",
+          "default": false
+        },
+        "max_merges_per_run": {
+          "type": "integer",
+          "default": 3
+        },
+        "minimal_fix_max_files": {
+          "type": "integer",
+          "default": 10
+        },
+        "minimal_fix_max_changed_lines": {
+          "type": "integer",
+          "default": 100
+        }
+      }
     },
     "suggested_trigger": {
       "type": "cron",

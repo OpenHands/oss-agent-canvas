@@ -1,0 +1,23 @@
+{
+  "repos": [
+    "OpenHands/extensions",
+    "OpenHands/OpenHands",
+    "OpenHands/software-agent-sdk",
+    "OpenHands/automation",
+    "OpenHands/enterprise"
+  ],
+  "auto_merge_dependabot": true,
+  "maintainers": [
+    "neubig",
+    "VascoSch92",
+    "simonrosenberg",
+    "juanmichelini",
+    "malhotra5",
+    "enyst"
+  ],
+  "max_merges_per_run": 3,
+  "minimal_fix_max_files": 10,
+  "minimal_fix_max_changed_lines": 100,
+  "source_repository": "OpenHands/oss-agent-canvas",
+  "source_branch": "automation/dependabot-auto-merge"
+}

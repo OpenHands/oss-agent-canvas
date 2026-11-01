@@ -6,9 +6,16 @@ dependabot (`dependabot[bot]`) whose CI is failing on the head commit, then
 spawns an OpenHands conversation to diagnose and fix the failing checks and
 push the fix to the dependabot branch.
 
+With `auto_merge_dependabot` enabled, the poll also closes the loop: a
+dependabot PR whose CI is green is approved and squash-merged when the change
+is a version-only bump or a minimal companion fix, and otherwise a maintainer
+is asked to review it, mirroring the code-review automation's handoff. Green
+PRs whose CI was failing get here naturally: the pushed fix advances the head
+SHA, the next poll sees the new key, and the green head is classified then.
+
 The script is deterministic: PR discovery, dependabot authorship, CI-status
-checks, dedup, and conversation lifecycle are all handled in Python. The LLM
-is invoked only for the actual repair.
+checks, merge-eligibility classification, dedup, and conversation lifecycle
+are all handled in Python. The LLM is invoked only for the actual repair.
 
 A fix is attempted at most once per (repo, PR, head SHA): pushing a new
 version-bump commit by dependabot is new information and re-triggers the
@@ -25,7 +32,11 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlencode
 
-REPOS = [
+# Configuration. The deployed automation configures itself through a
+# config.json shipped beside this script (same pattern as the GitHub PR
+# Reviewer); the constants stay as the defaults and config.json is the
+# override. See load_config() below.
+DEFAULT_REPOS = [
     {"repo": "OpenHands/extensions"},
     {"repo": "OpenHands/OpenHands"},
     {"repo": "OpenHands/software-agent-sdk"},
@@ -33,8 +44,102 @@ REPOS = [
     {"repo": "OpenHands/enterprise"},
 ]
 
-DEPENDABOT_LOGIN = "dependabot[bot]"
 DEFAULT_OPENHANDS_URL = "https://oss-agent-canvas.ngrok.dev"
+
+# When False (default) the automation only fixes failing CI, exactly as
+# before. When True, a dependabot PR with green CI is additionally approved
+# and squash-merged if the diff is a version-only dependency bump or a
+# minimal companion fix (bounded by the two thresholds below); anything
+# larger is handed to a maintainer for review instead.
+DEFAULT_AUTO_MERGE_DEPENDABOT = False
+DEFAULT_MAINTAINERS: list[str] = []
+DEFAULT_MAX_MERGES_PER_RUN = 3
+DEFAULT_MINIMAL_FIX_MAX_FILES = 10
+DEFAULT_MINIMAL_FIX_MAX_CHANGED_LINES = 100
+
+REPOS = DEFAULT_REPOS
+AUTO_MERGE_DEPENDABOT = DEFAULT_AUTO_MERGE_DEPENDABOT
+MAINTAINERS: list[str] = list(DEFAULT_MAINTAINERS)
+MAX_MERGES_PER_RUN = DEFAULT_MAX_MERGES_PER_RUN
+MINIMAL_FIX_MAX_FILES = DEFAULT_MINIMAL_FIX_MAX_FILES
+MINIMAL_FIX_MAX_CHANGED_LINES = DEFAULT_MINIMAL_FIX_MAX_CHANGED_LINES
+
+CONFIG_FILENAME = "config.json"
+
+# Config keys, paired with the type each must have. A wrong type is a hard
+# error at import: the alternative is silently merging PRs with a boolean
+# that never made it through as one.
+_CONFIG_TYPES: dict[str, type] = {
+    "repos": list,
+    "maintainers": list,
+    "auto_merge_dependabot": bool,
+    "max_merges_per_run": int,
+    "minimal_fix_max_files": int,
+    "minimal_fix_max_changed_lines": int,
+    "openhands_url": str,
+}
+
+
+def load_config(directory: Path | None = None) -> dict:
+    """Return the rendered config shipped beside this script, or {} if absent.
+
+    Only the keys above are read; anything else in the file is ignored, so a
+    host may ship provenance there without this script caring.
+    """
+    path = (directory or Path(__file__).resolve().parent) / CONFIG_FILENAME
+    if not path.is_file():
+        return {}
+
+    try:
+        raw = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"{CONFIG_FILENAME} is not valid JSON: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise SystemExit(f"{CONFIG_FILENAME} must contain a JSON object")
+
+    config = {}
+    for key, expected in _CONFIG_TYPES.items():
+        if key not in raw:
+            continue
+        value = raw[key]
+        # bool is an int in Python, so an unguarded int check would accept
+        # `"max_merges_per_run": true` and then silently clamp to it.
+        if not isinstance(value, expected) or (
+            expected is not bool and isinstance(value, bool)
+        ):
+            raise SystemExit(
+                f"{CONFIG_FILENAME}: {key} must be {expected.__name__}, "
+                f"got {type(value).__name__}"
+            )
+        config[key] = value
+    if "repos" in config and not config["repos"]:
+        raise SystemExit(f'{CONFIG_FILENAME}: repos must be a non-empty list of "owner/repo" entries')
+    for key in ("max_merges_per_run", "minimal_fix_max_files", "minimal_fix_max_changed_lines"):
+        if key in config and config[key] < 1:
+            raise SystemExit(f"{CONFIG_FILENAME}: {key} must be at least 1")
+    return config
+
+
+def apply_config(directory: Path | None = None) -> None:
+    """Load config.json beside this script into the module constants."""
+    global REPOS, AUTO_MERGE_DEPENDABOT, MAINTAINERS
+    global MAX_MERGES_PER_RUN, MINIMAL_FIX_MAX_FILES, MINIMAL_FIX_MAX_CHANGED_LINES
+
+    config = load_config(directory)
+    if "repos" in config:
+        REPOS = [{"repo": repo} for repo in config["repos"]]
+    AUTO_MERGE_DEPENDABOT = config.get("auto_merge_dependabot", AUTO_MERGE_DEPENDABOT)
+    MAINTAINERS = config.get("maintainers", MAINTAINERS)
+    MAX_MERGES_PER_RUN = config.get("max_merges_per_run", MAX_MERGES_PER_RUN)
+    MINIMAL_FIX_MAX_FILES = config.get("minimal_fix_max_files", MINIMAL_FIX_MAX_FILES)
+    MINIMAL_FIX_MAX_CHANGED_LINES = config.get(
+        "minimal_fix_max_changed_lines", MINIMAL_FIX_MAX_CHANGED_LINES
+    )
+
+
+apply_config()
+
+DEPENDABOT_LOGIN = "dependabot[bot]"
 
 DONE_DEBOUNCE = 15
 TERMINAL_STATUSES = {"idle", "finished", "error", "stuck"}
@@ -479,6 +584,255 @@ def _with_ai_disclosure(body: str) -> str:
     return f"{body}\n\n{disclosure}" if body else disclosure
 
 
+# ── Auto-merge (version-only bumps and minimal companion fixes) ───────────────
+
+# Dependency manifests and lockfiles dependabot is allowed to touch, keyed by
+# file basename. A PR whose changed files all land here is a version-only bump.
+_BUMP_FILENAMES: frozenset[str] = frozenset({
+    "package.json", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock",
+    "pnpm-lock.yaml", "bun.lockb", "bun.lock",
+    "requirements.txt", "pyproject.toml", "poetry.lock", "uv.lock",
+    "Pipfile", "Pipfile.lock", "setup.py", "setup.cfg",
+    "Cargo.toml", "Cargo.lock", "go.mod", "go.sum",
+    "Gemfile", "Gemfile.lock", ".ruby-version", ".tool-versions",
+    "composer.json", "composer.lock", "pom.xml", "build.gradle",
+    "build.gradle.kts", "gradle.lockfile", "packages.lock.json",
+    "pubspec.yaml", "pubspec.lock", "mix.exs", "mix.lock",
+    "Podfile.lock", "Cartfile.resolved", "packages.config",
+    "packages.props", "packages.deps.json", "versions.props",
+    "flake.nix", "flake.lock",
+})
+
+
+def _is_bump_path(path: str) -> bool:
+    """Whether a changed file is a dependency manifest/lockfile."""
+    name = path.rsplit("/", 1)[-1].lower()
+    if name in {n.lower() for n in _BUMP_FILENAMES}:
+        return True
+    parts = path.lower().split("/")
+    # requirements/*.txt, containers/*/requirements.txt, vendored trees, etc.
+    if name.endswith(".txt") and "requirements" in parts:
+        return True
+    if name.endswith(".lock") or name.endswith(".lockb"):
+        return True
+    return "vendored" in parts or "vendor" in parts and name.endswith(".sbt")
+
+
+def _pr_files(token: str, repo: str, number: int) -> list[dict]:
+    return _github_paginate(token, f"/repos/{repo}/pulls/{number}/files", {"per_page": 100})
+
+
+def _classify_bump(token: str, repo: str, pr: dict) -> tuple[str, str]:
+    """Classify a green dependabot PR as ("version-only"|"minimal-fix"|"large", reason).
+
+    - "version-only": every changed file is a dependency manifest or lockfile,
+      i.e. dependabot's own bump with nothing else riding along.
+    - "minimal-fix": the PR carries source changes (typically the agent's
+      companion fix for the bumped dependency) but stays small: at most
+      MINIMAL_FIX_MAX_FILES files and MINIMAL_FIX_MAX_CHANGED_LINES added+deleted
+      lines. The thresholds are the deterministic stand-in for "minimal".
+    - "large": anything else needs a maintainer's judgement.
+    """
+    files = _pr_files(token, repo, pr["number"])
+    if not files:
+        return "large", "no changed files could be listed for the PR"
+    if all(_is_bump_path(f.get("filename", "")) for f in files):
+        return "version-only", "the diff only touches dependency manifests and lockfiles"
+
+    changes = sum(int(f.get("additions") or 0) + int(f.get("deletions") or 0) for f in files)
+    if len(files) > MINIMAL_FIX_MAX_FILES:
+        return "large", (
+            f"the diff touches {len(files)} files (beyond the "
+            f"{MINIMAL_FIX_MAX_FILES}-file minimal-fix threshold)"
+        )
+    if changes > MINIMAL_FIX_MAX_CHANGED_LINES:
+        return "large", (
+            f"the diff changes {changes} lines (beyond the "
+            f"{MINIMAL_FIX_MAX_CHANGED_LINES}-line minimal-fix threshold)"
+        )
+    return "minimal-fix", (
+        f"the diff stays within the minimal-fix bounds "
+        f"({len(files)} files, {changes} changed lines)"
+    )
+
+
+def _approve_pr(token: str, repo: str, number: int, body: str) -> bool:
+    try:
+        _github_request(
+            token,
+            "POST",
+            f"/repos/{repo}/pulls/{number}/reviews",
+            body={"event": "APPROVE", "body": _with_ai_disclosure(body)},
+        )
+        return True
+    except Exception as exc:
+        print(f"  Warning: could not approve {repo} PR #{number}: {exc}")
+        return False
+
+
+def _merge_pr(token: str, repo: str, pr: dict, body: str) -> bool:
+    number = pr["number"]
+    title = (pr.get("title") or "").strip() or f"#{number}"
+    payload = {
+        "merge_method": "squash",
+        "commit_title": f"{title} (#{number})"[:250],
+        "commit_message": _with_ai_disclosure(body),
+        "sha": _head_sha(pr),
+    }
+    try:
+        _github_request(token, "PUT", f"/repos/{repo}/pulls/{number}/merge", body=payload)
+        return True
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")[:300]
+        print(f"  Could not merge {repo} PR #{number}: {exc.code} {detail}")
+        return False
+    except Exception as exc:
+        print(f"  Could not merge {repo} PR #{number}: {exc}")
+        return False
+
+
+def _parse_maintainers(value) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in value or []:
+        login = str(item).strip().lstrip("@")
+        key = login.lower()
+        if login and key not in seen and key != DEPENDABOT_LOGIN.lower():
+            seen.add(key)
+            result.append(login)
+    return result
+
+
+def _request_maintainer_review(token: str, repo: str, pr: dict, reason: str) -> str | None:
+    """Ask one configured maintainer to review the PR, like the code-review automation.
+
+    Skips roster members who already reviewed the current head, are already
+    requested, or authored the PR. Returns the requested login, or None when
+    the roster cannot produce one (the caller comments so a human still sees it).
+    """
+    roster = _parse_maintainers(MAINTAINERS)
+    if not roster:
+        return None
+
+    number = pr["number"]
+    head_sha = _head_sha(pr)
+    author = _author_login(pr).lower()
+    requested = {
+        (item.get("login") or "").lower() for item in pr.get("requested_reviewers", [])
+    }
+    reviewed = set()
+    try:
+        reviews, _ = _github_request(token, "GET", f"/repos/{repo}/pulls/{number}/reviews")
+        for review in reviews if isinstance(reviews, list) else []:
+            review_sha = review.get("commit_id")
+            login = ((review.get("user") or {}).get("login") or "").lower()
+            if review_sha == head_sha and login:
+                reviewed.add(login)
+    except Exception as exc:
+        print(f"  Warning: could not list reviews on {repo} PR #{number}: {exc}")
+
+    candidates = [
+        login for login in roster
+        if login.lower() not in requested
+        and login.lower() not in reviewed
+        and login.lower() != author
+    ]
+    for login in candidates:
+        try:
+            _github_request(
+                token,
+                "POST",
+                f"/repos/{repo}/pulls/{number}/requested_reviewers",
+                body={"reviewers": [login]},
+            )
+            return login
+        except Exception as exc:
+            print(f"  Warning: could not request review from {login} on {repo} PR #{number}: {exc}")
+    return None
+
+
+def _maintainer_handoff_comment(login: str | None, reason: str) -> str:
+    mention = f"@{login}" if login else "maintainers"
+    return (
+        f"{mention} — this dependabot PR's CI is green, but the auto-merge policy "
+        f"skipped it because {reason}. Please review and decide whether to merge."
+    )
+
+
+def _maybe_merge_green_dependabot(
+    github_token: str,
+    repo: str,
+    pr: dict,
+    head_sha: str,
+    fixes: dict,
+    merges: dict,
+) -> bool:
+    """Approve and merge a green dependabot PR, or hand it to a maintainer.
+
+    Returns True when the PR was merged this poll. Every other outcome (still
+    unclassified, handed off, merge refused) records the head key in `fixes`
+    with a terminal status so later polls do not re-approve or re-ask.
+    """
+    number = pr["number"]
+    key = _fix_key(repo, number, head_sha)
+    kind, reason = _classify_bump(github_token, repo, pr)
+    print(f"  PR #{number} (dependabot, CI green) classified: {kind} — {reason}")
+
+    if kind == "large":
+        login = _request_maintainer_review(github_token, repo, pr, reason)
+        comment = _maintainer_handoff_comment(login, reason)
+        _post_github_comment(github_token, repo, number, _with_ai_disclosure(comment))
+        fixes[key] = {
+            "repo": repo,
+            "pr_number": number,
+            "head_sha": head_sha,
+            "status": "handoff",
+            "maintainer": login,
+            "last_activity": time.time(),
+        }
+        return False
+
+    if not _approve_pr(
+        github_token, repo, number,
+        f"✅ Auto-approved by OpenHands: CI is green and {reason}.",
+    ):
+        fixes[key] = {
+            "repo": repo, "pr_number": number, "head_sha": head_sha,
+            "status": "handoff", "last_activity": time.time(),
+        }
+        return False
+
+    merge_body = (
+        f"Auto-merged by OpenHands after a green CI run. {reason.capitalize()}."
+        f"\n\nApproved-by: all-hands-bot"
+    )
+    if _merge_pr(github_token, repo, pr, merge_body):
+        merges[key] = {
+            "repo": repo,
+            "pr_number": number,
+            "head_sha": head_sha,
+            "classification": kind,
+            "merged_at": time.time(),
+        }
+        print(f"  Merged {repo} PR #{number} at {head_sha[:12]} ({kind})")
+        return True
+
+    # Approved but not merged (branch protection, conflict, stale head, ...).
+    # Leave the approval in place and let a maintainer close the loop.
+    _post_github_comment(
+        github_token, repo, number,
+        _with_ai_disclosure(
+            "✅ OpenHands approved this PR (CI green, version-only/minimal change) but "
+            "GitHub refused the merge. A maintainer merge may be needed."
+        ),
+    )
+    fixes[key] = {
+        "repo": repo, "pr_number": number, "head_sha": head_sha,
+        "status": "handoff", "last_activity": time.time(),
+    }
+    return False
+
+
 def _build_fix_prompt(repo: str, pr: dict, head_sha: str, head_branch: str, failed_checks: list[str]) -> str:
     number = pr.get("number", "?")
     title = pr.get("title", "(no title)")
@@ -653,15 +1007,21 @@ def _check_fix_completion(
 
 def _trim_seen(repo_state: dict) -> None:
     fixes = repo_state.setdefault("fixes", {})
-    if len(fixes) <= MAX_SEEN_FIXES:
-        return
-    # Drop oldest closed entries first.
-    closed = sorted(
-        (k for k, v in fixes.items() if v.get("status") != "active"),
-        key=lambda k: fixes[k].get("last_activity", 0),
-    )
-    for k in closed[: len(fixes) - MAX_SEEN_FIXES]:
-        del fixes[k]
+    if len(fixes) > MAX_SEEN_FIXES:
+        # Drop oldest closed entries first.
+        closed = sorted(
+            (k for k, v in fixes.items() if v.get("status") != "active"),
+            key=lambda k: fixes[k].get("last_activity", 0),
+        )
+        for k in closed[: len(fixes) - MAX_SEEN_FIXES]:
+            del fixes[k]
+
+    merges = repo_state.setdefault("merges", {})
+    if len(merges) > MAX_SEEN_FIXES:
+        # Drop oldest merged keys first; a merged PR cannot reopen.
+        oldest = sorted(merges, key=lambda k: merges[k].get("merged_at", 0))
+        for k in oldest[: len(merges) - MAX_SEEN_FIXES]:
+            del merges[k]
 
 
 def _process_repo(
@@ -679,8 +1039,9 @@ def _process_repo(
         print(f"  Skipping {repo}: {exc}")
         return None
 
-    repo_state = state.setdefault("repos", {}).setdefault(repo, {"fixes": {}})
+    repo_state = state.setdefault("repos", {}).setdefault(repo, {"fixes": {}, "merges": {}})
     fixes: dict = repo_state.setdefault("fixes", {})
+    merges: dict = repo_state.setdefault("merges", {})
 
     open_prs = _list_open_prs(github_token, repo)
     latest_open_prs = {pr["number"]: pr for pr in open_prs}
@@ -688,6 +1049,7 @@ def _process_repo(
 
     last_conversation_id = None
     active_count = sum(1 for v in fixes.values() if v.get("status") == "active")
+    merged_count = 0
 
     for pr in open_prs:
         number = pr["number"]
@@ -720,6 +1082,18 @@ def _process_repo(
         ci = _ci_status(github_token, repo, head_sha)
         print(f"  PR #{number} (dependabot) at {head_sha[:12]} CI={ci}")
         if ci in ("running", "unknown"):
+            continue
+
+        if AUTO_MERGE_DEPENDABOT and ci == "clear":
+            # A green head: merge it if it is a version-only bump or a minimal
+            # companion fix, otherwise hand it to a maintainer. PRs whose CI
+            # was fixed by this automation arrive here on a later poll, once
+            # the pushed fix has advanced the head SHA.
+            if merged_count >= MAX_MERGES_PER_RUN:
+                print(f"  PR #{number} mergeable but {merged_count} merged this run (max {MAX_MERGES_PER_RUN}); deferring")
+                continue
+            if _maybe_merge_green_dependabot(github_token, repo, fresh_pr, head_sha, fixes, merges):
+                merged_count += 1
             continue
         if ci == "clear":
             continue
