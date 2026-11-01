@@ -1183,6 +1183,10 @@ def run_scan(dispatcher):
         PullRequestReviewer.scan_intake.drain()
     except Exception as exc:  # noqa: BLE001 - reported after the scan failure
         failure = failure or exc
+    try:
+        dispatcher.wait_for_completion()
+    except Exception as exc:  # noqa: BLE001 - preserve an earlier scan failure
+        failure = failure or exc
     if failure is not None:
         raise failure
 

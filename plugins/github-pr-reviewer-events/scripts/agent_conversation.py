@@ -2,6 +2,7 @@
 
 import json
 import os
+import time
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -18,6 +19,9 @@ from openhands.sdk.llm.message import TextContent
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
 _CONVERSATION_KEY_PREFIX = "agent-conversation-"
+OBSERVATION_SECONDS = 900
+POLL_SECONDS = 2
+FINISHED_GRACE_SECONDS = 30
 
 
 def _register_tools() -> None:
@@ -62,6 +66,9 @@ class AgentConversationDispatcher:
         self.automation_id = str(payload["automation_id"])
         self._workspace: RemoteWorkspace | None = None
         self._secrets = {}
+        self._submitted: set[str] = set()
+        # Reserve cleanup time inside the worker's 1200-second runtime limit.
+        self._deadline = time.monotonic() + OBSERVATION_SECONDS
 
     def __enter__(self):
         _register_tools()
@@ -79,6 +86,72 @@ class AgentConversationDispatcher:
     def __exit__(self, *args):
         assert self._workspace is not None
         return self._workspace.__exit__(*args)
+
+    def wait_for_completion(self) -> None:
+        """Observe execution status, not native review publication."""
+        if self._workspace is None:
+            raise RuntimeError("AgentConversationDispatcher must be used as a context")
+        pending = set(self._submitted)
+        finished_since: dict[str, float] = {}
+        failures = 0
+
+        def report(conversation_id: str, disposition: str) -> None:
+            nonlocal failures
+            print(
+                json.dumps(
+                    {
+                        "conversation_id": conversation_id,
+                        "disposition": disposition,
+                    }
+                ),
+                flush=True,
+            )
+            pending.remove(conversation_id)
+            if disposition != "conversation-finished":
+                failures += 1
+
+        while pending and time.monotonic() < self._deadline:
+            for conversation_id in sorted(pending):
+                remaining = self._deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    # Closed conversation proxies can retain cached state.
+                    response = self._workspace.client.get(
+                        f"/api/conversations/{conversation_id}",
+                        timeout=min(10, remaining),
+                    )
+                    response.raise_for_status()
+                    info = response.json()
+                    status = (
+                        info.get("execution_status") if isinstance(info, dict) else None
+                    )
+                except (httpx.HTTPError, ValueError):
+                    report(conversation_id, "conversation-unconfirmed")
+                    continue
+                if status in ("error", "stuck"):
+                    report(conversation_id, f"conversation-{status}")
+                elif status == "finished":
+                    # Stop hooks can reopen FINISHED before the run actually ends.
+                    first_finished = finished_since.setdefault(
+                        conversation_id, time.monotonic()
+                    )
+                    if time.monotonic() - first_finished >= FINISHED_GRACE_SECONDS:
+                        report(conversation_id, "conversation-finished")
+                elif status in ("running", "idle"):
+                    finished_since.pop(conversation_id, None)
+                else:
+                    report(conversation_id, "conversation-unconfirmed")
+            if pending:
+                time.sleep(max(0, min(POLL_SECONDS, self._deadline - time.monotonic())))
+
+        for conversation_id in sorted(pending):
+            report(conversation_id, "conversation-unconfirmed")
+        if failures:
+            raise RuntimeError(
+                f"{failures} reviewer conversation(s) failed or could not be confirmed; "
+                "see conversation outcomes"
+            )
 
     def deliver(
         self,
@@ -175,6 +248,7 @@ class AgentConversationDispatcher:
         finally:
             conversation.close()
 
+        self._submitted.add(str(conversation_id))
         if disposition in ("deduplicated", "in_progress"):
             return {
                 "disposition": disposition,
