@@ -283,6 +283,43 @@ usage remains unknown. Per-stage receipts distinguish SDK-estimated agent costs
 from proxy-reported review costs and retain latency/completions. The shared cost
 threshold remains a safety limit; incomplete accounting blocks further inference.
 
+## Live validation of retained conversations and recurrence
+
+Commit `4a115cb` completed a fresh VM run using 63 persisted Flow-1 findings,
+live Laminar evidence reads, Luna triage, four parallel Sol 6.1 repair agents and
+independent reviews. Six prior validation issues were archived and closed first.
+The entry point is [weekly issue #102](https://github.com/OpenHands/oss-agent-canvas/issues/102).
+
+| Topic | Outputs | Final independent result |
+| --- | --- | --- |
+| Evidence-based priority | [canvas #108](https://github.com/OpenHands/oss-agent-canvas/pull/108), [issue #104](https://github.com/OpenHands/oss-agent-canvas/issues/104) | Ready: one fresh false escalation corrected; all three negatives stay low and five control decisions remain unchanged |
+| Review publication | [canvas #110](https://github.com/OpenHands/oss-agent-canvas/pull/110), [extensions #890](https://github.com/OpenHands/extensions/pull/890); issues [#103](https://github.com/OpenHands/oss-agent-canvas/issues/103), [#888](https://github.com/OpenHands/extensions/issues/888) | Ready: original empty requests blocked; complete controls preserved in 52 HTTP-boundary expectations and 12 focused tests per copy |
+| Verification claims | [canvas #109](https://github.com/OpenHands/oss-agent-canvas/pull/109), [issue #105](https://github.com/OpenHands/oss-agent-canvas/issues/105) | Draft after two attempts: negative support improves from 0/3 to 2/3; unsupported claims and unreliable semantic auditing remain |
+| Interrupted review delivery | [issue #106](https://github.com/OpenHands/oss-agent-canvas/issues/106) | Unrepaired: 32 baseline HTTP checks confirm existing SDK retries; durable delivery work needs the owning service checkout/test environment |
+
+The revision used the **same repair conversation**, separate reviewers and unchanged
+frozen inputs/cohorts. Its first resumed request cached 71,195 of 73,436 input
+tokens (97%). Incremental phase costs reconcile exactly to **$21.69** in recorded
+native agent inference, over approximately 90 minutes. Standalone replay inference
+is outside that accounting. No worker exhausted its cost guard.
+
+A follow-up live reader found 44 additional findings. Targeted recurrence triage
+used 36 belonging to the same automations, matched four existing topics and posted
+nine idempotent evidence comments without changing existing descriptions. All
+four stayed out of the repair queue. Five new topics remain queued in
+[issue #111](https://github.com/OpenHands/oss-agent-canvas/issues/111); this follow-up
+was a triage/comment check and did not dispatch their repairs. Its recorded cost
+was $0.0155.
+
+Read-only audits verified 6,678 catalog references, frozen evidence, conversation
+identity, reviewer independence and final published patches. No missing artifacts,
+credential findings or retired-output references were detected. These are scoped
+captured-input projections and HTTP-boundary checks, not full historical task
+replays or population-wide prevention evidence. Existing suite failures and
+unavailable CI remain explicit in each PR. Generated outputs were not manually
+polished; scheduled workers and production Signals were unchanged. All four PRs
+carry `automation-improvement`; 304 local pipeline tests pass.
+
 ## Fresh issue-lifecycle validation — 2026-11-02
 
 An isolated run started with the frozen 63-finding inventory and no prior prototype
