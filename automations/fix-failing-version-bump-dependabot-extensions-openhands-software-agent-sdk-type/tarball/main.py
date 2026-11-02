@@ -32,10 +32,17 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlencode
 
-# Configuration. The deployed automation configures itself through a
-# config.json shipped beside this script (same pattern as the GitHub PR
-# Reviewer); the constants stay as the defaults and config.json is the
-# override. See load_config() below.
+# Configuration. The constants stay as the defaults and a config.json is
+# the override. Two setup paths write that file:
+#
+#   - the agent-driven path substitutes these constants directly into a copy
+#     of this script before packaging it;
+#   - the plugin path packs this script unmodified and lets the host render
+#     config.json, which the host points at with AUTOMATION_CONFIG_PATH.
+#
+# A declarative host cannot rewrite Python - its config schema admits data,
+# not code - so config.json is the override rather than one path being
+# expressed in terms of the other. See load_config() below.
 DEFAULT_REPOS = [
     {"repo": "OpenHands/extensions"},
     {"repo": "OpenHands/OpenHands"},
@@ -64,7 +71,7 @@ MAX_MERGES_PER_RUN = DEFAULT_MAX_MERGES_PER_RUN
 MINIMAL_FIX_MAX_FILES = DEFAULT_MINIMAL_FIX_MAX_FILES
 MINIMAL_FIX_MAX_CHANGED_LINES = DEFAULT_MINIMAL_FIX_MAX_CHANGED_LINES
 
-CONFIG_FILENAME = "config.json"
+CONFIG_FILENAME = os.environ.get("AUTOMATION_CONFIG_PATH") or "config.json"
 
 # Config keys, paired with the type each must have. A wrong type is a hard
 # error at import: the alternative is silently merging PRs with a boolean
