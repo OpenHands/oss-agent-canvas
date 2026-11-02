@@ -18,14 +18,14 @@ SECTIONS = (
 )
 READ_SECTIONS = (*SECTIONS, "Goal", "Scope and source")
 ISSUE_GUIDANCE = (
-    "The issue body is a living public explanation, understandable and reviewable by an engineer with GitHub access only, without Laminar or VM access. "
+    "The current-run issue brief is a living public explanation, understandable and reviewable by an engineer with GitHub access only, without Laminar or VM access. For a fresh issue it is the body; on an existing issue it is ONE comment you create for this run. "
     "Use these exact level-two sections in order: Problem and impact; Observed example; Proposed prevention; Validation; Current status; Evidence; Attempts and decisions. "
     "Before Evidence, name the affected automation/component in plain language, explain expected versus observed behavior and consequences, give a sanitized concrete example, and distinguish confirmed facts from hypotheses. "
     "Explain how the proposed prevention addresses the mechanism, its scope and tradeoffs. State observable acceptance criteria, a concise public before/after result, available/tested counts and limitations; keep commands, hashes, raw identifiers and VM paths in Evidence. "
-    "Maintain ONE current description. During this run, read the current issue and comments, then rewrite the existing AI-authored sections rather than appending a Current repair attempt, dated continuation, competing summary or final-result appendix. "
+    "Maintain ONE current brief. During this run, read the current issue and comments, then rewrite the sections of your current-run body or brief comment rather than appending a Current repair attempt, dated continuation, competing summary or final-result appendix. Never rewrite an existing human-authored or previous-run issue description. "
     "Revise the same sections after diagnosis, a changed hypothesis, validation and independent review. Correct or remove disproved claims and obsolete blockers; Current status must reflect the latest verdict, PRs and remaining work. "
     "Preserve human-authored text and comments, including any HUMAN template section. Preserve all ownership markers, evidence/catalog anchors and links needed to retrieve past records. "
-    "Before rewriting an existing issue, save its full prior body privately under validation/issue-history/ with a unique filename, so the evidence catalog retains its exact text. Keep historical evidence roots/access references in Evidence. Archive a superseded AI body with the existing issue evidence mechanism if needed; prior attempts belong in comments/catalogs with a concise historical link, not repeated narratives in the current body. "
+    "Before rewriting your brief, save its full prior body or comment privately under validation/issue-history/ with a unique filename, so the evidence catalog retains its exact text. Keep historical evidence roots/access references in Evidence. Prior attempts belong in comments/catalogs with a concise historical link, not repeated narratives in the current brief. "
     "Never publish raw tasks, private quotations, credentials or sensitive customer details. Safe summaries and anonymized examples are required, not blanket omission of the explanation. "
 )
 
@@ -101,7 +101,14 @@ def brief(snapshot, evidence_root, location):
 
 class TopicIssue:
     def __init__(
-        self, repository, output, evidence_root, value, comments, preview=False
+        self,
+        repository,
+        output,
+        evidence_root,
+        value,
+        comments,
+        preview=False,
+        brief_comment_id=None,
     ):
         self.repository, self.output, self.evidence_root = (
             repository,
@@ -110,6 +117,7 @@ class TopicIssue:
         )
         self.value, self.comments, self.preview = value, comments, preview
         self.endpoint = f"repos/{repository}/issues/{value['number']}"
+        self.brief_comment_id = brief_comment_id
         self.sequence = 0
 
     @classmethod
@@ -208,6 +216,13 @@ class TopicIssue:
             self.comments = github_pages(
                 self.endpoint + "/comments?per_page=100", command
             )
+            if self.brief_comment_id is not None:
+                brief = next(
+                    item
+                    for item in self.comments
+                    if item["id"] == self.brief_comment_id
+                )
+                self.value["body"] = brief["body"]
         return self.context()
 
     def context(self):
@@ -215,6 +230,7 @@ class TopicIssue:
             "url": self.value["html_url"],
             "number": self.value["number"],
             "body": self.value["body"],
+            "brief_comment_id": self.brief_comment_id,
             "sections": list(READ_SECTIONS),
             "records": [
                 {
@@ -260,19 +276,28 @@ class TopicIssue:
         self.sequence += 1
         payload = self.output / f"issue-body-{self.sequence:04d}.json"
         write_json(payload, {"body": body})
-        self.value = json.loads(
+        endpoint = (
+            f"repos/{self.repository}/issues/comments/{self.brief_comment_id}"
+            if self.brief_comment_id is not None
+            else self.endpoint
+        )
+        value = json.loads(
             command(
                 [
                     "gh",
                     "api",
                     "--method",
                     "PATCH",
-                    self.endpoint,
+                    endpoint,
                     "--input",
                     str(payload),
                 ]
             )
         )
+        if self.brief_comment_id is None:
+            self.value = value
+        else:
+            self.value["body"] = value["body"]
 
     def update_block(self, name, content):
         self.refresh()

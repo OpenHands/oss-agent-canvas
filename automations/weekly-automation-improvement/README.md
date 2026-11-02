@@ -35,9 +35,11 @@ force every repair to pass.
 
 ## Issues and evidence
 
-Create one fresh structured issue in **each repository changed by a topic** for
-the current run. Repair and review agents revise that same issue as they learn;
-issues and PRs from older prototype runs are read-only historical context.
+Search existing issues and PRs before creating work. If an open issue covers the
+same problem, post a structured current-run brief comment there and leave its
+description unchanged. Otherwise create a focused issue, cross-reference related
+issues and add useful comments where appropriate. Avoid competing PRs when an
+existing PR already addresses the problem. Keep one main issue per affected repo.
 All repository issues link one another and all related PRs. Each PR links its local
 issue and describes dependencies and any required merge/release order. One issue
 is the main entry point; a separate umbrella is unnecessary.
@@ -48,9 +50,11 @@ decisions**. The opening sections explain expected versus observed behavior,
 impact, a sanitized concrete example, the proposed prevention and current results
 without requiring private-data access. Agents rewrite these sections after
 diagnosis, validation and review, correcting stale claims instead of appending
-competing summaries. Existing human text is preserved. The initial creation
-includes the `automation-improvement` label, stable topic marker and run marker.
-Discovery requires both topic and run ownership. Both distributed issue-triage
+competing summaries. Agents update a new issue's body or their own current-run
+brief comment on a reused issue; descriptions from humans or earlier runs remain
+unchanged. New issues include the `automation-improvement` label, stable topic
+marker and run marker; reused issues carry those markers in the brief comment.
+Discovery checks body or comment ownership. Both distributed issue-triage
 workers skip these managed issues before reading comments or dispatching work.
 
 Public issues contain safe summaries, source/trace references and private evidence
@@ -60,7 +64,7 @@ under `state_dir/issue-evidence/<owner>/<repository>/<topic>/`.
 `evidence_location` tells authorized readers how to reach the worker. Public GitHub
 access alone does not grant access to private artifacts.
 
-Before rewriting a body, the agent archives it privately under
+Before rewriting its brief, the agent archives the prior body or comment under
 `validation/issue-history/`. The body links the latest catalog; every older catalog
 and artifact reference remains in the comments with its private root. Related-work
 links occupy one updated section. To read an earlier run's catalogs, pass the
@@ -151,6 +155,10 @@ Top-level settings:
   aggregate dollar threshold. This is not a strict shared billing cap.
 - `retry_topic_ids`: explicit reconsideration of known topics, including an attempt
   already dispatched this week. Prior conclusions stay visible to both agents.
+- `isolated_validation`: default **false**. Quality-control runs set it true with
+  a fresh private state directory: previous prototype issues/PRs and conclusions
+  are excluded from triage context, and repair agents create fresh outputs without
+  reading or citing prior validation work. This does not change production reuse.
 
 Migrate `max_prs_per_run` to `max_topics_per_run`; the old setting fails explicitly.
 Legacy publisher/revision/existing-PR-comparison settings no longer control the

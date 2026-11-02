@@ -459,3 +459,47 @@ def test_explicit_retry_uses_prior_pr_markers_without_local_history():
     assert weekly.update_backlog(state, inventory([row]), prs) == []
     assert weekly.update_backlog(state, inventory([row]), prs, ["other"]) == []
     assert weekly.update_backlog(state, inventory([row]), prs, ["prior"]) == [row]
+
+
+def test_isolated_validation_does_not_pass_old_outputs_to_triage(tmp_path, monkeypatch):
+    from budget import RunBudget
+    from common import write_json
+
+    frame = tmp_path / "input.json"
+    write_json(frame, inventory([record()]))
+    write_json(
+        tmp_path / "state.json",
+        {
+            "events": {},
+            "topic_weeks": {
+                "old/topic": {
+                    "topic": {"id": "old"},
+                    "status": "reviewed",
+                    "resources": [{"url": "old-validation-issue"}],
+                }
+            },
+        },
+    )
+    config = {
+        "repository": "Example/source",
+        "checkout": str(tmp_path),
+        "project_id": str(uuid.UUID(int=1)),
+        "signal_id": SIGNAL,
+        "input": str(frame),
+        "isolated_validation": True,
+    }
+    monkeypatch.setattr(weekly, "github_auth", lambda c: None)
+    monkeypatch.setattr(weekly, "repository_catalog", lambda c: {"Example/source": {}})
+    monkeypatch.setattr(weekly, "existing_prs", lambda r: pytest.fail("Read old PRs"))
+    calls = []
+
+    def triage(args, rows, prs, previous):
+        calls.append((args.isolated_validation, prs, previous))
+        return [], {}
+
+    monkeypatch.setattr(weekly, "triage", triage)
+    result = weekly.run_locked(
+        config, tmp_path, dry_run=True, limit=3, seed=1, budget=RunBudget({})
+    )
+    assert result["status"] == "preview"
+    assert calls == [(True, [], [])]

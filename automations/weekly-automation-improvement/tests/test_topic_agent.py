@@ -142,17 +142,28 @@ def test_normal_prompt_delegates_full_workflow_without_patch_or_repo_restriction
     assert "no separate publisher" in repair
     assert "not a restriction" in repair
     assert "several PRs" in repair and "N=5" in repair
-    assert "ONE fresh structured issue in each repository" in repair
+    assert "ONE structured issue brief in each repository" in repair
     assert "initially leave it draft" in repair
     assert "Treat the fixer's report as a claim" in review
     assert "Do not edit/push repair source" in review
     assert "task tool is blocking" in repair and "task tool is blocking" in review
     assert "freeze candidate source before delegating" in repair
     for text in (repair, review):
-        assert "never reopen, repurpose, close or edit" in text
+        assert "search open issues and PRs before creating duplicates" in text
+        assert (
+            "Existing human-authored and previous-run issue descriptions must remain unchanged"
+            in text
+        )
         assert "BOTH this topic's marker and this run's marker" in text
         assert "context.json beside the previous_attempts" in text
         assert "Before every public GitHub write" in text
+    isolated = topic_agent.prompt(
+        ctx | {"isolated_validation": True}, tmp_path / "context.json", tmp_path
+    )
+    assert (
+        "Do not search, read, reuse, comment on or cite earlier prototype" in isolated
+    )
+    assert "search open issues and PRs before creating duplicates" not in isolated
 
 
 def test_discovery_recovers_links_outside_catalog_from_actual_native_events(
@@ -477,3 +488,72 @@ def test_prior_context_reads_its_catalog_without_adopting_the_issue(
     issue = topic_agent.issue_reference(prior, url, tmp_path / "prior-read")
     assert issue.read_artifact(reference) == artifact
     assert not topic_agent.owns(current, body)
+
+
+def test_existing_issue_uses_a_current_run_comment_without_editing_its_description(
+    tmp_path, monkeypatch
+):
+    import topic_issue
+    from test_topic_issue import GitHub, snapshot
+
+    github = GitHub(private=False)
+    monkeypatch.setattr(topic_issue, "command", github)
+    monkeypatch.setattr(topic_agent, "command", github)
+    original = topic_issue.TopicIssue.ensure(snapshot(tmp_path), tmp_path / "initial")
+    original_body = "A human reported the same problem. Preserve this description."
+    github.issues[0]["body"] = original_body
+    ctx = context(tmp_path) | {"run_id": "new-run"}
+    ctx["repositories"] = {"Example/source": {}}
+    body = (
+        topic_agent.marker(ctx["topic"])
+        + "\n<!-- automation-improvement-run: new-run -->\n"
+        + public_body()
+    )
+    github.comments.append(
+        {
+            "id": 1,
+            "body": body,
+            "html_url": original.value["html_url"] + "#issuecomment-1",
+            "issue_url": "https://api.github.com/repos/Example/source/issues/1",
+        }
+    )
+    issue = topic_agent.issue_reference(
+        ctx, original.value["html_url"], tmp_path / "read"
+    )
+    assert issue.brief_comment_id == 1
+    issue.record(
+        "Evidence — current run", "Sanitized finding.", {"run.json": {"raw": "PRIVATE"}}
+    )
+    issue.update_body(
+        issue.value["body"].replace("Investigation underway", "Review finished")
+    )
+    issue.refresh()
+    assert "Review finished" in issue.value["body"]
+    assert "#issuecomment-2" in issue.value["body"]
+    assert github.issues[0]["body"] == original_body
+    assert "PRIVATE" not in json.dumps(github.comments)
+    assert not any(
+        "PATCH" in call and "repos/Example/source/issues/1" in call
+        for call in github.calls
+    )
+    found = topic_agent.discover(ctx, tmp_path)["resources"]
+    assert len(found) == 1 and found[0]["brief_comment_id"] == 1
+    assert "Review finished" in found[0]["body"]
+    isolated = ctx | {"isolated_validation": True}
+    with pytest.raises(ValueError, match="fresh issue"):
+        topic_agent.issue_reference(
+            isolated, original.value["html_url"], tmp_path / "qc-read"
+        )
+    write_json(tmp_path / "observed-links.json", [original.value["html_url"]])
+    receipt = topic_agent.discover(isolated, tmp_path)
+    assert not receipt["resources"]
+    assert "fresh issue" in receipt["errors"][0]["error"]
+
+
+def test_duplicate_current_run_briefs_are_rejected(tmp_path):
+    ctx = context(tmp_path) | {"run_id": "run"}
+    body = (
+        topic_agent.marker(ctx["topic"]) + "\n<!-- automation-improvement-run: run -->"
+    )
+    with pytest.raises(ValueError, match="one current-run brief"):
+        topic_agent.current_brief(ctx, {"body": body}, [{"id": 1, "body": body}])

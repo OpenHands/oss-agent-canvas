@@ -128,6 +128,7 @@ def configure_triage(args, config, state_dir, week, dry_run, inventory_path):
     args.evidence_location = config.get("evidence_location")
     args.triage_agent_profile = config.get("triage_agent_profile")
     args.triage_agent_config = config.get("triage_agent", {})
+    args.isolated_validation = config.get("isolated_validation", False)
 
 
 def repository_catalog(config):
@@ -274,6 +275,7 @@ def prepare_topic(config, context, topic, root):
         "validation_sample_size": config.get("validation_sample_size", 5),
         "evidence_location": config.get("evidence_location"),
         "previous_attempts": context["previous"],
+        "isolated_validation": config.get("isolated_validation", False),
     }
 
 
@@ -311,7 +313,7 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
     github_auth(config)
     repositories = repository_catalog(config)
     prs, discovery_errors = [], []
-    for repository in repositories:
+    for repository in () if config.get("isolated_validation") else repositories:
         try:
             prs.extend(existing_prs(repository))
         except Exception as error:
@@ -341,6 +343,7 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
             "resources": value.get("resources", []),
         }
         for value in state["topic_weeks"].values()
+        if not config.get("isolated_validation")
     ]
     summary = {
         "week": week,
@@ -351,6 +354,7 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
         "discovery_errors": discovery_errors,
         "topics": [],
         "max_topics_per_run": config.get("max_topics_per_run", 10),
+        "isolated_validation": config.get("isolated_validation", False),
     }
     if records:
         triage_args = arguments(config, output / "triage", limit, seed)
@@ -400,6 +404,8 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
 
 
 def run(config, *, dry_run=False, limit=3, seed=None):
+    if type(config.get("isolated_validation", False)) is not bool:
+        raise ValueError("isolated_validation must be a boolean")
     if "max_prs_per_run" in config:
         raise ValueError(
             "Replace max_prs_per_run with max_topics_per_run; one topic may produce several PRs"

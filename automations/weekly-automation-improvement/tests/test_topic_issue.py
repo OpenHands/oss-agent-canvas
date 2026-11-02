@@ -50,6 +50,8 @@ class GitHub:
         elif "/issues/comments/" in endpoint:
             identifier = int(endpoint.rsplit("/", 1)[1])
             value = next(item for item in self.comments if item["id"] == identifier)
+            if method == "PATCH":
+                value.update(payload)
         elif "/comments" in endpoint:
             number = int(endpoint.split("/issues/")[1].split("/")[0])
             issue_url = f"https://api.github.com/repos/{repository}/issues/{number}"
