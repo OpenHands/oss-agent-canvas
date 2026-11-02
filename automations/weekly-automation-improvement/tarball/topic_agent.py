@@ -113,16 +113,25 @@ def evidence(
 
 
 def discover(context, output):
-    urls = set()
+    urls, required = set(), set()
     observed = output / "observed-links.json"
     if observed.exists():
         urls.update(read_json(observed))
+    previous = output / "resources.json"
+    if previous.exists():
+        for row in read_json(previous, 32_000_000).get("resources", []):
+            if owns(context, row.get("body") or ""):
+                urls.add(row["url"])
+                required.add(row["url"])
     for name in ("progress.md", "repair.md", "review.md"):
         if (output / name).exists():
-            urls.update(
+            links = {
                 match[0] for match in RESOURCE.finditer((output / name).read_text())
-            )
-    found, errors = {}, []
+            }
+            urls.update(links)
+            if name == "progress.md":
+                required.update(links)
+    found, errors, reference_errors = {}, [], []
     for repository in context["repositories"]:
         try:
             rows = github_pages(
@@ -132,6 +141,7 @@ def discover(context, output):
             for row in rows:
                 if owns(context, row.get("body") or ""):
                     urls.add(row["html_url"])
+                    required.add(row["html_url"])
                 elif (
                     not row.get("pull_request")
                     and row.get("state") == "open"
@@ -147,6 +157,7 @@ def discover(context, output):
                     )
                     if body is not None:
                         urls.add(row["html_url"])
+                        required.add(row["html_url"])
         except Exception as error:
             errors.append(
                 {"repository": repository, "error": redact(str(error))[:1000]}
@@ -162,15 +173,15 @@ def discover(context, output):
         try:
             value = json.loads(command(["gh", "api", endpoint]))
             body, comment_id = value.get("body") or "", None
+            if owns(context, body):
+                required.add(url)
             if kind == "issues" and not owns(context, body):
-                body, comment_id = current_brief(
-                    context,
-                    value,
-                    github_pages(
-                        f"repos/{repository}/issues/{number}/comments?per_page=100",
-                        command,
-                    ),
+                comments = github_pages(
+                    f"repos/{repository}/issues/{number}/comments?per_page=100", command
                 )
+                if any(owns(context, item.get("body") or "") for item in comments):
+                    required.add(url)
+                body, comment_id = current_brief(context, value, comments)
                 if context.get("isolated_validation") and comment_id is not None:
                     raise ValueError(
                         "Isolated validation requires a fresh issue: " + url
@@ -189,11 +200,14 @@ def discover(context, output):
                 "draft": value.get("draft"),
                 "base": value.get("base", {}).get("sha"),
                 "head": value.get("head", {}).get("sha"),
+                "head_ref": value.get("head", {}).get("ref"),
             }
         except Exception as error:
-            errors.append({"url": url, "error": redact(str(error))[:1000]})
+            target = errors if url in required else reference_errors
+            target.append({"url": url, "error": redact(str(error))[:1000]})
     receipt = {"resources": list(found.values()), "errors": errors}
     replace_json(output / "resources.json", receipt)
+    replace_json(output / "reference-errors.json", reference_errors)
     return receipt
 
 
@@ -238,6 +252,30 @@ def hold_drafts(resources):
                 errors.append(
                     {"url": resource["url"], "error": redact(str(error))[:1000]}
                 )
+    return errors
+
+
+def public_credential_errors(resource):
+    prefixes = [resource.get("head") or ""]
+    if prefixes[0]:
+        prefixes.append(prefixes[0][:7])
+    if resource.get("head_ref"):
+        branch = re.sub(r"[^a-zA-Z0-9.-]+", "-", resource["head_ref"]).lower()
+        prefixes.extend((branch, "pr-" + branch))
+
+    def public_image(match):
+        tag = match[2]
+        for prefix in prefixes:
+            if prefix and tag.startswith(prefix + "-"):
+                return match[1] + "commit-" + tag[len(prefix) + 1 :]
+        return match[0]
+
+    errors = []
+    for field in ("title", "body"):
+        text = resource.get(field) or ""
+        normalized = re.sub(r"(\bghcr\.io/[\w./-]+:)([\w.-]+)", public_image, text)
+        if redact(text, opaque=False) != text or redact(normalized) != normalized:
+            errors.append(resource["url"] + ": possible credential in public " + field)
     return errors
 
 
@@ -597,12 +635,7 @@ def finish(config, context, output, budget, repair):
     ]
     problems = link_errors(resources["resources"])
     for resource in resources["resources"]:
-        for field in ("title", "body"):
-            text = resource.get(field) or ""
-            if redact(text) != text:
-                problems.append(
-                    resource["url"] + ": possible credential in public " + field
-                )
+        problems.extend(public_credential_errors(resource))
         if resource["kind"] == "issues":
             problems.extend(
                 resource["url"] + ": " + error

@@ -10,8 +10,13 @@ import urllib.parse
 import urllib.request
 import uuid
 
+EXPLICIT_SECRET = re.compile(
+    r"\bsk-[\w-]{8,}|gh[pousr]_[\w]{15,}|github_pat_[\w]{15,}|xox[baprs]-[\w-]+|Bearer\s+\S+"
+)
 SECRET = re.compile(
-    r"(?P<protocol_marker><!-- triage-source:[a-f0-9]{64} -->)|\bsk-[\w-]{8,}|gh[pousr]_[\w]{15,}|github_pat_[\w]{15,}|xox[baprs]-[\w-]+|Bearer\s+\S+|(?P<opaque>(?<![\w/.-])[A-Za-z0-9_-]{48,}(?![\w/.-]))"
+    r"(?P<protocol_marker><!-- triage-source:[a-f0-9]{64} -->)|"
+    + EXPLICIT_SECRET.pattern
+    + r"|(?P<opaque>(?<![\w/.-])[A-Za-z0-9_-]{48,}(?![\w/.-]))"
 )
 
 ASSIGNMENT = re.compile(
@@ -19,7 +24,7 @@ ASSIGNMENT = re.compile(
 )
 
 
-def redact(value):
+def redact(value, *, opaque=True):
     if isinstance(value, dict):
         return {
             key: "[REDACTED]"
@@ -33,16 +38,16 @@ def redact(value):
                 "credentials",
             )
             or key.lower().endswith(("_api_key", "_secret_key", "_secret", "_token"))
-            else redact(item)
+            else redact(item, opaque=opaque)
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [redact(item) for item in value]
+        return [redact(item, opaque=opaque) for item in value]
     if isinstance(value, str):
         for name, secret in os.environ.items():
             if re.search(r"KEY|TOKEN|SECRET|PASSWORD", name) and len(secret) >= 8:
                 value = value.replace(secret, "[REDACTED]")
-        value = SECRET.sub(
+        value = (SECRET if opaque else EXPLICIT_SECRET).sub(
             lambda match: match[0]
             if match.lastgroup == "protocol_marker"
             or re.fullmatch(r"[a-f0-9]{64}", match[0])

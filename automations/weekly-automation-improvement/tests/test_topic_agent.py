@@ -568,3 +568,98 @@ def test_isolated_discovery_ignores_weekly_and_source_issues(tmp_path, monkeypat
         topic_agent, "command", lambda *a: json.dumps({"body": "Original source issue"})
     )
     assert topic_agent.discover(ctx, tmp_path) == {"resources": [], "errors": []}
+
+
+def test_public_image_identifiers_do_not_bypass_credential_checks(monkeypatch):
+    head = "a" * 40
+    branch = "fix/terminal-redact-cli-credentials-before-observation-clipping"
+    image = "ghcr.io/openhands/agent-server:"
+    resource = {
+        "url": "https://github.com/Example/sdk/pull/2",
+        "head": head,
+        "head_ref": branch,
+        "body": "\n".join(
+            image + tag
+            for tag in (
+                head + "-python-amd64",
+                head[:7] + "-python-amd64",
+                branch.replace("/", "-") + "-python-arm64",
+                "pr-" + branch.replace("/", "-") + "-python-arm64",
+            )
+        ),
+    }
+    assert topic_agent.public_credential_errors(resource) == []
+    opaque = "Az9QwxELn5RPvz2Y" * 4
+    for tag in (opaque, head + "-" + opaque, head + "-sk-testcredential123456789"):
+        assert topic_agent.public_credential_errors(resource | {"body": image + tag})
+    for branch_with_credential in (
+        "feature-sk-testcredential123456789",
+        "feature-with-a-long-public-looking-branch-name-sk-testcredential123456789",
+    ):
+        assert topic_agent.public_credential_errors(
+            resource
+            | {
+                "head_ref": branch_with_credential,
+                "body": image + "pr-" + branch_with_credential + "-python",
+            }
+        )
+    branch_with_separators = "fix/mixed__separators//for-public-image-identifiers"
+    assert (
+        topic_agent.public_credential_errors(
+            resource
+            | {
+                "head_ref": branch_with_separators,
+                "body": image
+                + "fix-mixed-separators-for-public-image-identifiers-python-arm64",
+            }
+        )
+        == []
+    )
+    monkeypatch.setenv("CUSTOMER_API_KEY", head)
+    assert topic_agent.public_credential_errors(resource)
+    monkeypatch.delenv("CUSTOMER_API_KEY")
+    monkeypatch.setenv("CUSTOMER_API_KEY", branch.replace("/", "-"))
+    assert topic_agent.public_credential_errors(resource)
+
+
+def test_fixture_urls_do_not_hide_missing_declared_outputs(tmp_path, monkeypatch):
+    ctx = context(tmp_path)
+    url = "https://github.com/owner/repo/pull/42"
+    write_json(tmp_path / "observed-links.json", [url])
+    monkeypatch.setattr(topic_agent, "github_pages", lambda *a: [])
+
+    def missing(*args):
+        raise ValueError("Not found")
+
+    monkeypatch.setattr(topic_agent, "command", missing)
+    assert topic_agent.discover(ctx, tmp_path) == {"resources": [], "errors": []}
+    assert json.loads((tmp_path / "reference-errors.json").read_text())[0]["url"] == url
+    (tmp_path / "progress.md").write_text("Repair PR: " + url)
+    receipt = topic_agent.discover(ctx, tmp_path)
+    assert receipt["errors"][0]["url"] == url
+
+
+def test_previously_owned_resources_remain_required_after_a_fetch_failure(
+    tmp_path, monkeypatch
+):
+    ctx = context(tmp_path)
+    url = "https://github.com/Example/other/pull/9"
+    write_json(
+        tmp_path / "resources.json",
+        {
+            "resources": [
+                {
+                    "url": url,
+                    "body": topic_agent.marker(ctx["topic"]),
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(topic_agent, "github_pages", lambda *a: [])
+
+    def missing(*args):
+        raise ValueError("Not found")
+
+    monkeypatch.setattr(topic_agent, "command", missing)
+    receipt = topic_agent.discover(ctx, tmp_path)
+    assert receipt["errors"][0]["url"] == url
