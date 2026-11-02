@@ -95,8 +95,13 @@ def _get_env_key() -> str:
     return os.environ.get("SESSION_API_KEY") or os.environ.get("OH_SESSION_API_KEYS_0") or ""
 
 
-def _session_get(url: str) -> str:
-    req = urllib.request.Request(url, headers={"X-Session-API-Key": _get_env_key()})
+def _session_get(url: str, cloud_api_auth: bool = False) -> str:
+    """GET with the sandbox session key; account-level Cloud API routes (not the
+    sandbox-scoped settings ones) also need the Cloud API key."""
+    headers = {"X-Session-API-Key": _get_env_key()}
+    if cloud_api_auth:
+        headers["Authorization"] = f"Bearer {os.environ.get('OPENHANDS_API_KEY', '')}"
+    req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
             return r.read().decode()
@@ -168,7 +173,7 @@ def _get_llm_dict() -> dict:
     cloud = _cloud()
     if cloud:
         # The account's default LLM, as the SDK's get_llm() reads it.
-        me = json.loads(_session_get(f"{cloud['api']}/api/v1/users/me?expose_secrets=true"))
+        me = json.loads(_session_get(f"{cloud['api']}/api/v1/users/me?expose_secrets=true", cloud_api_auth=True))
         llm = {"model": me.get("llm_model"), "api_key": me.get("llm_api_key"), "base_url": me.get("llm_base_url")}
         llm = {k: v for k, v in llm.items() if v}
         if not llm.get("model"):
