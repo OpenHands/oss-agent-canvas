@@ -663,3 +663,28 @@ def test_previously_owned_resources_remain_required_after_a_fetch_failure(
     monkeypatch.setattr(topic_agent, "command", missing)
     receipt = topic_agent.discover(ctx, tmp_path)
     assert receipt["errors"][0]["url"] == url
+
+
+def test_shared_weekly_issue_is_readable_but_never_a_topic_output(
+    tmp_path, monkeypatch
+):
+    ctx = context(tmp_path) | {
+        "run_id": "current",
+        "isolated_validation": True,
+        "triage_evidence_dir": str(tmp_path / "weekly-evidence"),
+    }
+    url = ctx["triage_issue"]["url"]
+    value = {"body": "Shared weekly context", "number": 1, "html_url": url}
+    comment = {
+        "id": 9,
+        "body": topic_agent.marker(ctx["topic"])
+        + "\n<!-- automation-improvement-run: current -->",
+    }
+    monkeypatch.setattr(topic_agent, "command", lambda *a: json.dumps(value))
+    monkeypatch.setattr(topic_agent, "github_pages", lambda *a: [comment])
+    write_json(tmp_path / "observed-links.json", [url])
+    (tmp_path / "progress.md").write_text("Weekly source: " + url)
+    assert topic_agent.discover(ctx, tmp_path) == {"resources": [], "errors": []}
+    issue = topic_agent.issue_reference(ctx, url, tmp_path / "read")
+    assert issue.value["body"] == "Shared weekly context"
+    assert issue.brief_comment_id is None

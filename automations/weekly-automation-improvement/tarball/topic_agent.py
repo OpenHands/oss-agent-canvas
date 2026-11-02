@@ -55,12 +55,13 @@ def issue_reference(context, url, output):
         f"repos/{repository}/issues/{number}/comments?per_page=100", command
     )
     permitted = url == context.get("triage_issue", {}).get("url")
-    body, comment_id = current_brief(context, value, comments)
-    if context.get("isolated_validation") and comment_id is not None:
-        raise ValueError("Isolated validation requires a fresh issue")
-    if not permitted and body is None:
-        raise ValueError("The issue does not reference this topic")
+    comment_id = None
     if not permitted:
+        body, comment_id = current_brief(context, value, comments)
+        if context.get("isolated_validation") and comment_id is not None:
+            raise ValueError("Isolated validation requires a fresh issue")
+        if body is None:
+            raise ValueError("The issue does not reference this topic")
         value["body"] = body
     evidence_root = (
         Path(context["triage_evidence_dir"])
@@ -139,6 +140,8 @@ def discover(context, output):
                 command,
             )
             for row in rows:
+                if row["html_url"] == context.get("triage_issue", {}).get("url"):
+                    continue
                 if owns(context, row.get("body") or ""):
                     urls.add(row["html_url"])
                     required.add(row["html_url"])
@@ -163,6 +166,8 @@ def discover(context, output):
                 {"repository": repository, "error": redact(str(error))[:1000]}
             )
     for url in sorted(urls):
+        if url == context.get("triage_issue", {}).get("url"):
+            continue
         match = RESOURCE.fullmatch(url)
         if not match:
             continue
