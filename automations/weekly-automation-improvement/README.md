@@ -5,6 +5,10 @@ queue of repair topics. Native OpenHands agents investigate and repair the under
 problem, including SDK bugs, and open PRs with before/after evidence. An independent
 agent reviews the actual changes and execution records. Humans merge and deploy.
 
+Start with [How the self-improving automation works](HOW_IT_WORKS.md) for the
+high-level workflow, agent responsibilities, evidence and main controls. This
+README covers setup, operation and validation history.
+
 ## Weekly path
 
 1. Laminar runs Flow-1 on matching finished automation traces according to its sampling
