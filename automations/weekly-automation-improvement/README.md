@@ -260,12 +260,14 @@ explain the mechanism, prevention, comparison and remaining work before evidence
 No generated issue or PR was manually polished to improve the validation result.
 
 Recorded native triage/repair/review inference was **$20.28**, excluding separately
-invoked replay inference. The pipeline has **271 passing tests** and clean Ruff
+invoked replay inference. The pipeline has **272 passing tests** and clean Ruff
 checks. The run exposed output-discovery errors on ordinary source issues and
 synthetic fixture URLs, plus a credential-pattern false positive on SDK CI's public
 image tags. The fixes preserve actual-output failure checks and raw credential
-detection. Saved outputs can be checked read-only with the updated code; original
-run reports and native draft verdicts remain intact. This is validation with
+detection. Read-only checks using the updated code passed for all four saved
+output sets: ownership, public structure, links, credentials, tracking labels and
+unchanged reviewed revisions. Original run reports and native draft verdicts
+remain intact. This is validation with
 bookkeeping fixes, not an uninterrupted production-ready pass or a claim that all
 four topics were solved. Scheduled workers and production Signals were unchanged.
 
