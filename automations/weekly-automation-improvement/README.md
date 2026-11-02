@@ -237,7 +237,39 @@ usage remains unknown. Per-stage receipts distinguish SDK-estimated agent costs
 from proxy-reported review costs and retain latency/completions. The shared cost
 threshold remains a safety limit; incomplete accounting blocks further inference.
 
-## Latest staged repair validation
+## Fresh issue-lifecycle validation — 2026-11-02
+
+An isolated run started with the frozen 63-finding inventory and no prior prototype
+issues, PRs or conclusions in agent context. Fresh Luna triage selected four topics;
+four parallel Sol 6.1 agents opened five PRs across three repositories. All four
+independent reviews completed. The entry point is
+[weekly issue #97](https://github.com/OpenHands/oss-agent-canvas/issues/97).
+
+| Topic | Generated output | Independently reviewed outcome |
+| --- | --- | --- |
+| Credential output | [SDK #6389](https://github.com/OpenHands/software-agent-sdk/pull/6389) | Terminal redaction mechanism confirmed; draft pending CI and intermittent-test adjudication; prefix disclosure remains uncovered |
+| Review publication | [canvas #101](https://github.com/OpenHands/oss-agent-canvas/pull/101), [extensions #885](https://github.com/OpenHands/extensions/pull/885) | Payload preflight verified; autonomous recovery remains inconclusive; both draft |
+| Review verification claims | [extensions #886](https://github.com/OpenHands/extensions/pull/886) | One target corrected, remaining errors and a control regression; draft |
+| Triage priority evidence | [canvas #100](https://github.com/OpenHands/oss-agent-canvas/pull/100) | One target corrected, another still fails; draft |
+
+The agents rewrote their current issue sections as diagnosis and validation changed,
+archived prior versions privately, and retained raw-data references and execution
+catalogs. Deeper source reads corrected initial Signal interpretations, including
+an evaluation result that existed but belonged to an older revision. Public issues
+explain the mechanism, prevention, comparison and remaining work before evidence.
+No generated issue or PR was manually polished to improve the validation result.
+
+Recorded native triage/repair/review inference was **$20.28**, excluding separately
+invoked replay inference. The pipeline has **271 passing tests** and clean Ruff
+checks. The run exposed output-discovery errors on ordinary source issues and
+synthetic fixture URLs, plus a credential-pattern false positive on SDK CI's public
+image tags. The fixes preserve actual-output failure checks and raw credential
+detection. Saved outputs can be checked read-only with the updated code; original
+run reports and native draft verdicts remain intact. This is validation with
+bookkeeping fixes, not an uninterrupted production-ready pass or a claim that all
+four topics were solved. Scheduled workers and production Signals were unchanged.
+
+## Earlier staged repair validation
 
 The saved 63-finding inventory and five-topic Luna queue were continued through
 parallel Sol 6.1 repair workers and independent review. The shared entry point is
