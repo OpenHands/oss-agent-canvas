@@ -161,7 +161,11 @@ def repository_catalog(config):
     return catalog
 
 
-def existing_prs(repository):
+def existing_work(repository):
+    rows = github_pages(f"repos/{repository}/issues?state=open&per_page=100")
+    rows += github_pages(
+        f"repos/{repository}/issues?state=closed&labels={IMPROVEMENT_LABEL}&per_page=100"
+    )
     return [
         {
             "url": row["html_url"],
@@ -170,11 +174,12 @@ def existing_prs(repository):
             "body": row.get("body") or "",
             "state": row["state"].upper(),
             "createdAt": row["created_at"],
+            "kind": "pull" if "pull_request" in row else "issue",
         }
-        for row in github_pages(
-            f"repos/{repository}/issues?state=all&labels={IMPROVEMENT_LABEL}&per_page=100"
-        )
-        if row.get("pull_request")
+        for row in rows
+        if not (row.get("body") or "")
+        .lstrip()
+        .startswith("<!-- automation-improvement-triage:")
     ]
 
 
@@ -315,7 +320,7 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
     prs, discovery_errors = [], []
     for repository in () if config.get("isolated_validation") else repositories:
         try:
-            prs.extend(existing_prs(repository))
+            prs.extend(existing_work(repository))
         except Exception as error:
             discovery_errors.append(
                 {"repository": repository, "error": redact(str(error))[:1000]}
@@ -356,13 +361,26 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
         "max_topics_per_run": config.get("max_topics_per_run", 10),
         "isolated_validation": config.get("isolated_validation", False),
     }
-    if records:
+    if records and not discovery_errors:
         triage_args = arguments(config, output / "triage", limit, seed)
         triage_args.output.mkdir(mode=0o700)
         triage_args.budget = budget
         triage_args.repositories = repositories
         configure_triage(triage_args, config, state_dir, week, dry_run, inventory_path)
         queue, aggregation = triage(triage_args, records, prs, previous)
+        tracked = aggregation.get("tracked_topics", [])
+        if not dry_run:
+            for update in tracked:
+                if update["status"] == "recurrence_recorded":
+                    topic = update["topic"]
+                    for identifier in topic["representative_event_ids"]:
+                        state["events"][identifier] = {
+                            "topic_id": topic["id"],
+                            "existing_work_urls": update["existing_work_urls"],
+                            "comments": update["comments"],
+                        }
+                        state["backlog"].pop(identifier, None)
+            save_state(state_path, state)
         queue, skipped = eligible_topics(
             queue, state, week, config.get("retry_topic_ids", [])
         )
@@ -382,22 +400,26 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
         if dry_run:
             summary.update(
                 status="preview",
-                topics=[{"topic": t, "status": "planned"} for t in queue] + skipped,
+                topics=[{"topic": t, "status": "planned"} for t in queue]
+                + skipped
+                + tracked,
             )
         else:
             execution, state = execute(config, context, queue, state, budget)
             summary.update(
                 status=execution["status"],
-                topics=execution["outcomes"] + skipped,
+                topics=execution["outcomes"] + skipped + tracked,
                 execution={k: v for k, v in execution.items() if k != "outcomes"},
             )
+        if any(item["status"] == "recurrence_pending" for item in tracked):
+            summary["status"] = "triage_incomplete"
     if summary["collection_errors"] and summary["status"] in (
         "completed",
         "no_unhandled_findings",
     ):
         summary["status"] = "collection_incomplete"
-    if discovery_errors and summary["status"] == "completed":
-        summary["status"] = "review_incomplete"
+    if discovery_errors:
+        summary["status"] = "discovery_incomplete"
     summary.update(pending_events=len(state["backlog"]), budget=budget.snapshot())
     write_json(output / "weekly-report.json", redact(summary))
     return summary

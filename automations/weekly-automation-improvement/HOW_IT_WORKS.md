@@ -39,7 +39,8 @@ flowchart TD
         repair["Repair and compare — parallel OpenHands / Sol 6.1"]
         review["Independently review and rerun checks — OpenHands / Sol 6.1"]
         context["Shared topic + raw evidence"]
-        triage --> repair
+        triage -->|New topics, up to the topic limit| repair
+        triage -->|Already tracked| recurrence["Comment with new evidence; skip repair"]
         repair -->|PRs + validation results| review
         context -.-> repair
         context -.-> review
@@ -62,7 +63,7 @@ tests or replays as needed.
 | **Laminar: analyze** | Flow-1 inspects each trace selected by the Signal's trigger, filters and coverage setting. | Structured findings with trace evidence |
 | **Laminar: cluster** | Laminar groups similar finding events asynchronously within each Signal. | Recurring-pattern clusters |
 | **1. Prepare** | Python reads events and available clusters, tracks the backlog and creates compact counts/examples. Unclustered events and ambiguous origins remain visible. | Evidence indexed by a weekly issue |
-| **2. Prioritize** | Luna merges duplicate mechanisms, separates unrelated problems, considers existing work and ranks topics P0–P3. Clusters are leads, not proven causes. | Prioritized topic queue |
+| **2. Prioritize** | Luna merges duplicate mechanisms, ranks topics P0–P3 and comments with new evidence on existing issues/PRs. Tracked topics are excluded before allocating repair slots. | Prioritized new-topic queue |
 | **3. Repair and compare** | Sol diagnoses each topic, chooses repositories, implements, tests and opens or revises linked draft PRs. Later attempts receive the review feedback. | Candidate fixes and before/after evidence |
 | **4. Review** | A separate Sol agent checks topic claims against raw evidence, exact revisions, execution records and CI; reruns focused checks where useful. | Ready or draft PRs |
 
@@ -72,6 +73,11 @@ topic can require several PRs. Reviewers can request another repair with actiona
 feedback, followed by a fresh review. **`max_repair_attempts=2`** allows the initial
 attempt plus one revision. Acceptance, external blockers, the attempt limit or
 resource limits stop the loop. The same frozen comparison inputs are retained.
+
+**Triage finishes before repairs start.** Existing topics consume no repair slots;
+the next new topic receives the slot. The resulting new-topic queue can then run
+in parallel. A failed recurrence comment stays pending and never triggers a
+duplicate repair. If existing-work discovery fails, no repair agents start.
 
 ## What makes a fix convincing?
 
@@ -90,7 +96,7 @@ resource limits stop the loop. The same frozen comparison inputs are retained.
 | --- | --- |
 | Schedule | Weekly, Monday 08:00 UTC |
 | Flow-1 coverage | Separate Laminar setting: sample or all matching traces |
-| `max_topics_per_run` | 10 selected topics; counts topics, not PRs |
+| `max_topics_per_run` | 10 new topics after excluding existing work; counts topics, not PRs |
 | `max_repair_attempts` | 2 total repair attempts per topic, including the initial attempt |
 | `repair_concurrency` | Defaults to the topic limit |
 | `validation_sample_size` | 5 inputs per comparison group when available |
@@ -101,8 +107,10 @@ resource limits stop the loop. The same frozen comparison inputs are retained.
 
 **Issues are living briefs.** Agents explain the problem, example, prevention and
 current evidence before the data references. They rewrite their current-run brief
-as conclusions change and archive prior versions privately. Production reuses a
-matching issue through a new brief comment; existing descriptions remain intact.
+as conclusions change and archive prior versions privately. In production, triage
+comments on matching existing issues/PRs with new evidence and skips their repair;
+existing descriptions remain intact. Within one dispatched topic, bounded repair
+revisions still update that run's brief and PRs.
 
 **Raw evidence stays private.** Issues link to authorized access for inputs,
 Signals, prompts and logs. Public explanations use sanitized summaries; credential

@@ -493,7 +493,7 @@ def test_isolated_validation_does_not_pass_old_outputs_to_triage(tmp_path, monke
     }
     monkeypatch.setattr(weekly, "github_auth", lambda c: None)
     monkeypatch.setattr(weekly, "repository_catalog", lambda c: {"Example/source": {}})
-    monkeypatch.setattr(weekly, "existing_prs", lambda r: pytest.fail("Read old PRs"))
+    monkeypatch.setattr(weekly, "existing_work", lambda r: pytest.fail("Read old PRs"))
     calls = []
 
     def triage(args, rows, prs, previous):

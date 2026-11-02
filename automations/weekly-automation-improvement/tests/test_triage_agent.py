@@ -55,6 +55,7 @@ def test_triage_agent_reads_the_issue_and_private_preparation_before_ranking(
                             "priority": 1,
                             "reason": "Repeated actionable failure",
                             "representative_event_refs": ["e1"],
+                            "existing_work_urls": [],
                         }
                     ],
                     "no_action_reason": "",

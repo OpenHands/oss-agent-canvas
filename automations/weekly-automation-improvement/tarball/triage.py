@@ -2,10 +2,11 @@ import copy
 import hashlib
 from collections import Counter
 
-from common import encode, timestamp, topic_id, write_json
+from common import encode, redact, timestamp, topic_id, write_json
 from attribution import automation_ids, candidates, conversation_ids, unit
 from triage_agent import rank
 from laminar import object_value
+from tracked_work import comment, matching
 
 TEXT = {"type": "string"}
 
@@ -39,6 +40,7 @@ TRIAGE = object_schema(
                     },
                     "reason": TEXT,
                     "priority": {"type": "integer", "minimum": 0, "maximum": 3},
+                    "existing_work_urls": {"type": "array", "items": TEXT},
                 }
             ),
         },
@@ -285,12 +287,13 @@ def prepare(records, prs, previous_attempts, retry_topic_ids=()):
             }
             for reference, identifier in events.items()
         ],
-        "existing_improvement_prs": prs,
+        "existing_work": prs,
         "previous_attempts": list(previous_attempts),
         "explicit_retry_topics": [
             t for t in previous_attempts if t["id"] in retry_topic_ids
         ],
     }
+    references["existing_work"] = prs
     return (
         context,
         references,
@@ -317,8 +320,18 @@ def validate(result, records, references, limit):
             "priority",
             "reason",
             "representative_event_refs",
+            "existing_work_urls",
         }:
             raise ValueError("Invalid topic fields")
+        urls = topic["existing_work_urls"]
+        if (
+            not isinstance(urls, list)
+            or any(not isinstance(url, str) for url in urls)
+            or len(set(urls)) != len(urls)
+            or not set(urls)
+            <= {item["url"] for item in references.get("existing_work", [])}
+        ):
+            raise ValueError("Topic cites unknown or duplicate existing work")
         if type(topic["priority"]) is not int or not 0 <= topic["priority"] <= 3:
             raise ValueError("Topic priority must be an integer from P0 through P3")
         for field, bound in (("title", 200), ("reason", 4000)):
@@ -388,21 +401,43 @@ def triage(args, records, prs, completed_topics=()):
         "maxItems"
     ] = args.limit
     result, measurement, issue = rank(args, context, prepared_records, schema)
-    plans = validate(result, records, references, args.limit)
+    ranked = validate(result, records, references, args.limit)
+    plans, tracked = [], []
+    for topic in ranked:
+        urls = matching(topic, prs)
+        if not urls:
+            plans.append(topic)
+            continue
+        update = {"topic": topic, "existing_work_urls": urls}
+        try:
+            update["comments"] = comment(
+                topic, prs, records, issue, args.output / "recurrences"
+            )
+            update["status"] = (
+                "recurrence_preview" if issue.preview else "recurrence_recorded"
+            )
+        except Exception as error:
+            update.update(status="recurrence_pending", error=redact(str(error))[:1000])
+        tracked.append(update)
     queue = "\n".join(
         f"- **P{topic['priority']}: {topic['title']}** — {topic['reason']}"
         for topic in plans
     )
     issue.update_block(
         "triage-plan",
-        f"Ranked {len(plans)} investigation topics. These are leads, not confirmed repairs.\n\n{queue}"
+        f"Ranked {len(plans)} new investigation topics; {len(tracked)} topics already have tracked work and will not receive repair agents. These are leads, not confirmed repairs.\n\n{queue}"
         if plans
-        else "No repair topic selected: " + result["no_action_reason"],
+        else f"No new repair topic selected; {len(tracked)} topics already have tracked work. "
+        + result["no_action_reason"],
     )
     issue.record(
         "Attempts and decisions — validated priority queue",
         f"Validated {len(plans)} focused repair topics, ordered globally by priority. These are proposed investigations, not confirmed defects or proven repairs.",
-        {"ranked-topics.json": plans, "triage-references.json": references},
+        {
+            "ranked-topics.json": plans,
+            "tracked-topics.json": tracked,
+            "triage-references.json": references,
+        },
     )
     aggregation = context | {
         "luna_triage": {
@@ -411,6 +446,7 @@ def triage(args, records, prs, completed_topics=()):
         },
         "triage_measurement": measurement,
         "triage_issue": issue.refresh(),
+        "tracked_topics": tracked,
     }
     write_json(args.output / "triage-result.json", aggregation)
     return plans, aggregation

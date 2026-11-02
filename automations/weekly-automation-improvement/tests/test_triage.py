@@ -33,6 +33,7 @@ def topic(reference, key="publication-payload", priority=2):
         "priority": priority,
         "reason": "Repeated supported workflow defect",
         "representative_event_refs": [reference],
+        "existing_work_urls": [],
     }
 
 

@@ -50,11 +50,18 @@ unresolved PRs draft. No replacement topics are dispatched to fill a quota.
 
 ## Issues and evidence
 
-Search existing issues and PRs before creating work. If an open issue covers the
-same problem, post a structured current-run brief comment there and leave its
-description unchanged. Otherwise create a focused issue, cross-reference related
-issues and add useful comments where appropriate. Avoid competing PRs when an
-existing PR already addresses the problem. Keep one main issue per affected repo.
+Triage completes before repair dispatch. It checks open issues/PRs, including
+human-created work, and previous self-improvement work even if closed. For a
+matching problem, the triage agent posts an idempotent recurrence comment with new
+Signal/trace references and a private evidence catalog; it leaves descriptions
+unchanged and skips repair. These topics do not consume `max_topics_per_run`:
+the next eligible new topics fill the queue, then repairs run in parallel. Comment
+failures remain pending without launching duplicate repairs. Discovery failures
+prevent dispatch rather than treating unavailable history as absent work.
+
+Repair agents also check for existing work as a safeguard against changes after
+triage. For a newly selected problem, create a focused issue and cross-reference
+related work. Keep one main issue per affected repo.
 All repository issues link one another and all related PRs. Each PR links its local
 issue and describes dependencies and any required merge/release order. One issue
 is the main entry point; a separate umbrella is unnecessary.
@@ -173,8 +180,9 @@ Top-level settings:
   10800 seconds). Parallel workers inherit the remaining allowance at dispatch;
   costs are reconciled when they finish. Already-running siblings can exceed the
   aggregate dollar threshold. This is not a strict shared billing cap.
-- `retry_topic_ids`: explicit reconsideration of known topics, including an attempt
-  already dispatched this week. Prior conclusions stay visible to both agents.
+- `retry_topic_ids`: explicit reconsideration of failed topics without tracked
+  issues/PRs, including an attempt already dispatched this week. It does not
+  bypass existing-work exclusion. Prior conclusions remain visible.
 - `isolated_validation`: default **false**. Quality-control runs set it true with
   a fresh private state directory: previous prototype issues/PRs and conclusions
   are excluded from triage context, and repair agents create fresh outputs without
@@ -182,8 +190,9 @@ Top-level settings:
 
 Migrate `max_prs_per_run` to `max_topics_per_run`; the old setting fails explicitly.
 Legacy publisher/revision/existing-PR-comparison settings no longer control the
-weekly path. Triage sees prior unsuccessful approaches and should reconsider only
-when new evidence, source changes or explicit retry justify doing so.
+weekly path. Triage sees prior unsuccessful approaches; tracked work receives
+recurrence comments instead of another repair agent. Bounded revisions within
+one current run remain controlled by `max_repair_attempts`.
 
 The existing GitHub worker credential needs issue/PR and push access in affected
 repositories. The SQL-capable self-hosted Laminar project key and proxy key stay in
