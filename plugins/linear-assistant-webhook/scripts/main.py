@@ -468,10 +468,24 @@ def _task_from_notification(n: dict) -> dict | None:
 
 
 def _notification_id_from_event(event: dict) -> str | None:
-    """The webhook body is only used to find the notification, whose id sits
-    under `notification` in Linear's app-user notification payload."""
+    """The webhook body is only used to find the notification. Linear puts it
+    under `notification`; fall back to any nested object that looks like one, so
+    a different envelope does not silently drop requests."""
     notification = event.get("notification") or {}
-    return notification.get("id") or event.get("notificationId")
+    if notification.get("id"):
+        return notification["id"]
+    if event.get("notificationId"):
+        return event["notificationId"]
+    stack = [event]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            if node.get("id") and node.get("type") in MENTION_TYPES | ASSIGN_TYPES:
+                return node["id"]
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return None
 
 
 # ── GitHub ───────────────────────────────────────────────────────────────────
@@ -714,8 +728,9 @@ def main() -> str | None:
     event = payload.get("event") or {}
     notification_id = _notification_id_from_event(event)
     if not notification_id:
-        log(f"No notification id in the event (keys: {sorted(event)}); nothing to do")
-        return None
+        # The trigger matched, so this was meant to be a request: surface it.
+        raise RuntimeError(f"No notification id in the webhook event (keys: {sorted(event)}): "
+                           f"{json.dumps(event, default=str)[:1500]}")
 
     linear_key = get_secret(LINEAR_API_KEY_SECRET)
     try:
