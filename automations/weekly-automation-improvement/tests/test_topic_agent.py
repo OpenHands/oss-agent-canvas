@@ -557,3 +557,14 @@ def test_duplicate_current_run_briefs_are_rejected(tmp_path):
     )
     with pytest.raises(ValueError, match="one current-run brief"):
         topic_agent.current_brief(ctx, {"body": body}, [{"id": 1, "body": body}])
+
+
+def test_isolated_discovery_ignores_weekly_and_source_issues(tmp_path, monkeypatch):
+    ctx = context(tmp_path) | {"run_id": "current", "isolated_validation": True}
+    urls = [ctx["triage_issue"]["url"], "https://github.com/Example/upstream/issues/8"]
+    write_json(tmp_path / "observed-links.json", urls)
+    monkeypatch.setattr(topic_agent, "github_pages", lambda *a: [])
+    monkeypatch.setattr(
+        topic_agent, "command", lambda *a: json.dumps({"body": "Original source issue"})
+    )
+    assert topic_agent.discover(ctx, tmp_path) == {"resources": [], "errors": []}

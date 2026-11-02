@@ -163,10 +163,6 @@ def discover(context, output):
             value = json.loads(command(["gh", "api", endpoint]))
             body, comment_id = value.get("body") or "", None
             if kind == "issues" and not owns(context, body):
-                if context.get("isolated_validation"):
-                    raise ValueError(
-                        "Isolated validation requires a fresh issue: " + url
-                    )
                 body, comment_id = current_brief(
                     context,
                     value,
@@ -175,6 +171,10 @@ def discover(context, output):
                         command,
                     ),
                 )
+                if context.get("isolated_validation") and comment_id is not None:
+                    raise ValueError(
+                        "Isolated validation requires a fresh issue: " + url
+                    )
             if body is None or not owns(context, body):
                 continue
             found[url] = {
