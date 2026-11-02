@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import unittest
 from pathlib import Path
 
@@ -138,9 +139,15 @@ class ConfigTests(unittest.TestCase):
                 self.assertEqual(module.MAX_MERGES_PER_RUN, 2)
 
     def test_defaults_stay_conservative(self):
+        # Loaded from a directory holding no config.json, so the defaults are
+        # what is being asserted. The deployed tarball ships an enabling
+        # config.json beside its copy of the script, which would otherwise
+        # shadow the defaults this test is about.
+        clean = Path(__import__("tempfile").mkdtemp())
         for path in MODULES:
             with self.subTest(module=str(path.relative_to(ROOT))):
-                module = load_module(path)
+                (clean / path.name).write_bytes(path.read_bytes())
+                module = load_module(clean / path.name)
                 self.assertFalse(module.AUTO_MERGE_DEPENDABOT)
                 self.assertEqual(module.MAINTAINERS, [])
                 self.assertEqual(
@@ -153,6 +160,25 @@ class ConfigTests(unittest.TestCase):
                         "OpenHands/enterprise",
                     ],
                 )
+
+    def test_config_path_env_var_wins(self):
+        # The plugin path lets the host render the config and point at it with
+        # AUTOMATION_CONFIG_PATH; a config.json beside the script must not
+        # shadow it.
+        other = Path(__import__("tempfile").mkdtemp()) / "rendered.json"
+        other.write_text(json.dumps({"auto_merge_dependabot": True}))
+        previous = os.environ.get("AUTOMATION_CONFIG_PATH")
+        os.environ["AUTOMATION_CONFIG_PATH"] = str(other)
+        try:
+            for path in MODULES:
+                with self.subTest(module=str(path.relative_to(ROOT))):
+                    module = load_module(path)
+                    self.assertTrue(module.AUTO_MERGE_DEPENDABOT)
+        finally:
+            if previous is None:
+                os.environ.pop("AUTOMATION_CONFIG_PATH", None)
+            else:
+                os.environ["AUTOMATION_CONFIG_PATH"] = previous
 
     def test_rejects_wrong_types(self):
         for payload in [
