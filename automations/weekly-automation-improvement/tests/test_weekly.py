@@ -428,3 +428,34 @@ def test_collection_can_write_its_own_immutable_inventory(tmp_path, monkeypatch)
         config, tmp_path, dry_run=True, limit=3, seed=42, budget=RunBudget({})
     )
     assert result["status"] == "no_unhandled_findings"
+
+
+def test_explicit_retry_restores_representative_events_despite_prior_prs():
+    row = record()
+    event = row["event"]["id"]
+    state = {
+        "events": {event: {"topic_id": "prior"}},
+        "topic_weeks": {
+            "old/prior": {"topic": {"id": "prior", "representative_event_ids": [event]}}
+        },
+    }
+    prs = [{"body": "<!-- automation-improvement-event: " + event + " -->"}]
+    assert weekly.update_backlog(state, inventory([row]), prs) == []
+    assert weekly.update_backlog(state, inventory([row]), prs, ["prior"]) == [row]
+
+
+def test_explicit_retry_uses_prior_pr_markers_without_local_history():
+    row = record()
+    event = row["event"]["id"]
+    state = {"events": {}}
+    prs = [
+        {
+            "body": "<!-- automation-improvement-topic: prior -->\n"
+            + "<!-- automation-improvement-event: "
+            + event
+            + " -->"
+        }
+    ]
+    assert weekly.update_backlog(state, inventory([row]), prs) == []
+    assert weekly.update_backlog(state, inventory([row]), prs, ["other"]) == []
+    assert weekly.update_backlog(state, inventory([row]), prs, ["prior"]) == [row]

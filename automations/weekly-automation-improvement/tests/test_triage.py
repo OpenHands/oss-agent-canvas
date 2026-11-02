@@ -62,7 +62,9 @@ def test_luna_agent_returns_a_globally_sorted_scoped_plan(tmp_path, monkeypatch)
     records = [record(1), record(2, automation=2)]
     calls = []
     issue = SimpleNamespace(
-        record=lambda *a: None, refresh=lambda: {"url": "https://example.test/triage"}
+        record=lambda *a: None,
+        update_block=lambda *a: None,
+        refresh=lambda: {"url": "https://example.test/triage"},
     )
 
     def agent(args, context, prepared, schema):

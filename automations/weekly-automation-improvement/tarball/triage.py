@@ -389,6 +389,16 @@ def triage(args, records, prs, completed_topics=()):
     ] = args.limit
     result, measurement, issue = rank(args, context, prepared_records, schema)
     plans = validate(result, records, references, args.limit)
+    queue = "\n".join(
+        f"- **P{topic['priority']}: {topic['title']}** — {topic['reason']}"
+        for topic in plans
+    )
+    issue.update_block(
+        "triage-plan",
+        f"Ranked {len(plans)} investigation topics. These are leads, not confirmed repairs.\n\n{queue}"
+        if plans
+        else "No repair topic selected: " + result["no_action_reason"],
+    )
     issue.record(
         "Attempts and decisions — validated priority queue",
         f"Validated {len(plans)} focused repair topics, ordered globally by priority. These are proposed investigations, not confirmed defects or proven repairs.",

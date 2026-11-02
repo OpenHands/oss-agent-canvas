@@ -17,7 +17,7 @@ from common import read_json, redact, replace_json, write_json
 from github_io import command, github_pages, IMPROVEMENT_LABEL
 from laminar import Laminar
 from raw_evidence import EvidenceReader
-from topic_issue import IssueReader, TopicIssue
+from topic_issue import ISSUE_GUIDANCE, IssueReader, TopicIssue, public_issue_errors
 
 RESOURCE = re.compile(
     r"https://github\.com/([\w.-]+/[\w.-]+)/(issues|pull)/(\d+)(?!\d)"
@@ -28,6 +28,13 @@ def marker(topic):
     return "<!-- automation-improvement-topic: " + topic["id"] + " -->"
 
 
+def owns(context, body):
+    run_id = context.get("run_id")
+    return marker(context["topic"]) in body and (
+        not run_id or f"<!-- automation-improvement-run: {run_id} -->" in body
+    )
+
+
 def issue_reference(context, url, output):
     match = RESOURCE.fullmatch(url)
     if not match or match[2] != "issues":
@@ -35,7 +42,7 @@ def issue_reference(context, url, output):
     repository, number = match[1], int(match[3])
     value = json.loads(command(["gh", "api", f"repos/{repository}/issues/{number}"]))
     permitted = url == context.get("triage_issue", {}).get("url")
-    if not permitted and marker(context["topic"]) not in (value.get("body") or ""):
+    if not permitted and not owns(context, value.get("body") or ""):
         raise ValueError("The issue does not reference this topic")
     evidence_root = (
         Path(context["triage_evidence_dir"])
@@ -101,7 +108,7 @@ def discover(context, output):
                 command,
             )
             for row in rows:
-                if marker(context["topic"]) in (row.get("body") or ""):
+                if owns(context, row.get("body") or ""):
                     urls.add(row["html_url"])
         except Exception as error:
             errors.append(
@@ -117,7 +124,7 @@ def discover(context, output):
         )
         try:
             value = json.loads(command(["gh", "api", endpoint]))
-            if marker(context["topic"]) not in (value.get("body") or ""):
+            if not owns(context, value.get("body") or ""):
                 continue
             found[url] = {
                 "url": url,
@@ -194,6 +201,10 @@ def record_evidence(context, output, phase, resources):
     ):
         if path.exists():
             artifacts[name] = read_json(path, 32_000_000)
+    if context.get("signal_records_path"):
+        artifacts["signal-records.json"] = read_json(
+            Path(context["signal_records_path"]), 32_000_000
+        )
     if (output / (phase + ".md")).exists():
         artifacts[phase + "/summary.json"] = {
             "markdown": (output / (phase + ".md")).read_text()
@@ -260,24 +271,24 @@ def record_evidence(context, output, phase, resources):
         directory.mkdir(parents=True, mode=0o700, exist_ok=True)
         try:
             issue = issue_reference(context, reference["url"], directory)
-            missing = [
-                r["url"]
-                for r in resources
-                if r["state"] == "open"
-                and r["url"] != reference["url"]
-                and r["url"] not in issue.value["body"]
-            ]
-            if missing:
-                issue.update_body(
-                    issue.value["body"]
-                    + "\n\n### Related repair work\n\n"
-                    + "\n".join("- " + url for url in missing)
-                )
+            issue.related(
+                [
+                    r["url"]
+                    for r in resources
+                    if r["state"] == "open" and r["url"] != reference["url"]
+                ]
+            )
             catalogs.append(
                 issue.record(
                     "Attempts and decisions — " + phase + " " + output.name,
                     f"The {phase} agent's actual prompt, tool events, model completions and frozen-input references are retained privately. Its claims require independent inspection.",
-                    artifacts,
+                    artifacts
+                    | {
+                        "public-issue-body.json": {
+                            "url": reference["url"],
+                            "body": issue.value["body"],
+                        }
+                    },
                 )
             )
             reference["body"] = issue.value["body"]
@@ -387,9 +398,13 @@ def prompt(context, context_path, output, review=False):
         f"For paged raw evidence: {cli} --automation-id UUID --tool search_runs/list_spans/read_trace/read_signal --arguments JSON. Topic automation IDs: {context['automation_ids']}; additional prepared automations you may inspect: {context.get('evidence_automation_ids', context['automation_ids'])}. "
         "Use --finding-id EVENT_UUID instead of --automation-id to inspect the exact trace/Signal of any prepared finding, including unresolved attribution. Complete original Signal records are referenced by signal_records_path in context. Missing or ambiguous origin does not restrict repair repository choice. Candidate conversations are not confirmed negative inputs: inspect cited spans and task boundaries, resolve attribution before freezing a replay input, and document remaining cohort attribution_gaps. Never choose a candidate arbitrarily or count candidates as independent failures. "
         f"For issue sections/catalogs: {cli} --issue-url URL --tool read_issue/read_issue_comment/read_issue_artifact --arguments JSON. "
-        "Use targeted reads rather than dumping full histories. Your normal terminal, editor, browser, task and subagent tools are available; give any child the same issue/context/evidence access and a precise task. "
+        "For historical catalogs, use the context.json beside the previous_attempts entry's report as --context; it retains that run's issue ownership and private evidence root. Do not use the current run's context for an earlier run's artifacts. You may also read the prior issue's catalog comments and the referenced private files directly. "
+        + ISSUE_GUIDANCE
+        + "Use targeted reads rather than dumping full histories. Your normal terminal, editor, browser, task and subagent tools are available; give any child the same issue/context/evidence access and a precise task. "
         "The built-in task tool is blocking. Complete a child's prerequisites before delegation; freeze candidate source before delegating its evaluation. A child missing a prerequisite must return its blocker immediately, never wait for the parent to create files after the task returns. "
         "Do not merge, deploy, mutate Kubernetes, publish credentials/private tasks, or run external writes against real customer issues/reviews during validation. GitHub issues/PRs for this repair are authorized. "
+        "Earlier runs' issues and PRs are read-only historical context: never reopen, repurpose, close or edit them. Only edit issues/PRs carrying BOTH this topic's marker and this run's marker from context.json. Within this run, revise the same issue per affected repository. "
+        "Before every public GitHub write, inspect the proposed title, body, comments and patch for private content and run common.redact locally to check for possible credentials. A credential-pattern check cannot detect private prose: summarize private inputs in your own sanitized words. Never publish the raw source text. "
     )
     if review:
         return shared + (
@@ -398,12 +413,17 @@ def prompt(context, context_path, output, review=False):
             "Compare the coherent baseline repository/SDK versions against the complete proposed configuration. Distinguish original-input replay, captured-input projection and synthetic mechanism tests. Require genuine baseline defect reproduction for a mechanism claim; missing new files/imports or asserting a new implementation contract is insufficient. "
             "Assess the scoped improvement and no introduced control violations; do not demand that unrelated inherited problems disappear. Missing samples or unavailable historical environments must be explicit, not reconstructed indefinitely. "
             "Inspect every related repository's PRs and compatibility/dependency claims. Confirm one issue per affected repository, reciprocal issue links and links to all related PRs. Correct missing cross-links and labels using normal GitHub tools. "
-            "Check public patches/descriptions for private data. Put a concise independent verdict and evidence limitations on each PR and in the linked issue. Mark accepted, sufficiently evidenced PRs ready for review; keep failed, inconclusive, unsafe or dependency-blocked changes draft. Recheck head SHAs before recording acceptance; a changed head invalidates the review. Never approve your own GitHub PR or merge. "
+            "Before deciding readiness, read each issue body on its own without private artifacts: can a human understand the problem, concrete example, prevention, acceptance criteria and current verdict? Rewrite/correct the AI-authored sections to fix omissions, stale conclusions and append-only clutter; preserve human content and the audit trail. Do the same for each PR summary and Before / After Evidence section so they reflect the final reviewed scope and verdict. Check public patches/descriptions for private data. Put a concise independent verdict and evidence limitations on each PR and in the linked issue. Mark accepted, sufficiently evidenced PRs ready for review; keep failed, inconclusive, unsafe or dependency-blocked changes draft. Recheck head SHAs before recording acceptance; a changed head invalidates the review. Never approve your own GitHub PR or merge. "
             f"Do not edit/push repair source or start another coding loop. Finish one review and write {output / 'review.md'} with PR/issue URLs, exact reviewed SHAs, verdicts and remaining limitations."
         )
     markers = "\n".join(
         [
             marker(topic),
+            *(
+                ["<!-- automation-improvement-run: " + context["run_id"] + " -->"]
+                if context.get("run_id")
+                else []
+            ),
             "<!-- automation-improvement-topic-key: " + topic["key"] + " -->",
             *[
                 "<!-- automation-improvement-event: " + event + " -->"
@@ -418,13 +438,13 @@ def prompt(context, context_path, output, review=False):
     return shared + (
         "You own this topic end to end: diagnose, choose the repair location, implement, validate, commit, push and open/update the necessary PRs with normal GitHub tools. There is no separate publisher or patch-proposal protocol. "
         "The repository catalog is starting context, not a restriction. Fix the underlying problem in the SDK, automation, or other relevant repository as evidence warrants; a topic may affect several automations. Use existing canonical repositories and create worktrees for edits (new-pr when provided by repository instructions); do not clone another copy. If a checkout or permission is missing, report the exact prerequisite instead of forcing an automation-only workaround. The prepared checkouts are isolated starting worktrees, not an allowed-files list. "
-        "One topic may require several PRs across one or several repositories. Prefer one coherent fix over a broad new framework; do not bundle independent problems. Consider prior attempts and existing PRs, and reuse/update them when appropriate rather than opening duplicates. "
-        f"Create or reuse ONE structured issue in each repository changed by the fix, before coding. Put {IMPROVEMENT_LABEL} and the topic marker in the initial issue creation request so issue-triage workers recognize ownership. Cross-link all repository issues, all related PRs, dependencies and any required merge/release order. One repository issue is the main entry point. No extra umbrella issue is required. "
-        "Issue sections: Goal; Problem and impact; Scope and source; Evidence; Validation; Attempts and decisions. Preserve human content. Include the weekly triage issue, private context/snapshot/cohort paths, worker access instructions from context, and original trace/Signal references; never dump raw inputs, prompts or logs publicly. Include catalog anchors <!-- topic-evidence:start --> / <!-- topic-evidence:end --> and <!-- topic-attempts:start --> / <!-- topic-attempts:end --> so actual private SDK records can be indexed after you finish. "
+        "One topic may require several PRs across one or several repositories. Prefer one coherent fix over a broad new framework; do not bundle independent problems. Create fresh repair issues and PRs for this run. "
+        f"Create ONE fresh structured issue in each repository changed by the fix, before coding, then keep editing that same issue throughout this run. Put {IMPROVEMENT_LABEL} and the topic marker in the initial issue creation request so issue-triage workers recognize ownership. Cross-link all repository issues, all related PRs, dependencies and any required merge/release order. One repository issue is the main entry point. No extra umbrella issue is required. "
+        "Include the weekly triage issue, private context/snapshot/cohort paths, worker access instructions and original trace/Signal references in Evidence; never dump raw inputs, prompts or logs publicly. Include catalog anchors <!-- topic-evidence:start --> / <!-- topic-evidence:end --> and <!-- topic-attempts:start --> / <!-- topic-attempts:end --> so actual private SDK records can be indexed after you finish. "
         "Set observable acceptance criteria and record the affected runtime/dependency versions. Use isolated environments for baseline/candidate dependencies instead of replacing this running worker's SDK. Validate the whole fix: baseline SDK+automation versus patched SDK+automation as appropriate. Test intermediate combinations only when compatibility/dependency claims require them. "
         f"Use up to N={context['validation_sample_size']} selected negative and N random non-negative original inputs when available. You may construct an isolated replay from frozen inputs and captured external reads; no prebuilt evaluator adapter is required. Keep the inputs fixed; don't replace failed cases. Add meaningful synthetic regression/control tests where useful and identify their limits. "
         f"Keep exact commands, working directories, base/candidate commit SHAs, input hashes, replay/test assets and actual stdout/stderr privately under {output / 'validation'}, and link them from the issues. Real SDK conversation events also remain available to independent review. A full repository suite belongs in evidence when relevant. Do not claim a nonzero baseline exit as reproduction without showing the target behavior. "
-        "Open useful partial fixes as drafts with honest failed/inconclusive validation and what remains. No coherent fix is a valid unrepaired/blocked conclusion in the issue. Do not force a positive verdict or iterate until the budget is exhausted. Finish one best attempt; the independent reviewer follows after you stop. "
+        "After validation and before finishing, rewrite each issue's current public sections and each PR description to reflect the actual outcome and remaining work. Open useful partial fixes as drafts with honest failed/inconclusive validation and what remains. No coherent fix is a valid unrepaired/blocked conclusion in the issue. Do not force a positive verdict or iterate until the budget is exhausted. Finish one best attempt; the independent reviewer follows after you stop. "
         "Put Before / After Evidence in EACH PR description: observations, available/tested negative and non-negative counts, coherent version combinations, checks, limitations, cross-repo dependencies, issue and evidence links. Label every PR automation-improvement and initially leave it draft for independent review. "
         f"Include these markers in each issue and PR body:\n{markers}\n"
         f"Update {output / 'progress.md'} with issue/PR links as soon as remote objects exist; write {output / 'repair.md'} with the final links, outcome, validation and limitations, then finish normally. Do not leave unreported remote work."
@@ -518,6 +538,18 @@ def finish(config, context, output, budget, repair):
         )
     ]
     problems = link_errors(resources["resources"])
+    for resource in resources["resources"]:
+        for field in ("title", "body"):
+            text = resource.get(field) or ""
+            if redact(text) != text:
+                problems.append(
+                    resource["url"] + ": possible credential in public " + field
+                )
+        if resource["kind"] == "issues":
+            problems.extend(
+                resource["url"] + ": " + error
+                for error in public_issue_errors(resource["body"])
+            )
     if resources["errors"] or catalog_errors or problems or stale:
         status = "review_incomplete"
     elif prs and review and review["status"] == "finished":

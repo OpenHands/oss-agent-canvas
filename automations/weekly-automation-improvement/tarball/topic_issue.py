@@ -8,13 +8,60 @@ from github_io import command, github_pages, IMPROVEMENT_LABEL
 from raw_evidence import schema, PAGE
 
 SECTIONS = (
-    "Goal",
     "Problem and impact",
-    "Scope and source",
-    "Evidence",
+    "Observed example",
+    "Proposed prevention",
     "Validation",
+    "Current status",
+    "Evidence",
     "Attempts and decisions",
 )
+READ_SECTIONS = (*SECTIONS, "Goal", "Scope and source")
+ISSUE_GUIDANCE = (
+    "The issue body is a living public explanation, understandable and reviewable by an engineer with GitHub access only, without Laminar or VM access. "
+    "Use these exact level-two sections in order: Problem and impact; Observed example; Proposed prevention; Validation; Current status; Evidence; Attempts and decisions. "
+    "Before Evidence, name the affected automation/component in plain language, explain expected versus observed behavior and consequences, give a sanitized concrete example, and distinguish confirmed facts from hypotheses. "
+    "Explain how the proposed prevention addresses the mechanism, its scope and tradeoffs. State observable acceptance criteria, a concise public before/after result, available/tested counts and limitations; keep commands, hashes, raw identifiers and VM paths in Evidence. "
+    "Maintain ONE current description. During this run, read the current issue and comments, then rewrite the existing AI-authored sections rather than appending a Current repair attempt, dated continuation, competing summary or final-result appendix. "
+    "Revise the same sections after diagnosis, a changed hypothesis, validation and independent review. Correct or remove disproved claims and obsolete blockers; Current status must reflect the latest verdict, PRs and remaining work. "
+    "Preserve human-authored text and comments, including any HUMAN template section. Preserve all ownership markers, evidence/catalog anchors and links needed to retrieve past records. "
+    "Before rewriting an existing issue, save its full prior body privately under validation/issue-history/ with a unique filename, so the evidence catalog retains its exact text. Keep historical evidence roots/access references in Evidence. Archive a superseded AI body with the existing issue evidence mechanism if needed; prior attempts belong in comments/catalogs with a concise historical link, not repeated narratives in the current body. "
+    "Never publish raw tasks, private quotations, credentials or sensitive customer details. Safe summaries and anonymized examples are required, not blanket omission of the explanation. "
+)
+
+
+def public_issue_errors(body):
+    headings = list(re.finditer(r"(?m)^## ([^\n]+?)[ \t]*$", body))
+    names = [match[1] for match in headings]
+    errors = []
+    if any(names.count(name) != 1 for name in SECTIONS):
+        return ["Issue needs one of each public section: " + "; ".join(SECTIONS)]
+    positions = [names.index(name) for name in SECTIONS]
+    if positions != sorted(positions):
+        errors.append("Issue must explain the problem and prevention before evidence")
+    for name in SECTIONS:
+        index = names.index(name)
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(body)
+        text = re.sub(r"<!--[\s\S]*?-->", "", body[headings[index].end() : end])
+        if not text.strip():
+            errors.append("Issue section is empty: " + name)
+    public = body[: headings[names.index("Evidence")].start()]
+    if re.search(r"/(?:var/lib|tmp|home|Users)/|[a-f0-9]{64}\.json", public):
+        errors.append("Move private artifact paths/references into Evidence")
+    if any(
+        value in body
+        for value in (
+            "Supporting observations and impact assessments are in the private evidence records linked below.",
+            "Investigate this topic and propose one focused repair",
+            "No public example has been written yet.",
+        )
+    ):
+        errors.append(
+            "Replace the generic investigation placeholder with a public explanation"
+        )
+    return errors
+
+
 RECORD = "<!-- automation-improvement-record:"
 
 
@@ -35,15 +82,17 @@ def brief(snapshot, evidence_root, location):
     if triage_issue.get("url"):
         links.append(f"- [Weekly triage and priority context]({triage_issue['url']}).")
     texts = (
-        "Investigate this topic and propose one focused repair only when current-source evidence supports it. Record the diagnosis, uncertainty and attempts here.",
-        f"Investigate **{topic['key'].replace('-', ' ')}**. Supporting observations and impact assessments are in the private evidence records linked below. Signals and rankings are unverified leads, not established causes or failure rates.",
-        f"Automation: `{source['automation_ids'][0]}`.\n\n[Initial source baseline `{source['revision']}`](https://github.com/{source['repository']}/tree/{source['revision']}). Each frozen-context catalog records its own source revision. The configured revision is not proven to be the historically executed revision. Preserve the approved file scope; do not change unrelated automations or the evaluator.",
-        "\n".join(links)
-        + f"\n\nPrivate replay evidence stays in `{evidence_root}` on the automation worker. Read catalogued files using `read_issue_artifact(reference, offset)`; original production data is available through the Laminar tools. "
+        f"Unconfirmed investigation lead: **{topic.get('title') or topic['key'].replace('-', ' ')}**. The public diagnosis must distinguish observed behavior from an inferred cause.",
+        "No public example has been written yet. The investigating agent must summarize a concrete observation without exposing private content.",
+        "Prevention is not selected yet. Investigate the actual source and describe a focused correction and its tradeoffs before proposing a repair.",
+        f"Use up to N={snapshot.get('validation_cohort', {}).get('sample_size', 5)} negative and random non-negative original inputs when available, without replacements. State public acceptance criteria, results and limitations; distinguish mechanism checks from historical task replay.",
+        "Investigation pending; no fix or improvement has been established.",
+        f"Repository: {source['repository']}. Initial baseline: `{source['revision']}`; this does not prove historical execution provenance.\n\n"
+        + "\n".join(links)
+        + f"\n\nPrivate evidence: `{evidence_root}`. "
         + (f"Worker access: {location}. " if location else "")
-        + "Do not publish raw tasks, prompts or logs in this issue. Missing evidence must remain explicit.\n\n<!-- topic-evidence:start -->\n<!-- topic-evidence:end -->",
-        f"Each attempt uses the N recorded in its frozen-context catalog (first recorded N={snapshot.get('validation_cohort', {}).get('sample_size', 5)}): up to N topic-linked negative inputs and N random completed no-finding inputs, without replacing failures. Demonstrate the target fix and no new control violations using paired source versions. Preserve human content and required deliverables. Separate mechanism evidence, runtime/context gaps and general quality claims. A no-finding input is not assumed healthy.",
-        "Each investigation and comparison has an immutable evidence catalog below. Private records include original tasks, source, attempted patches, prompts, tool events, final state and results. Consult prior attempts before proposing a repair. Unknown or non-reproducing outcomes do not prove improvement; keep an unqualified repair pending or draft.\n\n<!-- topic-attempts:start -->\n<!-- topic-attempts:end -->",
+        + "Use read_issue_artifact for catalog references and scoped Laminar tools for original data. Raw tasks, prompts and logs remain private.\n\n<!-- topic-evidence:start -->\n<!-- topic-evidence:end -->",
+        "Earlier attempts and immutable evidence remain in the issue comments. Keep the current diagnosis and verdict in the sections above.\n\n<!-- topic-attempts:start -->\n<!-- topic-attempts:end -->",
     )
     return f"<!-- automation-improvement-topic: {topic['id']} -->\n\n" + "\n\n".join(
         f"## {section}\n\n{text}" for section, text in zip(SECTIONS, texts, strict=True)
@@ -166,7 +215,7 @@ class TopicIssue:
             "url": self.value["html_url"],
             "number": self.value["number"],
             "body": self.value["body"],
-            "sections": list(SECTIONS),
+            "sections": list(READ_SECTIONS),
             "records": [
                 {
                     "id": item["id"],
@@ -201,6 +250,10 @@ class TopicIssue:
         return {"name": name, "reference": reference}
 
     def update_body(self, body):
+        if redact(body) != body:
+            raise ValueError(
+                "Issue body contains a possible credential; sanitize before publishing"
+            )
         if self.preview:
             self.value["body"] = body
             return
@@ -221,6 +274,45 @@ class TopicIssue:
             )
         )
 
+    def update_block(self, name, content):
+        self.refresh()
+        start, end = f"<!-- {name}:start -->", f"<!-- {name}:end -->"
+        body = self.value["body"]
+        if (
+            body.count(start) != 1
+            or body.count(end) != 1
+            or body.index(start) >= body.index(end)
+        ):
+            raise ValueError("Central issue record section is missing or ambiguous")
+        updated = (
+            body[: body.index(start) + len(start)]
+            + "\n"
+            + content.strip()
+            + "\n"
+            + body[body.index(end) :]
+        )
+        if updated != body:
+            self.update_body(updated)
+
+    def related(self, urls):
+        self.refresh()
+        body = self.value["body"]
+        start, end = "<!-- topic-related:start -->", "<!-- topic-related:end -->"
+        if start not in body and end not in body:
+            anchor = "<!-- topic-evidence:start -->"
+            if body.count(anchor) != 1:
+                raise ValueError(
+                    "Central issue evidence section is missing or ambiguous"
+                )
+            self.update_body(
+                body.replace(anchor, start + "\n" + end + "\n\n" + anchor, 1)
+            )
+        self.update_block(
+            "topic-related",
+            "### Related repair work\n\n"
+            + "\n".join("- " + url for url in sorted(set(urls))),
+        )
+
     def read_artifact(self, reference):
         if not isinstance(reference, str) or not re.fullmatch(
             r"[a-f0-9]{64}\.json", reference
@@ -239,7 +331,7 @@ class TopicIssue:
     def record(self, title, summary, artifacts):
         catalog = [self.artifact(name, value) for name, value in artifacts.items()]
         content = (
-            f"## {title}\n\n{summary}\n\n### Private evidence catalog\n\nRead each file with `read_issue_artifact(reference, offset)`. Raw content stays on the automation worker.\n\n| Evidence | Reference |\n|---|---|\n"
+            f"## {title}\n\n{summary}\n\n### Private evidence catalog\n\nRead each file with `read_issue_artifact(reference, offset)`. Raw content stays on the automation worker. Catalog root: `{self.evidence_root}`.\n\n| Evidence | Reference |\n|---|---|\n"
             + "\n".join(
                 f"| {item['name']} | `{item['reference']}` |" for item in catalog
             )
@@ -250,11 +342,13 @@ class TopicIssue:
                 f"## {title}\n\n{summary}\n\n### Private evidence catalog\n\n"
                 f"The complete index contains {len(catalog)} artifacts. Read it with "
                 "`read_issue_artifact(reference, offset)`, then use the same tool for each indexed reference. "
-                "Raw content stays on the automation worker.\n\n| Evidence | Reference |\n|---|---|\n"
+                f"Raw content stays on the automation worker. Catalog root: `{self.evidence_root}`.\n\n| Evidence | Reference |\n|---|---|\n"
                 f"| {index['name']} | `{index['reference']}` |"
             )
             if len(content) > 60000:
                 raise ValueError("Issue attempt summary exceeds its size budget")
+        if redact(content) != content:
+            raise ValueError("Public evidence summary contains a possible credential")
         marker = f"{RECORD} {hashlib.sha256(content.encode()).hexdigest()} -->"
         found = [item for item in self.comments if item["body"].startswith(marker)]
         if found:
@@ -282,19 +376,8 @@ class TopicIssue:
             )
             self.comments.append(item)
         kind = "evidence" if title.startswith("Evidence") else "attempts"
-        self.refresh()
-        start, end = f"<!-- topic-{kind}:start -->", f"<!-- topic-{kind}:end -->"
-        body = self.value["body"]
-        if (
-            body.count(start) != 1
-            or body.count(end) != 1
-            or body.index(start) >= body.index(end)
-        ):
-            raise ValueError("Central issue record section is missing or ambiguous")
-        link = f"- [{title}]({item.get('html_url') or '#preview'}) — comment `{item['id']}`.\n"
-        if link not in body[body.index(start) : body.index(end)]:
-            body = body.replace(end, link + end, 1)
-            self.update_body(body)
+        link = f"- [{title}]({item.get('html_url') or '#preview'}) — comment `{item['id']}`."
+        self.update_block("topic-" + kind, link)
         return {"id": item["id"], "url": item.get("html_url")}
 
     def frozen(self, snapshot):
@@ -459,7 +542,7 @@ class IssueReader:
                 "read_issue",
                 "Read a named section of the central repair issue and discover prior attempt catalogs",
                 {
-                    "section": {"type": "string", "enum": ["all", *SECTIONS]},
+                    "section": {"type": "string", "enum": ["all", *READ_SECTIONS]},
                     "offset": PAGE,
                 },
                 ["section", "offset"],
@@ -502,7 +585,7 @@ class IssueReader:
             self.issue.refresh()
             text, section = self.issue.value["body"], arguments["section"]
             if section != "all":
-                if section not in SECTIONS:
+                if section not in READ_SECTIONS:
                     raise ValueError("Unknown issue section")
                 match = re.search(r"(?m)^## " + re.escape(section) + r"\n", text)
                 if not match:

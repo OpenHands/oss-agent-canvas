@@ -392,9 +392,11 @@ def test_issue_reads_do_not_require_laminar_credentials(tmp_path, monkeypatch, c
     value["repair_issue"] = issue.refresh()
     context = tmp_path / "context.json"
     context.write_text(json.dumps({"snapshot": value, "inventory": {}}))
-    coding_agent.evidence(context, "read_issue", {"section": "Goal", "offset": 0})
+    coding_agent.evidence(
+        context, "read_issue", {"section": "Problem and impact", "offset": 0}
+    )
     result = json.loads(capsys.readouterr().out)
-    assert result["content"].startswith("## Goal")
+    assert result["content"].startswith("## Problem and impact")
 
 
 def test_brief_removes_duplicate_traces_without_losing_originals(

@@ -9,7 +9,22 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "tarball"))
 import topic_issue
-from topic_issue import TopicIssue, IssueReader, SECTIONS
+from topic_issue import TopicIssue, IssueReader, SECTIONS, public_issue_errors
+
+
+def public_body(evidence="Source and run links remain available below."):
+    content = (
+        "The review bot reports success when required checks did not complete, misleading maintainers.",
+        "A compiler was killed, but the review called its check successful.",
+        "Report each check's own completed result and explicitly disclose interrupted checks.",
+        "Compare the same failing and control inputs; a killed check must remain incomplete while a real pass stays passing.",
+        "Investigation underway; no improvement is established yet.",
+        evidence + "\n<!-- topic-evidence:start -->\n<!-- topic-evidence:end -->",
+        "Previous attempts remain in comments.\n<!-- topic-attempts:start -->\n<!-- topic-attempts:end -->",
+    )
+    return "\n\n".join(
+        f"## {name}\n\n{text}" for name, text in zip(SECTIONS, content, strict=True)
+    )
 
 
 class GitHub:
@@ -287,3 +302,84 @@ def test_large_catalog_uses_complete_private_index_without_losing_references(
         assert (
             json.loads(issue.read_artifact(row["reference"])) == artifacts[row["name"]]
         )
+
+
+def test_body_indexes_rewrite_latest_references_without_losing_history(
+    tmp_path, monkeypatch
+):
+    github = GitHub()
+    monkeypatch.setattr(topic_issue, "command", github)
+    issue = TopicIssue.ensure(snapshot(tmp_path), tmp_path / "issue")
+    human = "\nHuman clarification: keep the existing notification routing.\n"
+    issue.update_body(public_body() + human)
+    first = issue.record(
+        "Evidence — initial",
+        "Observed an incomplete check",
+        {"raw.json": {"trace": "old-reference"}},
+    )
+    old_ref = issue.artifact("raw.json", {"trace": "old-reference"})["reference"]
+    second = issue.record(
+        "Evidence — corrected",
+        "The initial cause was disproved",
+        {"raw.json": {"trace": "new-reference"}},
+    )
+    assert len(github.comments) == 2 and first["id"] != second["id"]
+    assert "Evidence — initial" not in issue.value["body"]
+    assert "Evidence — corrected" in issue.value["body"]
+    assert human in issue.value["body"]
+    assert old_ref in github.comments[0]["body"]
+    assert str(issue.evidence_root) in github.comments[0]["body"]
+    assert json.loads(issue.read_artifact(old_ref))["trace"] == "old-reference"
+    assert len(issue.context()["records"]) == 2
+    issue.related(["https://github.com/Example/source/pull/1"])
+    issue.related(["https://github.com/Example/source/pull/2"])
+    assert issue.value["body"].count("### Related repair work") == 1
+    assert "/pull/1" not in issue.value["body"] and "/pull/2" in issue.value["body"]
+    assert human in issue.value["body"]
+    assert public_issue_errors(issue.value["body"]) == []
+
+
+@pytest.mark.parametrize(
+    "defect", ["missing", "duplicate", "order", "empty", "private", "generic"]
+)
+def test_public_issue_contract_rejects_unreviewable_bodies(defect):
+    body = public_body()
+    if defect == "missing":
+        body = body.replace("## Proposed prevention", "### Proposed prevention")
+    elif defect == "duplicate":
+        body += "\n## Current status\nAn obsolete verdict"
+    elif defect == "order":
+        body = (
+            body.replace("## Observed example", "## TEMP")
+            .replace("## Evidence", "## Observed example")
+            .replace("## TEMP", "## Evidence")
+        )
+    elif defect == "empty":
+        body = body.replace(
+            "Investigation underway; no improvement is established yet.",
+            "<!-- only a marker -->",
+        )
+    elif defect == "private":
+        body = body.replace(
+            "A compiler was killed",
+            "/var/lib/agent-canvas/raw-data.json: A compiler was killed",
+        )
+    else:
+        body += "\nSupporting observations and impact assessments are in the private evidence records linked below."
+    assert public_issue_errors(body)
+
+
+def test_public_writes_reject_credentials_but_private_artifacts_stay_readable(
+    tmp_path, monkeypatch
+):
+    github = GitHub()
+    monkeypatch.setattr(topic_issue, "command", github)
+    issue = TopicIssue.ensure(snapshot(tmp_path), tmp_path / "issue")
+    token = "sk-" + "a" * 40
+    before = copy.deepcopy(github.issues)
+    with pytest.raises(ValueError, match="credential"):
+        issue.update_body(public_body() + "\napi_key=" + token)
+    assert github.issues == before
+    with pytest.raises(ValueError, match="credential"):
+        issue.record("Evidence — unsafe", "api_key=" + token, {})
+    assert not github.comments

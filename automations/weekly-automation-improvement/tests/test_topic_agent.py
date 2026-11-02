@@ -6,6 +6,7 @@ import pytest
 from budget import RunBudget
 from common import write_json
 import topic_agent
+from test_topic_issue import public_body
 
 
 def context(tmp_path):
@@ -55,7 +56,7 @@ def resources():
             }
         )
     for row in issues + prs:
-        row["body"] = "\n".join(r["url"] for r in issues + prs)
+        row["body"] = public_body("\n".join(r["url"] for r in issues + prs))
     return issues + prs
 
 
@@ -141,12 +142,17 @@ def test_normal_prompt_delegates_full_workflow_without_patch_or_repo_restriction
     assert "no separate publisher" in repair
     assert "not a restriction" in repair
     assert "several PRs" in repair and "N=5" in repair
-    assert "ONE structured issue in each repository" in repair
+    assert "ONE fresh structured issue in each repository" in repair
     assert "initially leave it draft" in repair
     assert "Treat the fixer's report as a claim" in review
     assert "Do not edit/push repair source" in review
     assert "task tool is blocking" in repair and "task tool is blocking" in review
     assert "freeze candidate source before delegating" in repair
+    for text in (repair, review):
+        assert "never reopen, repurpose, close or edit" in text
+        assert "BOTH this topic's marker and this run's marker" in text
+        assert "context.json beside the previous_attempts" in text
+        assert "Before every public GitHub write" in text
 
 
 def test_discovery_recovers_links_outside_catalog_from_actual_native_events(
@@ -248,6 +254,7 @@ def test_private_catalog_keeps_evidence_and_omits_environments_and_checkouts(
         return SimpleNamespace(
             value={"body": ""},
             update_body=lambda body: None,
+            related=lambda urls: None,
             record=lambda title, summary, artifacts: captured.append(artifacts)
             or {"url": url},
         )
@@ -358,6 +365,9 @@ def test_evidence_index_links_all_repository_issues_and_prs_without_losing_notes
         def update_body(self, body):
             self.value["body"] = body
 
+        def related(self, urls):
+            self.value["body"] += "\n" + "\n".join(urls)
+
         def record(self, *a):
             return {"url": self.url}
 
@@ -373,3 +383,97 @@ def test_evidence_index_links_all_repository_issues_and_prs_without_losing_notes
         if row["kind"] == "issues":
             assert row["body"].startswith("Human note stays here.")
     assert topic_agent.link_errors(rows) == []
+
+
+def test_completed_review_cannot_publish_an_unstructured_issue_as_ready(
+    tmp_path, monkeypatch
+):
+    ctx = context(tmp_path)
+    rows = resources()
+    for row in rows:
+        if row["kind"] == "issues":
+            row["body"] = "Generic investigation.\n" + "\n".join(r["url"] for r in rows)
+        else:
+            row["draft"] = False
+    held = []
+    monkeypatch.setattr(
+        topic_agent, "discover", lambda *a: {"resources": rows, "errors": []}
+    )
+    monkeypatch.setattr(topic_agent, "record_evidence", lambda *a: [])
+    monkeypatch.setattr(
+        topic_agent, "run_conversation", lambda *a: {"status": "finished"}
+    )
+    monkeypatch.setattr(topic_agent, "command", lambda args: held.append(args) or "")
+    outcome = topic_agent.finish(
+        {}, ctx, tmp_path / "result", RunBudget({}), {"status": "finished"}
+    )
+    assert outcome["status"] == "review_incomplete"
+    assert any("public section" in error for error in outcome["link_errors"])
+    assert len(held) == 2
+
+
+def test_run_identity_never_adopts_a_previous_prototype_issue(tmp_path):
+    ctx = context(tmp_path) | {"run_id": "new-run"}
+    old = topic_agent.marker(ctx["topic"])
+    assert not topic_agent.owns(ctx, old)
+    assert not topic_agent.owns(
+        ctx, old + "\n<!-- automation-improvement-run: old-run -->"
+    )
+    assert topic_agent.owns(ctx, old + "\n<!-- automation-improvement-run: new-run -->")
+
+
+@pytest.mark.parametrize("kind,field", [("issues", "title"), ("pull", "body")])
+def test_known_credential_in_any_owned_description_prevents_readiness(
+    tmp_path, monkeypatch, kind, field
+):
+    ctx = context(tmp_path)
+    rows = resources()
+    row = next(row for row in rows if row["kind"] == kind)
+    row[field] = row.get(field, "") + " sk-testcredential123456789"
+    for row in rows:
+        if row["kind"] == "pull":
+            row["draft"] = False
+    held = []
+    monkeypatch.setattr(
+        topic_agent, "discover", lambda *a: {"resources": rows, "errors": []}
+    )
+    monkeypatch.setattr(topic_agent, "record_evidence", lambda *a: [])
+    monkeypatch.setattr(
+        topic_agent, "run_conversation", lambda *a: {"status": "finished"}
+    )
+    monkeypatch.setattr(topic_agent, "command", lambda args: held.append(args) or "")
+    result = topic_agent.finish(
+        {}, ctx, tmp_path / "result", RunBudget({}), {"status": "finished"}
+    )
+    assert result["status"] == "review_incomplete"
+    assert any(
+        "possible credential in public " + field in e for e in result["link_errors"]
+    )
+    assert len(held) == 2
+
+
+def test_prior_context_reads_its_catalog_without_adopting_the_issue(
+    tmp_path, monkeypatch
+):
+    import hashlib
+
+    current = context(tmp_path) | {"run_id": "current"}
+    prior = current | {"run_id": "prior", "state_dir": str(tmp_path / "old-state")}
+    url = "https://github.com/Example/sdk/issues/9"
+    body = (
+        topic_agent.marker(prior["topic"])
+        + "\n<!-- automation-improvement-run: prior -->"
+    )
+    value = {"number": 9, "body": body, "html_url": url}
+    root = tmp_path / "old-state/issue-evidence/Example/sdk/topic"
+    root.mkdir(parents=True)
+    artifact = '{"evidence":"previous run"}'
+    reference = hashlib.sha256(artifact.encode()).hexdigest() + ".json"
+    (root / reference).write_text(artifact)
+    monkeypatch.setattr(topic_agent, "command", lambda *a: json.dumps(value))
+    monkeypatch.setattr(topic_agent, "github_pages", lambda *a: [])
+    with pytest.raises(ValueError, match="does not reference"):
+        topic_agent.issue_reference(current, url, tmp_path / "current-read")
+    issue = topic_agent.issue_reference(prior, url, tmp_path / "prior-read")
+    assert issue.read_artifact(reference) == artifact
+    assert not topic_agent.owns(current, body)

@@ -35,16 +35,23 @@ force every repair to pass.
 
 ## Issues and evidence
 
-Create or reuse one structured issue in **each repository changed by a topic**.
+Create one fresh structured issue in **each repository changed by a topic** for
+the current run. Repair and review agents revise that same issue as they learn;
+issues and PRs from older prototype runs are read-only historical context.
 All repository issues link one another and all related PRs. Each PR links its local
 issue and describes dependencies and any required merge/release order. One issue
 is the main entry point; a separate umbrella is unnecessary.
 
-Issue sections are **Goal**, **Problem and impact**, **Scope and source**,
-**Evidence**, **Validation**, and **Attempts and decisions**. Existing human text
-is preserved. The initial issue creation includes the `automation-improvement`
-label and stable topic marker. Both distributed issue-triage workers skip these
-managed issues before reading comments or dispatching work.
+Issue sections are **Problem and impact**, **Observed example**, **Proposed
+prevention**, **Validation**, **Current status**, **Evidence**, and **Attempts and
+decisions**. The opening sections explain expected versus observed behavior,
+impact, a sanitized concrete example, the proposed prevention and current results
+without requiring private-data access. Agents rewrite these sections after
+diagnosis, validation and review, correcting stale claims instead of appending
+competing summaries. Existing human text is preserved. The initial creation
+includes the `automation-improvement` label, stable topic marker and run marker.
+Discovery requires both topic and run ownership. Both distributed issue-triage
+workers skip these managed issues before reading comments or dispatching work.
 
 Public issues contain safe summaries, source/trace references and private evidence
 catalogs. Original inputs, prompts, Signal payloads, SDK events/completions and logs
@@ -52,6 +59,16 @@ remain in owner-only worker files. Immutable content-addressed catalogs are inde
 under `state_dir/issue-evidence/<owner>/<repository>/<topic>/`.
 `evidence_location` tells authorized readers how to reach the worker. Public GitHub
 access alone does not grant access to private artifacts.
+
+Before rewriting a body, the agent archives it privately under
+`validation/issue-history/`. The body links the latest catalog; every older catalog
+and artifact reference remains in the comments with its private root. Related-work
+links occupy one updated section. To read an earlier run's catalogs, pass the
+`context.json` beside its report as the evidence CLI's `--context`, preserving that
+run's data namespace. Public titles, descriptions, comments and patches must be
+sanitized before publication. Credential checks and independent review provide
+additional checks; incomplete issue structure or detected credentials hold PRs
+draft rather than certifying them ready.
 
 Agents can page through issue sections/catalogs and use `search_runs`, `read_signal`,
 `list_spans` and `read_trace` via the CLI described in their task. The repair agent

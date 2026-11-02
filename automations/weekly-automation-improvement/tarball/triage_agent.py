@@ -23,20 +23,22 @@ def prepare_issue(args, context, records):
     )
     summary = f"Prepared {len(records)} findings across {len(context['automations'])} automations; {context.get('unresolved_attribution_events', 0)} findings have unresolved conversation attribution. These are investigation leads, not confirmed defects."
     texts = (
-        "Read the prepared evidence, merge duplicate failure mechanisms across automations, select promising focused repairs and rank them globally. This is a read-only planning task; do not implement repairs.",
+        "Automation runs produce individual failure findings, but repeated descriptions can hide shared problems and distract from higher-impact repairs. This weekly review turns those unverified leads into a prioritized investigation queue.",
         "<!-- triage-summary:start -->\n" + summary + "\n<!-- triage-summary:end -->",
-        f"Repository: [{args.repository}](https://github.com/{args.repository}). A topic is one underlying problem and may span automations and repositories, including the SDK. Never combine independent fixes merely because they share a cluster or file.",
-        f"Complete Python preparation output, original Signal records and the Laminar inventory are preserved privately in `{evidence_root}`. Read the latest Evidence catalog using `read_issue_artifact(reference, offset)`. It also indexes prior attempts and open PRs. "
+        "A topic is one underlying problem and may span automations and repositories, including the SDK. Group findings by underlying failure mechanism across automations and repositories, inspect counterevidence, and prioritize focused repairs. A repair agent investigates each selected topic and compares proposed changes with the original behavior; a human decides whether to merge.",
+        "Rank using impact, recurrence, confidence and repairability. Keep independent problems separate, distinguish hypotheses from confirmed defects, and explain uncertainty. Counts describe the reviewed batch, not population failure rates. Unselected findings remain pending.",
+        "<!-- triage-plan:start -->\nPreparation ready; triage has not produced a ranked queue yet.\n<!-- triage-plan:end -->",
+        f"Home repository: [{args.repository}](https://github.com/{args.repository}). Complete preparation, original Signals and the Laminar inventory remain private in `{evidence_root}`. Read the latest catalog with read_issue_artifact(reference, offset). It includes prior attempts and related PRs. "
         + (
             f"Worker access: {args.evidence_location}. "
             if args.evidence_location
             else ""
         )
-        + "Raw tasks, prompts and logs must remain private. Use the scoped evidence reader for deeper trace inspection.\n\n<!-- topic-evidence:start -->\n<!-- topic-evidence:end -->",
-        "Rank using impact, recurrence, confidence and likely repairability. P0 is critical, P1 high, P2 medium, P3 low. Explain priority and uncertainty. Signals are leads. Inspect details when they could change a choice; do not reconstruct every trajectory or run repair experiments. Unselected findings stay pending.",
-        "Review the recorded conclusions before selecting a previously unsuccessful approach. Do not rename an exhausted topic to repeat it. Write one finite ranked plan, then finish. Prior source/evidence identity and explicit retry settings still govern repair eligibility.\n\n<!-- topic-attempts:start -->\n<!-- topic-attempts:end -->",
+        + "Raw tasks, prompts and logs remain private. Use the scoped reader for deeper inspection.\n\n<!-- topic-evidence:start -->\n<!-- topic-evidence:end -->",
+        "Prior queues, repair attempts and conclusions remain in the comments and immutable catalogs. Reconsider exhausted approaches only when new evidence or an explicit retry justifies it.\n\n<!-- topic-attempts:start -->\n<!-- topic-attempts:end -->",
     )
-    body = f"<!-- automation-improvement-triage: {week} -->\n\n" + "\n\n".join(
+    identity = week + "/" + args.run_id if getattr(args, "run_id", None) else week
+    body = f"<!-- automation-improvement-triage: {identity} -->\n\n" + "\n\n".join(
         f"## {section}\n\n{text}" for section, text in zip(SECTIONS, texts, strict=True)
     )
     issue = TopicIssue.ensure_brief(
@@ -49,24 +51,7 @@ def prepare_issue(args, context, records):
     )
     if issue.value["state"] != "open":
         raise ValueError("The weekly triage issue is closed")
-    start, end = "<!-- triage-summary:start -->", "<!-- triage-summary:end -->"
-    current = issue.value["body"]
-    if current.count(start) != 1 or current.count(end) != 1:
-        raise ValueError("Triage issue summary is missing or ambiguous")
-    updated = (
-        current[: current.index(start) + len(start)]
-        + "\n"
-        + summary
-        + "\n"
-        + current[current.index(end) :]
-    )
-    updated = updated.replace(
-        "One repair topic must belong to one automation.",
-        "A topic is one underlying problem and may span automations and repositories, including the SDK.",
-        1,
-    )
-    if updated != current:
-        issue.update_body(updated)
+    issue.update_block("triage-summary", summary)
     inventory = read_json(Path(args.inventory_path), 32_000_000)
     issue.record(
         "Evidence — prepared triage " + args.output.parent.name,
@@ -131,7 +116,7 @@ def rank(args, context, records, schema):
         "Read deeper context when it could change a decision, rather than exhaustively replaying every run. This is a finite best-effort ranking task. Do not implement fixes, build evaluations, delegate repair work or call a more expensive coding model. Unselected findings stay pending; an empty plan with a clear reason is valid. "
         "Use targeted JSON extraction and paginated evidence reads; do not dump full inventories or redundant trace histories into context. "
         "If you delegate read-only inspection, give the child this issue, access context/CLI, relevant references, task and expected result. Keep it within your deadline; do not delegate a vague summary or a repair. "
-        "Use stable generic kebab-case topic keys and public-safe titles without customer names, private quotations or identifiers. Cite the exact eN event references from the cards. Representatives in each topic must come from distinct traces without overlapping possible conversations; they may span automations when they support the same underlying problem. Do not reuse an event across topics. "
+        "Use stable generic kebab-case topic keys; reuse the prior stable key when reconsidering the same root cause, rather than renaming it. Honor explicit retry topics while considering the current PR state and avoiding duplicate repairs. Titles, reasons and no-action explanations will be public: write plain-language, self-contained explanations without customer names, private quotations, identifiers or worker paths. Cite the exact eN event references from the cards. Representatives in each topic must come from distinct traces without overlapping possible conversations; they may span automations when they support the same underlying problem. Do not reuse an event across topics. "
         f"Write {output} matching {root / 'output-schema.json'}: topics with key, title, priority, reason and representative_event_refs; no_action_reason explains an empty result. There is no topic-count quota. Finish normally once the useful ranked list is ready. "
         f"Your deadline is {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time() + seconds))}. Leave time to write the result and finish."
     )

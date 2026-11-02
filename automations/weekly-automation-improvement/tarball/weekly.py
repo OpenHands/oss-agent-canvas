@@ -67,7 +67,7 @@ def source_revision(config):
     return command(["git", "rev-parse", reference], checkout)
 
 
-def update_backlog(state, inventory, prs):
+def update_backlog(state, inventory, prs, retry_topic_ids=()):
     handled = set(state["events"])
     for pr in prs:
         handled.update(
@@ -75,6 +75,24 @@ def update_backlog(state, inventory, prs):
                 r"<!-- automation-improvement-event: ([0-9a-f-]{36}) -->", pr["body"]
             )
         )
+    retry_events = {
+        event
+        for value in state.get("topic_weeks", {}).values()
+        if value["topic"]["id"] in retry_topic_ids
+        for event in value["topic"]["representative_event_ids"]
+    }
+    for pr in prs:
+        if any(
+            f"<!-- automation-improvement-topic: {topic_id} -->" in pr["body"]
+            for topic_id in retry_topic_ids
+        ):
+            retry_events.update(
+                re.findall(
+                    r"<!-- automation-improvement-event: ([0-9a-f-]{36}) -->",
+                    pr["body"],
+                )
+            )
+    handled.difference_update(retry_events)
     backlog = state.setdefault("backlog", {})
     latest = {row["trace_id"]: row for row in inventory.get("latest_runs", [])}
     current = definition_key(inventory["flow1_signal"])
@@ -104,6 +122,7 @@ def configure_triage(args, config, state_dir, week, dry_run, inventory_path):
     args.checkout = config["checkout"]
     args.state_dir = str(state_dir)
     args.triage_week = week
+    args.run_id = args.output.parent.name
     args.dry_run = dry_run
     args.inventory_path = str(inventory_path)
     args.evidence_location = config.get("evidence_location")
@@ -229,6 +248,9 @@ def prepare_topic(config, context, topic, root):
             runtime[identifier] = {"error": redact(str(error))[:1000]}
     return {
         "runtime": runtime,
+        "run_id": Path(context["output"]).name
+        if context.get("output")
+        else root.parent.name,
         "automation_api_url": config.get("automation_api_url"),
         "topic": topic,
         "automation_ids": automation_ids,
@@ -307,7 +329,7 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
     inventory_path = collection / "input.json"
     if not inventory_path.exists():
         write_json(inventory_path, inventory)
-    records = update_backlog(state, inventory, prs)
+    records = update_backlog(state, inventory, prs, config.get("retry_topic_ids", []))
     if not dry_run:
         save_state(state_path, state)
     previous = [
