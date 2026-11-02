@@ -71,8 +71,11 @@ tests or replays as needed.
 to identify one underlying problem spanning automations or repositories. One
 topic can require several PRs. Reviewers can request another repair with actionable
 feedback, followed by a fresh review. **`max_repair_attempts=2`** allows the initial
-attempt plus one revision. Acceptance, external blockers, the attempt limit or
-resource limits stop the loop. The same frozen comparison inputs are retained.
+attempt plus one revision. The same repair conversation receives a short message
+with the completed review and feedback, retaining its history and tools and
+allowing prompt-cache reuse. Each review uses a separate conversation. Acceptance,
+external blockers, the attempt limit or resource limits stop the loop. The same
+frozen comparison inputs are retained.
 
 **Triage finishes before repairs start.** Existing topics consume no repair slots;
 the next new topic receives the slot. The resulting new-topic queue can then run

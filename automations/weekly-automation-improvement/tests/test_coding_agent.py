@@ -17,7 +17,7 @@ source = source_fixture
 
 def install_sdk(monkeypatch, execute):
     monkeypatch.setattr(coding_agent, "version", lambda name: "1.56.0")
-    captured = {}
+    captured = {"instances": []}
     agent = SimpleNamespace(
         tools=[
             SimpleNamespace(name=name)
@@ -30,21 +30,30 @@ def install_sdk(monkeypatch, execute):
             assert "max_budget_per_run" not in kwargs
             captured["conversation"] = kwargs
             captured["instance"] = self
+            captured["instances"].append(self)
+            self.kwargs, self.messages = kwargs, []
+            self.cost, self.closed = 0.0, False
             self.state = SimpleNamespace(
                 execution_status=SimpleNamespace(value="finished")
             )
-            self.id = "native-sdk-conversation"
+            self.id = "native-sdk-conversation-" + str(len(captured["instances"]))
             self.conversation_stats = SimpleNamespace(
-                get_combined_metrics=lambda: SimpleNamespace(accumulated_cost=0.12)
+                get_combined_metrics=lambda: SimpleNamespace(accumulated_cost=self.cost)
             )
 
         def send_message(self, prompt):
+            self.messages.append(prompt)
             captured["prompt"] = prompt
 
         def run(self):
+            captured.update(
+                instance=self, conversation=self.kwargs, prompt=self.messages[-1]
+            )
+            self.cost += 0.12
             execute(Path(captured["conversation"]["workspace"]))
 
         def close(self):
+            self.closed = True
             captured["closed"] = True
 
     modules = {

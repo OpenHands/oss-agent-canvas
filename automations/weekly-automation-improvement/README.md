@@ -35,14 +35,20 @@ README covers setup, operation and validation history.
 Repair and review form a bounded feedback loop. The default
 `max_repair_attempts=2` allows an initial repair and one revision using the review
 feedback, followed by another independent review. Revisions reuse the same
-worktrees, current-run issues/PRs, original baseline and frozen comparison cohort.
+native repair conversation, worktrees, current-run issues/PRs, original baseline
+and frozen comparison cohort. A short follow-up message announces the completed
+review and points to its feedback and evidence. The repair agent retains its
+history and tools, allowing the provider to reuse cached input prefixes; actual
+cache hits depend on the model/provider. Each independent review starts a separate
+conversation.
 The reviewer does not edit repair source or require unrelated inherited defects
 to disappear. An unrepaired topic with a clear explanation is valid.
 
 Each reviewer records a concise decision and feedback: **accepted**, **revise** for
 agent-addressable code or validation gaps, or **blocked** for an external/human
 prerequisite. Python enforces the attempt limit and reuses the existing topic
-budget. Accepted or blocked decisions stop; missing/invalid review decisions and
+budget, charging only the incremental spend of each resumed repair round. Accepted
+or blocked decisions stop; missing/invalid review decisions and
 incomplete reviews hold PRs draft and stop. Failed or incomplete repair executions
 do not automatically start another repair, even when their PRs can be reviewed.
 An exhausted attempt limit leaves
@@ -235,7 +241,11 @@ live under `attempts/002/`, `attempts/003/`, and so on. Each attempt has an immu
 `attempts/NNN/outcome.json` record. The top-level `topic-report.json` points to the
 latest attempt and records the complete attempt index and stop reason. Revision
 context references the previous review, reviewer events, validation artifacts and
-existing remote resources. Earlier evidence catalogs remain available.
+existing remote resources. The repair conversation persists under the first
+attempt's `repair-agent/conversation`; each round retains its own new events,
+completions, conversation ID and incremental cost. Earlier evidence catalogs
+remain available. The repair conversation closes when the topic finishes or
+exits with an error.
 
 The factory issue-triage automation and weekly triage share the native OpenHands
 profile foundation, but have different policies and lifecycles. Factory triage

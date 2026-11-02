@@ -719,7 +719,16 @@ def test_bounded_repair_review_feedback_loop_keeps_inputs_and_prior_evidence(
     calls, snapshots = [], []
     budget = RunBudget({"max_inference_cost_usd": 10})
 
-    def converse(config, phase, context_path, output, workspace, prompt, active_budget):
+    def converse(
+        config,
+        phase,
+        context_path,
+        output,
+        workspace,
+        prompt,
+        active_budget,
+        session=None,
+    ):
         current = json.loads(context_path.read_text())
         number = current["repair_attempt"]
         calls.append((phase, number, workspace, id(active_budget)))
@@ -866,8 +875,9 @@ def test_missing_or_invalid_review_decision_stops_without_another_repair(
     assert all(row["draft"] for row in result["resources"] if row["kind"] == "pull")
 
 
-def test_two_attempts_exercise_native_runtime_and_preserve_both_rounds(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("attempt_count", [2, 3])
+def test_revisions_resume_native_conversation_and_preserve_each_round(
+    tmp_path, monkeypatch, attempt_count
 ):
     from test_coding_agent import install_sdk
 
@@ -875,16 +885,31 @@ def test_two_attempts_exercise_native_runtime_and_preserve_both_rounds(
     calls = []
 
     def execute(workspace):
-        phase_root = Path(captured["llm"]["log_completions_folder"]).parent
+        conversation = captured["instance"]
+        phase_root = Path(conversation.kwargs["persistence_dir"]).parent
+        phase = phase_root.name.removesuffix("-agent")
         output = phase_root.parent
+        if phase == "repair" and len(conversation.messages) > 1:
+            output = output / "attempts" / f"{len(conversation.messages):03d}"
         current = json.loads((output / "attempt-context.json").read_text())
         number = current["repair_attempt"]
-        phase = phase_root.name.removesuffix("-agent")
         calls.append((phase, number, workspace))
+        callback = conversation.kwargs["callbacks"][0]
+        from types import SimpleNamespace
+
+        callback(
+            SimpleNamespace(
+                model_dump=lambda **kwargs: {"phase": phase, "attempt": number}
+            )
+        )
+        write_json(
+            phase_root / "completions" / f"{number:03d}.json",
+            {"phase": phase, "attempt": number},
+        )
         candidate = workspace / "candidate.txt"
         if phase == "repair":
-            if number == 2:
-                assert candidate.read_text() == "Candidate 1"
+            if number > 1:
+                assert candidate.read_text() == "Candidate " + str(number - 1)
                 feedback = current["review_feedback"]
                 assert (
                     Path(feedback["review_report"]).read_text()
@@ -902,9 +927,9 @@ def test_two_attempts_exercise_native_runtime_and_preserve_both_rounds(
             write_json(
                 output / "review-decision.json",
                 {
-                    "decision": "revise" if number == 1 else "accepted",
+                    "decision": "revise" if number < attempt_count else "accepted",
                     "feedback": "Fix duplicate submission."
-                    if number == 1
+                    if number < attempt_count
                     else "Revised behavior verified.",
                 },
             )
@@ -924,22 +949,53 @@ def test_two_attempts_exercise_native_runtime_and_preserve_both_rounds(
     monkeypatch.setattr(topic_agent, "command", lambda *a: "")
     budget = RunBudget({"max_inference_cost_usd": 5})
     root = tmp_path / "topic"
-    result = topic_agent.run({}, ctx, root, budget)
+    result = topic_agent.run({"max_repair_attempts": attempt_count}, ctx, root, budget)
     assert [(phase, number) for phase, number, _ in calls] == [
-        ("repair", 1),
-        ("review", 1),
-        ("repair", 2),
-        ("review", 2),
+        (phase, number)
+        for number in range(1, attempt_count + 1)
+        for phase in ("repair", "review")
     ]
-    assert budget.cost == pytest.approx(0.48)
+    assert budget.cost == pytest.approx(0.24 * attempt_count)
     assert result["stop_reason"] == "accepted"
-    for directory in (root, root / "attempts/002"):
+    repair, *reviews = captured["instances"]
+    assert len(captured["instances"]) == 1 + attempt_count
+    assert len(repair.messages) == attempt_count
+    for message in repair.messages[1:]:
+        assert "A full independent review" in message
+        assert len(message) < len(repair.messages[0]) / 2
+    assert len({review.id for review in reviews}) == attempt_count
+    assert all(len(review.messages) == 1 for review in reviews)
+    assert all(conversation.closed for conversation in captured["instances"])
+    assert repair.max_budget_per_run == pytest.approx(5 - 0.12 * (attempt_count - 1))
+    assert result["repair"]["conversation_id"] == repair.id
+    assert result["review"]["conversation_id"] == reviews[-1].id
+    for number in range(1, attempt_count + 1):
+        directory = root if number == 1 else root / "attempts" / f"{number:03d}"
         for phase in ("repair", "review"):
             assert (directory / (phase + "-agent") / "prompt.json").exists()
-            assert (directory / (phase + "-agent") / "events.json").exists()
-    assert (root / "attempts/001/outcome.json").exists()
-    assert (root / "attempts/002/outcome.json").exists()
-    assert result["latest_attempt_dir"] == str(root / "attempts/002")
+            assert json.loads(
+                (directory / (phase + "-agent") / "events.json").read_text()
+            ) == [{"phase": phase, "attempt": number}]
+            assert (
+                json.loads(
+                    (
+                        directory
+                        / (phase + "-agent")
+                        / "completions"
+                        / f"{number:03d}.json"
+                    ).read_text()
+                )["attempt"]
+                == number
+            )
+        measurement = json.loads(
+            (directory / "repair-agent/measurement.json").read_text()
+        )
+        assert measurement["conversation_id"] == repair.id
+        assert measurement["sdk_estimated_cost_usd"] == pytest.approx(0.12)
+        assert (root / "attempts" / f"{number:03d}" / "outcome.json").exists()
+    assert result["latest_attempt_dir"] == str(
+        root / "attempts" / f"{attempt_count:03d}"
+    )
 
 
 def test_later_attempt_links_are_recovered_after_an_interrupted_worker(
@@ -965,6 +1021,61 @@ def test_later_attempt_links_are_recovered_after_an_interrupted_worker(
     )
     receipt = topic_agent.discover(ctx, tmp_path)
     assert receipt["resources"][0]["url"] == url and not receipt["errors"]
+
+
+def test_retained_repair_conversation_closes_when_review_bookkeeping_raises(
+    tmp_path, monkeypatch
+):
+    from test_coding_agent import install_sdk
+
+    captured = install_sdk(monkeypatch, lambda workspace: None)
+    monkeypatch.setattr(topic_agent, "version", lambda name: "test-sdk")
+
+    def interrupted(*args):
+        assert not captured["instances"][0].closed
+        raise RuntimeError("Review bookkeeping interrupted")
+
+    monkeypatch.setattr(topic_agent, "finish", interrupted)
+    with pytest.raises(RuntimeError, match="bookkeeping interrupted"):
+        topic_agent.run({}, context(tmp_path), tmp_path / "topic", RunBudget({}))
+    assert len(captured["instances"]) == 1 and captured["instances"][0].closed
+
+
+def test_resumed_cost_counter_reset_is_unknown_instead_of_negative_spend(
+    tmp_path, monkeypatch
+):
+    from test_coding_agent import install_sdk
+    from budget import BudgetExhausted
+
+    def execute(workspace):
+        if len(captured["instance"].messages) > 1:
+            captured["instance"].cost = 0
+
+    captured = install_sdk(monkeypatch, execute)
+    monkeypatch.setattr(topic_agent, "version", lambda name: "test-sdk")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    budget, session = RunBudget({}), {}
+    try:
+        for number in (1, 2):
+            directory = tmp_path / str(number)
+            directory.mkdir()
+            result = topic_agent.run_conversation(
+                {},
+                "repair",
+                directory / "context.json",
+                directory,
+                workspace,
+                "Continue",
+                budget,
+                session,
+            )
+        assert result["sdk_estimated_cost_usd"] is None
+        assert budget.cost == pytest.approx(0.12) and budget.unknown == 1
+        with pytest.raises(BudgetExhausted, match="inference_cost_unknown"):
+            budget.check()
+    finally:
+        session["conversation"].close()
 
 
 def test_failed_draft_hold_prevents_revision_dispatch(tmp_path, monkeypatch):
