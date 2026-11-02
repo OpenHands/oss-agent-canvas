@@ -10,26 +10,41 @@ for a human merge decision.**
 
 ```mermaid
 flowchart LR
-    runs["Past automation runs"] --> findings["Flow-1 findings"]
+    runs["Past automation runs"] --> findings["Laminar findings and clusters"]
     findings --> proposals["Weekly repair proposals"]
     proposals --> human["Human decision"]
 ```
 
 ## From findings to PRs
 
-**Upstream:** instrumentation sends traces to self-hosted Laminar. A configured
-Signal automatically runs Flow-1 on a sample or all matching finished traces.
-The LLM profile routes inference to Laminar Cloud; findings remain in self-hosted
-Laminar. The weekly automation reads these saved findings without rerunning Flow-1.
+**Provided by Laminar:** [Signals](https://laminar.sh/docs/signals/introduction)
+use Flow-1 to analyze each selected trajectory (trace) and produce structured
+finding events when a problem matches the configured instruction. Laminar then
+automatically [clusters similar events](https://laminar.sh/docs/signals/clusters)
+asynchronously. Our deployment stores traces and findings in self-hosted Laminar
+and routes Flow-1 inference to Laminar Cloud. We configure and consume these
+capabilities; this repository does not implement the analyzer or clustering.
 
 ```mermaid
 flowchart TD
-    prepare["1. Prepare evidence — Python"]
-    triage["2. Prioritize topics — OpenHands / Luna"]
-    repair["3. Repair and compare — parallel OpenHands / Sol 6.1"]
-    review["4. Independent review — OpenHands / Sol 6.1"]
-    prepare --> triage --> repair
-    repair -->|PR produced| review
+    subgraph laminar["Provided by Laminar"]
+        traces["Selected finished trajectories / traces"]
+        flow["Flow-1: analyze each trace"]
+        events["Structured finding events"]
+        clusters["Laminar: cluster similar findings"]
+        traces --> flow -->|Finding detected| events
+        events --> clusters
+    end
+    subgraph automation["Our implementation — weekly"]
+        prepare["1. Read events and clusters — Python"]
+        triage["2. Form and prioritize repair topics — OpenHands / Luna"]
+        repair["3. Repair and compare — parallel OpenHands / Sol 6.1"]
+        review["4. Independent review — OpenHands / Sol 6.1"]
+        prepare --> triage --> repair
+        repair -->|PR produced| review
+    end
+    clusters --> prepare
+    events -->|Unclustered events also included| prepare
     repair -->|No coherent fix| unresolved["Issue records remaining problem"]
     review --> ready["Ready for human review"]
     review --> draft["Draft with explicit limitations"]
@@ -37,15 +52,17 @@ flowchart TD
 
 | Step | Work performed | Output |
 | --- | --- | --- |
-| **1. Prepare** | Python collects Signals, tracks the backlog and creates compact counts/examples. Ambiguous origins remain visible. | Evidence indexed by a weekly issue |
+| **Laminar: analyze** | Flow-1 inspects each trace selected by the Signal's trigger, filters and coverage setting. | Structured findings with trace evidence |
+| **Laminar: cluster** | Laminar groups similar finding events asynchronously within each Signal. | Recurring-pattern clusters |
+| **1. Prepare** | Python reads events and available clusters, tracks the backlog and creates compact counts/examples. Unclustered events and ambiguous origins remain visible. | Evidence indexed by a weekly issue |
 | **2. Prioritize** | Luna merges duplicate mechanisms, separates unrelated problems, considers existing work and ranks topics P0–P3. Clusters are leads, not proven causes. | Prioritized topic queue |
 | **3. Repair and compare** | One Sol agent per selected topic diagnoses, chooses repositories, implements, tests and opens linked draft PRs with before/after results. | Candidate fixes and evidence |
 | **4. Review** | A separate Sol agent checks exact revisions, changes, execution records and CI, then records a verdict. | Ready or draft PRs |
 
-A topic may span automations and require several PRs. Agents use normal OpenHands
-tools and source/data access. Python handles collection and bookkeeping. Each
-selected topic gets one best repair attempt; produced PRs receive independent
-review. There is no automatic repair-until-green loop or replacement-topic quota.
+**Clusters are not final repair topics.** Luna may merge or split Laminar groups
+to identify one underlying problem spanning automations or repositories. One
+topic can require several PRs. Each selected topic gets one best repair attempt;
+produced PRs receive independent review. There is no repair-until-green loop.
 
 ## What makes a fix convincing?
 
