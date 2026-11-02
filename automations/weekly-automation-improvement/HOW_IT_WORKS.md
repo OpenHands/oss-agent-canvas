@@ -28,27 +28,33 @@ capabilities; this repository does not implement the analyzer or clustering.
 ```mermaid
 flowchart TD
     subgraph laminar["Provided by Laminar"]
-        traces["Selected finished trajectories / traces"]
-        flow["Flow-1: analyze each trace"]
+        flow["Flow-1: per-trajectory analysis"]
         events["Structured finding events"]
         clusters["Laminar: cluster similar findings"]
-        traces --> flow -->|Finding detected| events
+        flow -->|Finding detected| events
         events --> clusters
     end
     subgraph automation["Our implementation — weekly"]
-        prepare["1. Read events and clusters — Python"]
-        triage["2. Form and prioritize repair topics — OpenHands / Luna"]
-        repair["3. Repair and compare — parallel OpenHands / Sol 6.1"]
-        review["4. Independent review — OpenHands / Sol 6.1"]
-        prepare --> triage --> repair
-        repair -->|PR produced| review
+        triage["Form and prioritize topics — OpenHands / Luna"]
+        repair["Repair and compare — parallel OpenHands / Sol 6.1"]
+        review["Independently review and rerun checks — OpenHands / Sol 6.1"]
+        context["Shared topic + raw evidence"]
+        triage --> repair
+        repair -->|PRs + validation results| review
+        context -.-> repair
+        context -.-> review
     end
-    clusters --> prepare
-    events -->|Unclustered events also included| prepare
+    clusters -->|Weekly read| triage
+    events -->|Unclustered findings| triage
     repair -->|No coherent fix| unresolved["Issue records remaining problem"]
     review --> ready["Ready for human review"]
     review --> draft["Draft with explicit limitations"]
 ```
+
+**Dotted arrows show evidence access.** Both repair and review agents can inspect
+the topic/issue, original traces and Signals, source, frozen inputs and execution
+logs. The separate reviewer checks the repair's claims and can execute focused
+tests or replays as needed.
 
 | Step | Work performed | Output |
 | --- | --- | --- |
@@ -57,7 +63,7 @@ flowchart TD
 | **1. Prepare** | Python reads events and available clusters, tracks the backlog and creates compact counts/examples. Unclustered events and ambiguous origins remain visible. | Evidence indexed by a weekly issue |
 | **2. Prioritize** | Luna merges duplicate mechanisms, separates unrelated problems, considers existing work and ranks topics P0–P3. Clusters are leads, not proven causes. | Prioritized topic queue |
 | **3. Repair and compare** | One Sol agent per selected topic diagnoses, chooses repositories, implements, tests and opens linked draft PRs with before/after results. | Candidate fixes and evidence |
-| **4. Review** | A separate Sol agent checks exact revisions, changes, execution records and CI, then records a verdict. | Ready or draft PRs |
+| **4. Review** | A separate Sol agent checks topic claims against raw evidence, exact revisions, execution records and CI; reruns focused checks where useful. | Ready or draft PRs |
 
 **Clusters are not final repair topics.** Luna may merge or split Laminar groups
 to identify one underlying problem spanning automations or repositories. One
