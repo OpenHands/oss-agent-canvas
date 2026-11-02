@@ -55,9 +55,15 @@ switch to a newly authorized token pair, replace the three secrets; stored state
 from the old refresh token is ignored. Without these secrets the access token
 is used as given and stops working after a day.
 
-The agent profile is `linear-assistant-org` (org scope: the automation service
-cannot read a personal-scope profile's details). It must exist before the
-automation is created.
+The plugin declares no agent profile. A profile requirement makes the
+automation service fetch and validate the profile with its own SDK, which breaks
+whenever that SDK is older than the app that saved the profile (seen on staging:
+SDK < 1.59.0 rejects every profile). Instead the script talks to the sandbox
+directly. In a Cloud sandbox (`SANDBOX_ID` and `OPENHANDS_CLOUD_API_URL` set, no
+`AGENT_SERVER_URL`) it uses the agent server at `localhost:60000`, reads secrets
+from the sandbox settings API with the session key, and takes the LLM from the
+account's default (`/api/v1/users/me`). Where `AGENT_SERVER_URL` is set, such as
+the OSS VM, it uses that agent server and its settings.
 
 1. Create the webhook on the automation service. `event_id_header` is what lets
    it drop Linear redeliveries; keep the returned `webhook_secret`:

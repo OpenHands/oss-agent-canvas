@@ -71,25 +71,48 @@ def log(*args: object) -> None:
 
 # ── Agent server / secrets ──────────────────────────────────────────────────
 
+def _cloud() -> dict | None:
+    """The Cloud sandbox runtime, which has no AGENT_SERVER_URL: the agent server
+    is local to the sandbox, and settings and secrets come from the Cloud API
+    under this sandbox's id, authenticated with the session key. None elsewhere
+    (e.g. the OSS VM, where AGENT_SERVER_URL points at the agent server)."""
+    api = os.environ.get("OPENHANDS_CLOUD_API_URL", "").rstrip("/")
+    sandbox = os.environ.get("SANDBOX_ID", "")
+    if os.environ.get("AGENT_SERVER_URL") or not (api and sandbox):
+        return None
+    return {"api": api, "settings": f"{api}/api/v1/sandboxes/{sandbox}/settings"}
+
+
 def _agent_url() -> str:
-    return os.environ.get("AGENT_SERVER_URL", "http://127.0.0.1:18000").rstrip("/")
+    if os.environ.get("AGENT_SERVER_URL"):
+        return os.environ["AGENT_SERVER_URL"].rstrip("/")
+    if _cloud():
+        return f"http://localhost:{os.environ.get('AGENT_SERVER_PORT', '60000')}"
+    return "http://127.0.0.1:18000"
 
 
 def _get_env_key() -> str:
     return os.environ.get("SESSION_API_KEY") or os.environ.get("OH_SESSION_API_KEYS_0") or ""
 
 
+def _session_get(url: str) -> str:
+    req = urllib.request.Request(url, headers={"X-Session-API-Key": _get_env_key()})
+    try:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
+            return r.read().decode()
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"GET {url.split('?')[0]} -> {exc.code}: {exc.read().decode()[:200]}")
+
+
 def get_secret(name: str) -> str:
-    # Secrets exposed through the agent profile arrive as environment variables.
+    # Secrets exposed to the run arrive as environment variables.
     value = os.environ.get(name)
     if value:
         return value.strip()
-    req = urllib.request.Request(
-        f"{_agent_url()}/api/settings/secrets/{name}",
-        headers={"X-Session-API-Key": _get_env_key()},
-    )
-    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
-        return r.read().decode().strip()
+    cloud = _cloud()
+    if cloud:
+        return _session_get(f"{cloud['settings']}/secrets/{urllib.parse.quote(name, safe='')}").strip()
+    return _session_get(f"{_agent_url()}/api/settings/secrets/{name}").strip()
 
 
 def fire_callback(status: str = "COMPLETED", error: str | None = None,
@@ -108,7 +131,8 @@ def fire_callback(status: str = "COMPLETED", error: str | None = None,
         url, data=json.dumps(body).encode(),
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {os.environ.get('AUTOMATION_CALLBACK_API_KEY', '')}",
+            "Authorization": "Bearer " + (os.environ.get("AUTOMATION_CALLBACK_API_KEY")
+                                          or os.environ.get("OPENHANDS_API_KEY", "")),
         },
     )
     try:
@@ -140,18 +164,35 @@ def _fetch_settings() -> dict:
         return json.loads(r.read())
 
 
+def _get_llm_dict() -> dict:
+    cloud = _cloud()
+    if cloud:
+        # The account's default LLM, as the SDK's get_llm() reads it.
+        me = json.loads(_session_get(f"{cloud['api']}/api/v1/users/me?expose_secrets=true"))
+        llm = {"model": me.get("llm_model"), "api_key": me.get("llm_api_key"), "base_url": me.get("llm_base_url")}
+        llm = {k: v for k, v in llm.items() if v}
+        if not llm.get("model"):
+            raise RuntimeError("The account has no default LLM configured (users/me has no llm_model)")
+        return llm
+    return _fetch_settings().get("agent_settings", {}).get("llm", {})
+
+
 def _get_agent_dict() -> dict:
-    agent_settings = _fetch_settings().get("agent_settings", {})
     return {
         "kind": "Agent",
-        "llm": agent_settings.get("llm", {}),
+        "llm": _get_llm_dict(),
         "tools": [{"name": "terminal"}, {"name": "file_editor"}],
     }
 
 
 def _build_secrets_payload() -> dict:
+    cloud = _cloud()
+    secrets_url = f"{cloud['settings']}/secrets" if cloud else "/api/settings/secrets"
     try:
-        secrets_list = _oh_request("GET", "/api/settings/secrets").get("secrets", [])
+        if cloud:
+            secrets_list = json.loads(_session_get(secrets_url)).get("secrets", [])
+        else:
+            secrets_list = _oh_request("GET", secrets_url).get("secrets", [])
     except Exception as exc:
         log(f"warning: could not list secrets: {exc}")
         return {}
@@ -160,7 +201,7 @@ def _build_secrets_payload() -> dict:
         name = s.get("name", "")
         if not name:
             continue
-        lookup: dict = {"kind": "LookupSecret", "url": f"/api/settings/secrets/{name}"}
+        lookup: dict = {"kind": "LookupSecret", "url": f"{secrets_url}/{urllib.parse.quote(name, safe='')}"}
         if _get_env_key():
             lookup["headers"] = {"X-Session-API-Key": _get_env_key()}
         if s.get("description"):
@@ -657,11 +698,14 @@ def _release_workspace(workspace_dir: Path, conv_id: str) -> None:
 
 def _require_agent_server() -> None:
     """Fail at once, naming what the runtime did provide, instead of hanging on
-    a default address that does not exist in this sandbox."""
-    if os.environ.get("AGENT_SERVER_URL"):
+    an address that does not exist in this sandbox."""
+    if os.environ.get("AGENT_SERVER_URL") or _cloud():
+        log(f"Runtime: {'local agent server' if os.environ.get('AGENT_SERVER_URL') else 'Cloud sandbox'}, "
+            f"agent server at {_agent_url()}")
         return
-    provided = sorted(k for k in os.environ if k.startswith(("AUTOMATION_", "AGENT_", "SESSION_", "OH_")))
-    raise RuntimeError(f"AGENT_SERVER_URL is not set (is an agent profile bound?). Provided: {provided}")
+    provided = sorted(k for k in os.environ if k.startswith(("AUTOMATION_", "AGENT_", "SESSION_", "OH_", "OPENHANDS_", "SANDBOX")))
+    raise RuntimeError(f"Neither AGENT_SERVER_URL nor a Cloud sandbox (SANDBOX_ID, OPENHANDS_CLOUD_API_URL) "
+                       f"is set. Provided: {provided}")
 
 
 def main() -> str | None:

@@ -22,10 +22,6 @@
       "command": "python3 main.py"
     },
     "runtime": {
-      "agent_profile": {
-        "required": true,
-        "default_name": "linear-assistant-org"
-      },
       "plugins": []
     },
     "config_schema": {
