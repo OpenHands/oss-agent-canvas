@@ -33,6 +33,7 @@
     "max_output_tokens": 16384
   },
   "max_topics_per_run": 10,
+  "max_repair_attempts": 2,
   "repair_concurrency": 10,
   "repositories": {
     "OpenHands/software-agent-sdk": {

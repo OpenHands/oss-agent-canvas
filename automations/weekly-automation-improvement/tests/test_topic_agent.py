@@ -1,5 +1,6 @@
 import copy
 import json
+from pathlib import Path
 
 import pytest
 
@@ -60,6 +61,15 @@ def resources():
     return issues + prs
 
 
+def finished_conversation(config, phase, context_path, output, *args):
+    if phase == "review":
+        write_json(
+            output / "review-decision.json",
+            {"decision": "accepted", "feedback": "Scoped improvement verified."},
+        )
+    return {"status": "finished"}
+
+
 def test_issue_topology_allows_multiple_prs_and_reciprocal_repository_issues():
     rows = resources()
     extra = rows[-1] | {"url": "https://github.com/Example/sdk/pull/3", "number": 3}
@@ -89,8 +99,10 @@ def test_independent_review_is_once_and_incomplete_or_stale_prs_stay_draft(
                 row["head"] = "c" * 40
     calls, holds = [], []
 
-    def converse(config, phase, *args):
+    def converse(config, phase, context_path, output, *args):
         calls.append(phase)
+        if phase == "review" and review_status == "finished":
+            finished_conversation(config, phase, context_path, output)
         return {"status": "finished" if phase == "repair" else review_status}
 
     snapshots = iter([original, updated])
@@ -122,9 +134,7 @@ def test_repair_catalog_is_retried_after_reviewer_repairs_issue_anchors(
         return [{"error": "missing anchors"}] if len(phases) == 1 else []
 
     monkeypatch.setattr(topic_agent, "record_evidence", record)
-    monkeypatch.setattr(
-        topic_agent, "run_conversation", lambda *a: {"status": "finished"}
-    )
+    monkeypatch.setattr(topic_agent, "run_conversation", finished_conversation)
     monkeypatch.setattr(
         topic_agent, "discover", lambda *a: {"resources": resources(), "errors": []}
     )
@@ -302,9 +312,9 @@ def test_saved_repair_can_finish_without_repeating_coding(tmp_path, monkeypatch)
     ctx = context(tmp_path)
     phases = []
 
-    def converse(config, phase, *a):
+    def converse(config, phase, context_path, output, *a):
         phases.append(phase)
-        return {"status": "finished"}
+        return finished_conversation(config, phase, context_path, output)
 
     monkeypatch.setattr(topic_agent, "run_conversation", converse)
     monkeypatch.setattr(topic_agent, "record_evidence", lambda *a: [])
@@ -688,3 +698,346 @@ def test_shared_weekly_issue_is_readable_but_never_a_topic_output(
     issue = topic_agent.issue_reference(ctx, url, tmp_path / "read")
     assert issue.value["body"] == "Shared weekly context"
     assert issue.brief_comment_id is None
+
+
+@pytest.mark.parametrize(
+    "decisions,limit,stop",
+    [
+        (["accepted"], 2, "accepted"),
+        (["revise", "accepted"], 2, "accepted"),
+        (["revise", "revise"], 2, "repair_attempt_limit"),
+        (["revise"], 1, "repair_attempt_limit"),
+        (["blocked"], 3, "blocked"),
+        (["revise", "revise", "accepted"], 3, "accepted"),
+    ],
+)
+def test_bounded_repair_review_feedback_loop_keeps_inputs_and_prior_evidence(
+    tmp_path, monkeypatch, decisions, limit, stop
+):
+    ctx = context(tmp_path) | {"run_id": "one-run", "isolated_validation": True}
+    rows = resources()
+    calls, snapshots = [], []
+    budget = RunBudget({"max_inference_cost_usd": 10})
+
+    def converse(config, phase, context_path, output, workspace, prompt, active_budget):
+        current = json.loads(context_path.read_text())
+        number = current["repair_attempt"]
+        calls.append((phase, number, workspace, id(active_budget)))
+        snapshots.append(current)
+        active_budget.record(0.1)
+        if phase == "repair":
+            if number > 1:
+                prior = current["review_feedback"]
+                assert prior["decision"]["decision"] == "revise"
+                assert "Address duplicate publication" in prior["decision"]["feedback"]
+                assert (
+                    Path(prior["review_report"]).read_text()
+                    == "Reviewer evidence and actionable feedback."
+                )
+                assert Path(prior["report"]).exists()
+                assert "original baseline and frozen comparison cohort" in prompt
+                assert "same topic, not a new proposal" in prompt
+            for row in rows:
+                if row["kind"] == "pull":
+                    row["head"] = str(number) * 40
+                    row["draft"] = True
+            (output / "repair.md").write_text("Repair attempt " + str(number))
+        else:
+            decision = decisions[number - 1]
+            (output / "review.md").write_text(
+                "Reviewer evidence and actionable feedback."
+            )
+            write_json(
+                output / "review-decision.json",
+                {
+                    "decision": decision,
+                    "feedback": "Address duplicate publication using the cited execution records.",
+                },
+            )
+            if decision == "accepted":
+                for row in rows:
+                    if row["kind"] == "pull":
+                        row["draft"] = False
+        return {"status": "finished"}
+
+    monkeypatch.setattr(topic_agent, "run_conversation", converse)
+    monkeypatch.setattr(
+        topic_agent,
+        "discover",
+        lambda *a: {"resources": copy.deepcopy(rows), "errors": []},
+    )
+    monkeypatch.setattr(topic_agent, "record_evidence", lambda *a: [])
+    result = topic_agent.run(
+        {"max_repair_attempts": limit}, ctx, tmp_path / "topic", budget
+    )
+    assert [(phase, n) for phase, n, _, _ in calls] == [
+        (phase, number)
+        for number in range(1, len(decisions) + 1)
+        for phase in ("repair", "review")
+    ]
+    assert len({str(workspace) for _, _, workspace, _ in calls}) == 1
+    assert {identifier for _, _, _, identifier in calls} == {id(budget)}
+    assert {s["snapshot_path"] for s in snapshots} == {ctx["snapshot_path"]}
+    assert {s["cohort_path"] for s in snapshots} == {ctx["cohort_path"]}
+    assert {s["run_id"] for s in snapshots} == {"one-run"}
+    assert len(result["attempts"]) == len(decisions)
+    assert result["stop_reason"] == stop
+    assert result["status"] == "reviewed"
+    assert budget.cost == pytest.approx(0.2 * len(decisions))
+    for attempt in result["attempts"]:
+        archived = json.loads(Path(attempt["report"]).read_text())
+        assert (
+            archived["review_decision"]["decision"] == decisions[attempt["attempt"] - 1]
+        )
+    assert all(
+        row["draft"] == (decisions[-1] != "accepted")
+        for row in result["resources"]
+        if row["kind"] == "pull"
+    )
+
+
+@pytest.mark.parametrize("during_revision", [False, True])
+def test_repair_rounds_share_budget_and_never_reuse_an_old_acceptance(
+    tmp_path, monkeypatch, during_revision
+):
+    ctx = context(tmp_path)
+    rows, calls = resources(), []
+    budget = RunBudget({"max_inference_cost_usd": 3 if during_revision else 2})
+
+    def converse(config, phase, context_path, output, *args):
+        calls.append(phase)
+        budget.record(1)
+        if phase == "review":
+            write_json(
+                output / "review-decision.json",
+                {"decision": "revise", "feedback": "Fix the failed replay."},
+            )
+        return {"status": "finished"}
+
+    monkeypatch.setattr(topic_agent, "run_conversation", converse)
+    monkeypatch.setattr(
+        topic_agent, "discover", lambda *a: {"resources": rows, "errors": []}
+    )
+    monkeypatch.setattr(topic_agent, "record_evidence", lambda *a: [])
+    result = topic_agent.run({}, ctx, tmp_path / "topic", budget)
+    assert calls == (
+        ["repair", "review", "repair"] if during_revision else ["repair", "review"]
+    )
+    assert result["status"] == ("review_incomplete" if during_revision else "reviewed")
+    assert result["stop_reason"] == (
+        "review_incomplete" if during_revision else "inference_cost_threshold"
+    )
+    assert all(row["draft"] for row in result["resources"] if row["kind"] == "pull")
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [
+        None,
+        {"decision": "revise", "feedback": ""},
+        {"decision": "try again", "feedback": "More work"},
+    ],
+)
+def test_missing_or_invalid_review_decision_stops_without_another_repair(
+    tmp_path, monkeypatch, decision
+):
+    calls = []
+    rows = resources()
+    for row in rows:
+        if row["kind"] == "pull":
+            row["draft"] = False
+
+    def converse(config, phase, context_path, output, *args):
+        calls.append(phase)
+        if phase == "review" and decision is not None:
+            write_json(output / "review-decision.json", decision)
+        return {"status": "finished"}
+
+    monkeypatch.setattr(topic_agent, "run_conversation", converse)
+    monkeypatch.setattr(
+        topic_agent, "discover", lambda *a: {"resources": rows, "errors": []}
+    )
+    monkeypatch.setattr(topic_agent, "record_evidence", lambda *a: [])
+    monkeypatch.setattr(topic_agent, "command", lambda *a: "")
+    result = topic_agent.run({}, context(tmp_path), tmp_path / "topic", RunBudget({}))
+    assert calls == ["repair", "review"]
+    assert result["status"] == "review_incomplete"
+    assert any("structured review decision" in error for error in result["link_errors"])
+    assert all(row["draft"] for row in result["resources"] if row["kind"] == "pull")
+
+
+def test_two_attempts_exercise_native_runtime_and_preserve_both_rounds(
+    tmp_path, monkeypatch
+):
+    from test_coding_agent import install_sdk
+
+    ctx, rows = context(tmp_path), resources()
+    calls = []
+
+    def execute(workspace):
+        phase_root = Path(captured["llm"]["log_completions_folder"]).parent
+        output = phase_root.parent
+        current = json.loads((output / "attempt-context.json").read_text())
+        number = current["repair_attempt"]
+        phase = phase_root.name.removesuffix("-agent")
+        calls.append((phase, number, workspace))
+        candidate = workspace / "candidate.txt"
+        if phase == "repair":
+            if number == 2:
+                assert candidate.read_text() == "Candidate 1"
+                feedback = current["review_feedback"]
+                assert (
+                    Path(feedback["review_report"]).read_text()
+                    == "Fix the replay's duplicate submission."
+                )
+                seed = json.loads((output / "resources.json").read_text())
+                assert all(r["draft"] for r in seed["resources"] if r["kind"] == "pull")
+            for row in rows:
+                if row["kind"] == "pull":
+                    row.update(head=str(number) * 40, draft=True)
+            (output / "repair.md").write_text("Candidate " + str(number))
+            candidate.write_text("Candidate " + str(number))
+        else:
+            assert candidate.read_text() == "Candidate " + str(number)
+            write_json(
+                output / "review-decision.json",
+                {
+                    "decision": "revise" if number == 1 else "accepted",
+                    "feedback": "Fix duplicate submission."
+                    if number == 1
+                    else "Revised behavior verified.",
+                },
+            )
+            (output / "review.md").write_text("Fix the replay's duplicate submission.")
+            for row in rows:
+                if row["kind"] == "pull":
+                    row["draft"] = False
+
+    captured = install_sdk(monkeypatch, execute)
+    monkeypatch.setattr(topic_agent, "version", lambda name: "test-sdk")
+    monkeypatch.setattr(
+        topic_agent,
+        "discover",
+        lambda *a: {"resources": copy.deepcopy(rows), "errors": []},
+    )
+    monkeypatch.setattr(topic_agent, "record_evidence", lambda *a: [])
+    monkeypatch.setattr(topic_agent, "command", lambda *a: "")
+    budget = RunBudget({"max_inference_cost_usd": 5})
+    root = tmp_path / "topic"
+    result = topic_agent.run({}, ctx, root, budget)
+    assert [(phase, number) for phase, number, _ in calls] == [
+        ("repair", 1),
+        ("review", 1),
+        ("repair", 2),
+        ("review", 2),
+    ]
+    assert budget.cost == pytest.approx(0.48)
+    assert result["stop_reason"] == "accepted"
+    for directory in (root, root / "attempts/002"):
+        for phase in ("repair", "review"):
+            assert (directory / (phase + "-agent") / "prompt.json").exists()
+            assert (directory / (phase + "-agent") / "events.json").exists()
+    assert (root / "attempts/001/outcome.json").exists()
+    assert (root / "attempts/002/outcome.json").exists()
+    assert result["latest_attempt_dir"] == str(root / "attempts/002")
+
+
+def test_later_attempt_links_are_recovered_after_an_interrupted_worker(
+    tmp_path, monkeypatch
+):
+    ctx = context(tmp_path)
+    url = "https://github.com/Example/other/pull/18"
+    write_json(tmp_path / "attempts/002/observed-links.json", [url])
+    monkeypatch.setattr(topic_agent, "github_pages", lambda *a: [])
+    monkeypatch.setattr(
+        topic_agent,
+        "command",
+        lambda *a: json.dumps(
+            {
+                "body": topic_agent.marker(ctx["topic"]),
+                "state": "open",
+                "title": "Revised fix",
+                "base": {"sha": "a" * 40},
+                "head": {"sha": "b" * 40},
+                "draft": True,
+            }
+        ),
+    )
+    receipt = topic_agent.discover(ctx, tmp_path)
+    assert receipt["resources"][0]["url"] == url and not receipt["errors"]
+
+
+def test_failed_draft_hold_prevents_revision_dispatch(tmp_path, monkeypatch):
+    calls = []
+    rows = resources()
+    for row in rows:
+        if row["kind"] == "pull":
+            row["draft"] = False
+
+    def converse(config, phase, context_path, output, *args):
+        calls.append(phase)
+        if phase == "review":
+            write_json(
+                output / "review-decision.json",
+                {"decision": "revise", "feedback": "Fix duplicate submission."},
+            )
+        return {"status": "finished"}
+
+    def denied(*args):
+        raise ValueError("Draft update denied")
+
+    monkeypatch.setattr(topic_agent, "run_conversation", converse)
+    monkeypatch.setattr(
+        topic_agent, "discover", lambda *a: {"resources": rows, "errors": []}
+    )
+    monkeypatch.setattr(topic_agent, "record_evidence", lambda *a: [])
+    monkeypatch.setattr(topic_agent, "command", denied)
+    result = topic_agent.run({}, context(tmp_path), tmp_path / "topic", RunBudget({}))
+    assert calls == ["repair", "review"]
+    assert result["status"] == "review_incomplete"
+    assert any("Draft update denied" in error["error"] for error in result["errors"])
+
+
+@pytest.mark.parametrize("repair_status", ["failed", "incomplete"])
+def test_unfinished_repair_does_not_dispatch_again_on_revise_feedback(
+    tmp_path, monkeypatch, repair_status
+):
+    calls = []
+
+    def converse(config, phase, context_path, output, *args):
+        calls.append(phase)
+        if phase == "review":
+            write_json(
+                output / "review-decision.json",
+                {"decision": "revise", "feedback": "Fix the incomplete result."},
+            )
+        return {"status": repair_status if phase == "repair" else "finished"}
+
+    monkeypatch.setattr(topic_agent, "run_conversation", converse)
+    monkeypatch.setattr(
+        topic_agent, "discover", lambda *a: {"resources": resources(), "errors": []}
+    )
+    monkeypatch.setattr(topic_agent, "record_evidence", lambda *a: [])
+    result = topic_agent.run({}, context(tmp_path), tmp_path / "topic", RunBudget({}))
+    assert calls == ["repair", "review"]
+    assert result["stop_reason"] == "repair_incomplete"
+    assert len(result["attempts"]) == 1
+    assert all(row["draft"] for row in result["resources"] if row["kind"] == "pull")
+
+
+def test_review_feedback_character_limit_accepts_escaped_unicode(tmp_path, monkeypatch):
+    def converse(config, phase, context_path, output, *args):
+        if phase == "review":
+            (output / "review-decision.json").write_text(
+                json.dumps({"decision": "accepted", "feedback": "😀" * 12000})
+            )
+        return {"status": "finished"}
+
+    monkeypatch.setattr(topic_agent, "run_conversation", converse)
+    monkeypatch.setattr(
+        topic_agent, "discover", lambda *a: {"resources": resources(), "errors": []}
+    )
+    monkeypatch.setattr(topic_agent, "record_evidence", lambda *a: [])
+    result = topic_agent.run({}, context(tmp_path), tmp_path / "topic", RunBudget({}))
+    assert result["stop_reason"] == "accepted"
+    assert result["status"] == "reviewed"

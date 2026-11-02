@@ -32,10 +32,21 @@ README covers setup, operation and validation history.
    Failed, inconclusive, unsafe or dependency-blocked changes remain drafts.
    Python also holds PRs draft when review is incomplete or revisions changed.
 
-The repair agent makes one best attempt and stops. The reviewer does not restart
-coding or require unrelated inherited defects to disappear. An unrepaired topic
-with a clear explanation is valid. There is no loop trying to fill a PR quota or
-force every repair to pass.
+Repair and review form a bounded feedback loop. The default
+`max_repair_attempts=2` allows an initial repair and one revision using the review
+feedback, followed by another independent review. Revisions reuse the same
+worktrees, current-run issues/PRs, original baseline and frozen comparison cohort.
+The reviewer does not edit repair source or require unrelated inherited defects
+to disappear. An unrepaired topic with a clear explanation is valid.
+
+Each reviewer records a concise decision and feedback: **accepted**, **revise** for
+agent-addressable code or validation gaps, or **blocked** for an external/human
+prerequisite. Python enforces the attempt limit and reuses the existing topic
+budget. Accepted or blocked decisions stop; missing/invalid review decisions and
+incomplete reviews hold PRs draft and stop. Failed or incomplete repair executions
+do not automatically start another repair, even when their PRs can be reviewed.
+An exhausted attempt limit leaves
+unresolved PRs draft. No replacement topics are dispatched to fill a quota.
 
 ## Issues and evidence
 
@@ -141,7 +152,12 @@ Ensure `automation-improvement` exists in repositories where repairs will be ope
 Top-level settings:
 
 - `max_topics_per_run`: default **10**, maximum topic investigations selected once
-  from the ranked queue. It counts attempts, not successful repairs or PRs.
+  from the ranked queue. Revisions do not consume another topic slot; the limit
+  counts topics, not successful repairs or PRs.
+- `max_repair_attempts`: default **2**, total repair attempts per topic, including
+  the initial attempt. **1** disables feedback revisions. Each attempted repair is
+  followed by a new review when PRs exist and budget remains; inner agent tool-call
+  limits remain configured separately under each agent's `max_iterations`.
 - `repair_concurrency`: defaults to the topic limit; example **10**. One process per
   selected topic, each with its own repair and independent review conversations.
 - `validation_sample_size`: default **5** inputs per cohort.
@@ -204,6 +220,13 @@ Discovery checks actual GitHub objects and topic markers, including links captur
 outside the starting catalog. Interrupted work stays visible for reconciliation;
 there is no automatic rerun/filler loop. Lower-priority deferred findings remain
 pending. Retain the worker state directory when replacing its VM.
+
+The first attempt's execution files remain at the worker root; later attempts
+live under `attempts/002/`, `attempts/003/`, and so on. Each attempt has an immutable
+`attempts/NNN/outcome.json` record. The top-level `topic-report.json` points to the
+latest attempt and records the complete attempt index and stop reason. Revision
+context references the previous review, reviewer events, validation artifacts and
+existing remote resources. Earlier evidence catalogs remain available.
 
 The factory issue-triage automation and weekly triage share the native OpenHands
 profile foundation, but have different policies and lifecycles. Factory triage

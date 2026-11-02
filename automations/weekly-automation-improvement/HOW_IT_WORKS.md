@@ -47,8 +47,9 @@ flowchart TD
     clusters -->|Weekly read| triage
     events -->|Unclustered findings| triage
     repair -->|No coherent fix| unresolved["Issue records remaining problem"]
-    review --> ready["Ready for human review"]
-    review --> draft["Draft with explicit limitations"]
+    review -->|Actionable feedback, attempts left| repair
+    review -->|Accepted| ready["Ready for human review"]
+    review -->|Blocked or attempt limit| draft["Draft with explicit limitations"]
 ```
 
 **Dotted arrows show evidence access.** Both repair and review agents can inspect
@@ -62,13 +63,15 @@ tests or replays as needed.
 | **Laminar: cluster** | Laminar groups similar finding events asynchronously within each Signal. | Recurring-pattern clusters |
 | **1. Prepare** | Python reads events and available clusters, tracks the backlog and creates compact counts/examples. Unclustered events and ambiguous origins remain visible. | Evidence indexed by a weekly issue |
 | **2. Prioritize** | Luna merges duplicate mechanisms, separates unrelated problems, considers existing work and ranks topics P0–P3. Clusters are leads, not proven causes. | Prioritized topic queue |
-| **3. Repair and compare** | One Sol agent per selected topic diagnoses, chooses repositories, implements, tests and opens linked draft PRs with before/after results. | Candidate fixes and evidence |
+| **3. Repair and compare** | Sol diagnoses each topic, chooses repositories, implements, tests and opens or revises linked draft PRs. Later attempts receive the review feedback. | Candidate fixes and before/after evidence |
 | **4. Review** | A separate Sol agent checks topic claims against raw evidence, exact revisions, execution records and CI; reruns focused checks where useful. | Ready or draft PRs |
 
 **Clusters are not final repair topics.** Luna may merge or split Laminar groups
 to identify one underlying problem spanning automations or repositories. One
-topic can require several PRs. Each selected topic gets one best repair attempt;
-produced PRs receive independent review. There is no repair-until-green loop.
+topic can require several PRs. Reviewers can request another repair with actionable
+feedback, followed by a fresh review. **`max_repair_attempts=2`** allows the initial
+attempt plus one revision. Acceptance, external blockers, the attempt limit or
+resource limits stop the loop. The same frozen comparison inputs are retained.
 
 ## What makes a fix convincing?
 
@@ -87,7 +90,8 @@ produced PRs receive independent review. There is no repair-until-green loop.
 | --- | --- |
 | Schedule | Weekly, Monday 08:00 UTC |
 | Flow-1 coverage | Separate Laminar setting: sample or all matching traces |
-| `max_topics_per_run` | 10 topic attempts; counts topics, not PRs |
+| `max_topics_per_run` | 10 selected topics; counts topics, not PRs |
+| `max_repair_attempts` | 2 total repair attempts per topic, including the initial attempt |
 | `repair_concurrency` | Defaults to the topic limit |
 | `validation_sample_size` | 5 inputs per comparison group when available |
 | Agent profiles | Configurable; built-in defaults are Luna / Sol 6.1 / Sol 6.1 |

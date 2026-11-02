@@ -414,6 +414,7 @@ def run(config, *, dry_run=False, limit=3, seed=None):
         ("max_topics_per_run", 10),
         ("repair_concurrency", config.get("max_topics_per_run", 10)),
         ("validation_sample_size", 5),
+        ("max_repair_attempts", 2),
     ):
         if type(config.get(name, default)) is not int or config.get(name, default) < 1:
             raise ValueError(name + " must be a positive integer")
