@@ -19,5 +19,5 @@
   "minimal_fix_max_files": 10,
   "minimal_fix_max_changed_lines": 100,
   "source_repository": "OpenHands/oss-agent-canvas",
-  "source_branch": "automation/dependabot-auto-merge"
+  "source_branch": "main"
 }
