@@ -199,7 +199,12 @@ def current_versions(text: str) -> dict[str, str]:
         "python": r"FROM python:(\d+\.\d+\.\d+)-slim-trixie AS python-runtime",
         "node": r"FROM node:(\d+\.\d+\.\d+)-trixie-slim AS node-runtime",
         "uv": r"COPY --from=ghcr\.io/astral-sh/uv:(\d+\.\d+\.\d+) /uv /uvx /bin/",
-        "acp_node": r"node-v(\d+\.\d+\.\d+)-linux-\$\{NARCH\}",
+        # Anchored to the ACP providers RUN block, whose Node tarball is fetched
+        # with `curl` and whose arch case is the ACP-specific `x86_64|amd64)`.
+        # The OpenVSCode editor block pins a second, unrelated Node and fetches
+        # it with `wget`, so a bare `node-v…-linux-${NARCH}` pattern matches
+        # both blocks and the "exactly one" check below aborts the run.
+        "acp_node": r'NODE_TARBALL="/tmp/node-v(\d+\.\d+\.\d+)-linux-\$\{NARCH\}\.tar\.xz"; \\\n\s*curl',
         "openvscode": r'ARG RELEASE_TAG="openvscode-server-v(\d+\.\d+\.\d+)"',
         "tini": r"releases/download/v(\d+\.\d+\.\d+)/tini-static-\$\{TARCH\}",
     }
@@ -216,11 +221,17 @@ def update_sdk_dockerfile(text: str, token: str, now: datetime) -> tuple[str, li
     current = current_versions(text)
     changes = []
 
+    # Follow the major already pinned for the ACP runtime instead of a fixed
+    # one: the SDK moved ACP from Node 22 to 24, and a hardcoded 22 would make
+    # the updater a silent no-op (every 22.x compares as older than the 24.x
+    # pin) until someone noticed.
+    acp_node_major = version_key(current["acp_node"])[0]
+
     sources = {
         "python": select_release(python_releases(), now, 3),
         "node": select_release(node_releases(token), now, 24),
         "uv": select_release(github_releases("astral-sh/uv", token), now),
-        "acp_node": select_release(node_releases(token), now, 22),
+        "acp_node": select_release(node_releases(token), now, acp_node_major),
         "openvscode": select_release(
             github_releases("gitpod-io/openvscode-server", token, "openvscode-server-v"), now
         ),
@@ -252,8 +263,14 @@ def update_sdk_dockerfile(text: str, token: str, now: datetime) -> tuple[str, li
                     raise RuntimeError(f"Missing checksum for {filename}")
                 checksums[arch] = match.group(1)
             text = replace_all_exact(text, f"v{old}", f"v{new}", 3)
+            # The OpenVSCode editor block reuses the same `NARCH=…; NODE_SHA256=`
+            # shape with its own checksums, so key off the ACP-specific arch
+            # token (`x86_64|amd64` / `aarch64|arm64`) to leave it untouched.
+            acp_arch_tokens = {"x64": r"x86_64\|amd64\)", "arm64": r"aarch64\|arm64\)"}
             for arch, checksum in checksums.items():
-                pattern = rf"(NARCH={arch}; NODE_SHA256=)[0-9a-f]{{64}}"
+                pattern = (
+                    rf"({acp_arch_tokens[arch]} NARCH={arch}; NODE_SHA256=)[0-9a-f]{{64}}"
+                )
                 text, count = re.subn(pattern, rf"\g<1>{checksum}", text)
                 if count != 1:
                     raise RuntimeError(f"Expected one ACP Node {arch} checksum, found {count}")
