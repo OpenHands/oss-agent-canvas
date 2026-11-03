@@ -1,5 +1,5 @@
 agent_profile_id: null
-enabled: true
+enabled: false
 entrypoint: cd "$AUTOMATION_PLUGIN_ROOT/scripts" && python3 main.py
 keep_alive: null
 model: null
@@ -10,7 +10,7 @@ preset_metadata:
   preset_type: plugin_spec
 prompt: null
 setup_script_path: null
-state: ACTIVE
+state: INACTIVE
 tarball_source:
   type: external
   url: plugin-spec://runtime
