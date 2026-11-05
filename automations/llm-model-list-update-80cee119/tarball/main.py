@@ -74,6 +74,7 @@ import os
 import sys
 import threading
 import time
+import urllib.request
 import uuid
 from datetime import datetime, timezone
 
@@ -255,6 +256,28 @@ def _build_conversation_title(event_context) -> str | None:
     if context is None:
         context = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     return f"{name} — {context}"[:200]
+
+
+def _assert_conversation_succeeded(conversation):
+    status = conversation.state.execution_status
+    status = getattr(status, "value", status)
+    if status not in ("idle", "finished"):
+        raise RuntimeError(f"Automation conversation ended with status {status}")
+
+    if IS_LOCAL_MODE:
+        request = urllib.request.Request(
+            f"{agent_server_url}/api/conversations/{conversation.id}/events/search"
+            "?kind=ConversationErrorEvent&limit=1",
+            headers={"X-Session-API-Key": session_key},
+        )
+        with urllib.request.urlopen(request, timeout=15) as response:
+            errors = json.load(response).get("items", [])
+        if errors:
+            error = errors[0]
+            raise RuntimeError(
+                f"Automation conversation errored: {error.get('code')}: "
+                f"{error.get('detail')}"
+            )
 
 
 # Workspace base directory (for RemoteWorkspace working_dir).
@@ -531,6 +554,7 @@ This automation was triggered by a webhook event:
         print(f"  sending prompt: {USER_PROMPT[:80]}...")
         conversation.send_message(USER_PROMPT)
         conversation.run()
+        _assert_conversation_succeeded(conversation)
 
         # Post-run bookkeeping is best-effort: the conversation has already
         # succeeded, and nothing below may raise out of the workspace context
