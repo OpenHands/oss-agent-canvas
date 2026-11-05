@@ -1,0 +1,15 @@
+{
+  "scope": [],
+  "exclude": [],
+  "fail_threshold": 2,
+  "healthy_streak": 2,
+  "watch_window_hours": 48,
+  "realert_hours": 24,
+  "alert_channel": "C0BGK8NRYUX",
+  "slack_token_secret": "SLACK_BOT_TOKEN",
+  "canvas_url": "https://oss-agent-canvas.ngrok.dev",
+  "heartbeat_enabled": true,
+  "heartbeat_hour_utc": 8,
+  "silent_failure_check": true,
+  "stale_check_enabled": true
+}
