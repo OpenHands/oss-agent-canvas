@@ -13,9 +13,9 @@ from attribution import automation_ids as origin_automations
 from cohorts import collect as collect_cohort, topic_records
 from common import encode, read_json, redact, replace_json, timestamp, write_json
 from events import collect_events, hydrate_events
-from github_io import command, github_pages, IMPROVEMENT_LABEL
+from github_io import command, github_pages, IMPROVEMENT_LABEL, work_item
 from laminar import Laminar
-from repair_policy import resolve as repair_policy
+from repair_policy import permits, resolve as repair_policy
 from sources import github_auth, native_request
 from triage import definition_key, triage
 
@@ -162,20 +162,34 @@ def existing_work(repository):
         f"repos/{repository}/issues?state=closed&labels={IMPROVEMENT_LABEL}&per_page=100"
     )
     return [
-        {
-            "url": row["html_url"],
-            "repository": repository,
-            "title": row["title"],
-            "body": row.get("body") or "",
-            "state": row["state"].upper(),
-            "createdAt": row["created_at"],
-            "kind": "pull" if "pull_request" in row else "issue",
-        }
+        work_item(row, repository)
         for row in rows
         if not (row.get("body") or "")
         .lstrip()
         .startswith("<!-- automation-improvement-triage:")
     ]
+
+
+def discovery_repositories(config, repositories, state):
+    if config.get("isolated_validation"):
+        return []
+    names = set(repositories)
+    names.update(
+        resource["repository"]
+        for attempt in state.get("topic_weeks", {}).values()
+        for resource in attempt.get("resources", [])
+        if resource.get("repository")
+    )
+    for event in state.get("events", {}).values():
+        for url in event.get("existing_work_urls", []):
+            match = re.fullmatch(
+                r"https://github\.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/[1-9][0-9]*",
+                url,
+            )
+            if match:
+                names.add(match[1])
+    policy = repair_policy(config)
+    return sorted(name for name in names if permits(policy, name))
 
 
 def arguments(config, output, limit, seed=None):
@@ -314,7 +328,7 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
     github_auth(config)
     repositories = repository_catalog(config)
     prs, discovery_errors = [], []
-    for repository in () if config.get("isolated_validation") else repositories:
+    for repository in discovery_repositories(config, repositories, state):
         try:
             prs.extend(existing_work(repository))
         except Exception as error:

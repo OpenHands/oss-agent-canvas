@@ -34,3 +34,15 @@ def repository_private(repository, request):
     if type(value.get("private")) is bool:
         return value["private"]
     raise ValueError("Repository visibility is unavailable")
+
+
+def work_item(row, repository):
+    return {
+        "url": row["html_url"],
+        "repository": repository,
+        "title": row["title"],
+        "body": row.get("body") or "",
+        "state": row["state"].upper(),
+        "createdAt": row.get("created_at"),
+        "kind": "pull" if "pull_request" in row else "issue",
+    }

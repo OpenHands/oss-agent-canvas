@@ -273,3 +273,150 @@ def test_private_repository_name_does_not_match_a_public_prefix_neighbor():
         "public text references private repository" in e
         for e in topic_agent.link_errors([row])
     )
+
+
+def test_upstream_discovery_history_never_expands_customer_scope():
+    import weekly
+
+    state = {
+        "topic_weeks": {"last/topic": {"resources": [{"repository": "Upstream/sdk"}]}}
+    }
+    config = {"repository": "Acme/app"}
+    assert weekly.discovery_repositories(config, {"Acme/app": {}}, state) == [
+        "Acme/app"
+    ]
+    assert weekly.discovery_repositories(
+        config | {"repair_scope": "any_authorized"}, {"Acme/app": {}}, state
+    ) == ["Acme/app", "Upstream/sdk"]
+    assert (
+        weekly.discovery_repositories(
+            config | {"isolated_validation": True}, {"Acme/app": {}}, state
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    "isolated,scope", [(True, "any_authorized"), (False, "customer_stack")]
+)
+def test_unregistered_existing_work_cannot_bypass_qc_or_customer_scope(
+    monkeypatch, isolated, scope
+):
+    import triage
+
+    references = {
+        "existing_work": [],
+        "repair_policy": resolve({"repository": "Acme/app", "repair_scope": scope}),
+        "isolated_validation": isolated,
+    }
+    monkeypatch.setattr(
+        triage, "command", lambda *a: pytest.fail("unapproved GitHub access")
+    )
+    with pytest.raises(ValueError, match="unknown"):
+        triage.discover_work(["https://github.com/Upstream/sdk/issues/1"], references)
+
+
+def test_triage_verifies_new_upstream_work_and_records_recurrence_before_repair(
+    tmp_path, monkeypatch
+):
+    import topic_issue
+    import tracked_work
+    import triage
+    import triage_agent
+    from common import write_json
+    from test_automation import arguments
+    from test_topic_issue import GitHub
+    from test_triage import topic
+    from test_weekly import record, inventory
+
+    rows = [record()]
+    frame = tmp_path / "input.json"
+    write_json(frame, inventory(rows))
+    output = tmp_path / "run/triage"
+    output.mkdir(parents=True)
+    github = GitHub(private=False)
+    url = "https://github.com/Upstream/sdk/issues/1"
+    github.issues = [
+        {
+            "number": 1,
+            "html_url": url,
+            "body": "Human report of the same problem",
+            "title": "Known failure",
+            "state": "open",
+        }
+    ]
+    for module in (triage, tracked_work, topic_issue):
+        monkeypatch.setattr(module, "command", github)
+    args = arguments(
+        output,
+        repository="Acme/app",
+        checkout=str(tmp_path),
+        state_dir=str(tmp_path / "state"),
+        triage_week="2026-W45",
+        run_id="discovered-work",
+        dry_run=False,
+        inventory_path=str(frame),
+        evidence_location="Authorized worker",
+        repair_policy=resolve(
+            {"repository": "Acme/app", "repair_scope": "any_authorized"}
+        ),
+    )
+    plan = {
+        "topics": [topic("e1", "known-failure") | {"existing_work_urls": [url]}],
+        "no_action_reason": "",
+    }
+
+    def rank(args, context, records, schema):
+        return plan, {}, triage_agent.prepare_issue(args, context, records)
+
+    monkeypatch.setattr(triage, "rank", rank)
+    existing = []
+    queue, summary = triage.triage(args, rows, existing)
+    assert queue == []
+    assert summary["tracked_topics"][0]["status"] == "recurrence_recorded"
+    assert existing[0]["url"] == url
+    assert github.issues[0]["body"] == "Human report of the same problem"
+    assert any(
+        c["issue_url"] == "https://api.github.com/repos/Upstream/sdk/issues/1"
+        for c in github.comments
+    )
+
+
+def test_existing_work_urls_use_github_canonical_case_without_duplicate_lookup(
+    monkeypatch,
+):
+    import triage
+    from test_triage import topic
+    from test_weekly import record
+
+    rows = [record()]
+    original = "https://github.com/Upstream/sdk/issues/1"
+    existing = [{"url": original, "body": "Known issue"}]
+    _, references, _ = triage.prepare(rows, existing, [])
+    monkeypatch.setattr(
+        triage, "command", lambda *a: pytest.fail("known URL fetched again")
+    )
+    plan = {
+        "topics": [topic("e1") | {"existing_work_urls": [original.lower()]}],
+        "no_action_reason": "",
+    }
+    assert triage.validate(plan, rows, references, 3)[0]["existing_work_urls"] == [
+        original
+    ]
+
+
+def test_upstream_recurrence_history_is_discovered_without_a_previous_repair():
+    import weekly
+
+    state = {
+        "events": {
+            "event": {
+                "existing_work_urls": ["https://github.com/Upstream/sdk/issues/1"]
+            }
+        }
+    }
+    config = {"repository": "Acme/app", "repair_scope": "any_authorized"}
+    assert weekly.discovery_repositories(config, {"Acme/app": {}}, state) == [
+        "Acme/app",
+        "Upstream/sdk",
+    ]

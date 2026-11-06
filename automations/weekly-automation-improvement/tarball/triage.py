@@ -1,5 +1,7 @@
 import copy
 import hashlib
+import json
+import re
 from collections import Counter
 
 from common import encode, redact, timestamp, topic_id, write_json
@@ -7,6 +9,8 @@ from attribution import automation_ids, candidates, conversation_ids, unit
 from triage_agent import rank
 from laminar import object_value
 from tracked_work import comment, matching
+from github_io import command, work_item, IMPROVEMENT_LABEL
+from repair_policy import permits
 
 TEXT = {"type": "string"}
 
@@ -301,6 +305,32 @@ def prepare(records, prs, previous_attempts, retry_topic_ids=()):
     )
 
 
+def discover_work(urls, references):
+    known = {item["url"].casefold() for item in references.get("existing_work", [])}
+    policy = references.get("repair_policy")
+    for url in sorted(url for url in urls if url.casefold() not in known):
+        match = re.fullmatch(
+            r"https://github\.com/([\w.-]+/[\w.-]+)/(issues|pull)/([1-9][0-9]*)", url
+        )
+        if (
+            references.get("isolated_validation")
+            or not policy
+            or not match
+            or not permits(policy, match[1])
+        ):
+            raise ValueError("Topic cites unknown or duplicate existing work")
+        row = json.loads(command(["gh", "api", f"repos/{match[1]}/issues/{match[3]}"]))
+        if row["html_url"].casefold() != url.casefold():
+            raise ValueError("Existing work URL does not match GitHub")
+        if row["state"] != "open" and IMPROVEMENT_LABEL not in {
+            label["name"] for label in row.get("labels", [])
+        }:
+            raise ValueError(
+                "Existing work must be open or a prior self-improvement topic"
+            )
+        references.setdefault("existing_work", []).append(work_item(row, match[1]))
+
+
 def validate(result, records, references, limit):
     if (
         not isinstance(result, dict)
@@ -327,11 +357,15 @@ def validate(result, records, references, limit):
         if (
             not isinstance(urls, list)
             or any(not isinstance(url, str) for url in urls)
-            or len(set(urls)) != len(urls)
-            or not set(urls)
-            <= {item["url"] for item in references.get("existing_work", [])}
+            or len({url.casefold() for url in urls}) != len(urls)
         ):
             raise ValueError("Topic cites unknown or duplicate existing work")
+        discover_work(urls, references)
+        canonical = {
+            item["url"].casefold(): item["url"]
+            for item in references.get("existing_work", [])
+        }
+        urls = [canonical[url.casefold()] for url in urls]
         if type(topic["priority"]) is not int or not 0 <= topic["priority"] <= 3:
             raise ValueError("Topic priority must be an integer from P0 through P3")
         for field, bound in (("title", 200), ("reason", 4000)):
@@ -379,6 +413,7 @@ def validate(result, records, references, limit):
                 "automation_id": automation_id,
                 "automation_ids": owners,
                 "selection_order": position,
+                "existing_work_urls": urls,
                 "group_ids": sorted(
                     {references["event_groups"][event_id] for event_id in selected}
                 ),
@@ -395,6 +430,8 @@ def triage(args, records, prs, completed_topics=()):
         records, prs, completed_topics, getattr(args, "retry_topic_ids", [])
     )
     context["repair_policy"] = getattr(args, "repair_policy", None)
+    references["repair_policy"] = context["repair_policy"]
+    references["isolated_validation"] = getattr(args, "isolated_validation", False)
     write_json(args.output / "triage-input.json", context)
     write_json(args.output / "triage-references.json", references)
     schema = copy.deepcopy(TRIAGE)

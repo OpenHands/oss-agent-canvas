@@ -152,7 +152,10 @@ saved agent profiles and MCPs must not expose broader write credentials.
 Public upstream issues must not identify private customer repositories. Private
 issues can link public counterparts; public summaries retain an opaque private
 evidence index. The complete relationship map and raw references remain private.
-Unknown repository visibility blocks acceptance. Repository
+Unknown repository visibility blocks acceptance. Broader-scope runs remember repair
+repositories from their own history for future existing-work discovery. Triage can
+also discover related work through normal GitHub reads; Python verifies those URLs
+before posting recurrence comments or excluding a topic. Repository
 worktrees isolate source, not operating-system access. There are no file-count or
 patch-size limits. Missing checkouts remain explicit prerequisites.
 Install `tmux` on the worker before
