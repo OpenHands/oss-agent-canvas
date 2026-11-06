@@ -122,3 +122,9 @@ def test_out_of_scope_recurrence_cannot_publish_a_comment(tmp_path, monkeypatch)
             tmp_path,
             policy=resolve({"repository": "Acme/app"}),
         )
+
+
+@pytest.mark.parametrize("source", ["/checkout", {"repository": "Upstream/sdk"}])
+def test_catalog_cannot_disguise_an_upstream_checkout_as_a_customer_repository(source):
+    with pytest.raises(ValueError, match="catalog name"):
+        resolve({"repository": "Acme/app", "repositories": {"Acme/config": source}})

@@ -14,6 +14,14 @@ def resolve(config):
         for name in names
     ):
         raise ValueError("Invalid repository slug")
+    for name, source in repositories.items():
+        if (
+            not isinstance(source, dict)
+            or source.get("repository", name).casefold() != name.casefold()
+        ):
+            raise ValueError(
+                "Repository checkout configuration must match its catalog name"
+            )
     return {"scope": scope, "repositories": sorted(set(names), key=str.casefold)}
 
 
@@ -28,7 +36,7 @@ def instructions(policy):
         boundary = (
             "Repair scope is customer_stack. Create or change issues, comments, PRs and source only in these customer repositories: "
             + ", ".join(policy["repositories"])
-            + ". You may read upstream source and evidence. If the root cause is outside this scope, record it in a customer issue; propose an upgrade or safe workaround only when justified. Do not publish an upstream issue or PR or edit upstream source. "
+            + ". Retain useful upstream findings; do not discard them because of this scope. You may read upstream source and evidence. If the root cause is outside this scope, record it in a customer issue; propose an upgrade or safe workaround only when justified. Do not publish an upstream issue or PR or edit upstream source. "
         )
     else:
         boundary = (
