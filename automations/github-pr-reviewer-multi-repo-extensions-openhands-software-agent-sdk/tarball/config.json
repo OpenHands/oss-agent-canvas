@@ -3,7 +3,8 @@
     "OpenHands/OpenHands",
     "OpenHands/software-agent-sdk",
     "OpenHands/automation",
-    "OpenHands/extensions"
+    "OpenHands/extensions",
+    "OpenHands/docs"
   ],
   "trigger_label": "openhands-review-canary",
   "review_tone": "concise",
