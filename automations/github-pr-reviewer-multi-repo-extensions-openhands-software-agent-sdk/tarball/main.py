@@ -790,7 +790,8 @@ def _build_review_prompt(
     )
     workspace = workspace_instructions or (
         "The workspace is already the repository root at the exact Head SHA above. "
-        "Do not clone, fetch, check out, or delete the repository."
+        "Do not clone into, fetch in, check out in, or delete this reviewed directory. "
+        "Separate comparison checkouts outside it are allowed by the integrity policy below."
     )
 
     return (
@@ -859,10 +860,12 @@ def _build_review_prompt(
         "   In a Git workspace, before and after each head test command and immediately "
         "before publishing, verify `git rev-parse HEAD` equals the Head SHA, "
         "`git diff --exit-code HEAD --` and `git diff --cached --exit-code HEAD --` "
-        "both pass, and inspect `git ls-files --others --exclude-standard` for new "
+        "both pass, and inspect `git ls-files --others` for new or ignored "
         "files that could affect tests. In an archive-only workspace without Git metadata, "
-        "record an external source-content/mode manifest before testing and verify it "
-        "afterwards; do not initialize Git in the reviewed tree. If integrity checks fail, "
+        "record an external path/type/content/mode manifest of the supplied source before "
+        "testing; check it for changes, additions and deletions before and after each test "
+        "and immediately before publishing. Do not initialize Git in the reviewed tree. "
+        "If integrity checks fail, "
         "stop local testing and report the limitation; altered-tree results are not head "
         "evidence. Do not repair the tree with checkout, reset or stash and continue. "
         "If isolation is unavailable, report the unperformed comparison instead of editing "
