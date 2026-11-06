@@ -279,6 +279,7 @@ class PullRequestReviewer(GitHubRepository):
             workspace_instructions=workspace,
             github_token_secret=token,
             trigger_description=trigger_description,
+            reviewer_login=self.trigger_reviewer,
         )
         if label:
             moved_head_instruction = (
