@@ -64,6 +64,38 @@ MAX_NEW_PER_RUN = 2
 # approving or merging the PR.
 MAINTAINER_DECISION_VERDICT = "🛑 MAINTAINER DECISION REQUIRED"
 
+REVIEW_COMPLETION_CONTRACT = (
+    "Publication and completion contract:\n"
+    "- Before submitting the review, finish all checks, task-tracker updates and any "
+    "temporary-file cleanup that can be done without deleting the submission payload. "
+    "Leave that payload for workspace teardown; cleanup is never a post-submit task. "
+    "Do not record publication as successful in advance.\n"
+    "- Read the submission response in the submitting invocation. Do not chain cleanup "
+    "or other work after the POST.\n"
+    "Choose exactly one outcome using this task's actions:\n"
+    "- DUPLICATE SKIP: when the existing-review rule applies, publish nothing. "
+    "End with the earlier verdict as still current and state that this task "
+    "published no new review. An earlier accepted review is not a new publication.\n"
+    "- MOVED-HEAD SKIP: publish nothing. End by reporting that the requested head "
+    "changed and follow the intake-specific instruction. "
+    "Do not emit the success token for either skip, even as an explanation.\n"
+    "- NEW PUBLICATION: only a successful submission response for a new native review "
+    "submitted during this task selects this outcome, including an accepted scope-stop "
+    "or permitted fallback. The next action must end this turn. "
+    "No terminal, task tracker, browser, or file tools; no follow-up verification, "
+    "cleanup, bookkeeping, handoff or second publication.\n"
+    "If finish is available, call it exactly once with message exactly "
+    "GITHUB_REVIEW_POSTED, with no accompanying assistant text or other tool calls. "
+    "Only if finish is unavailable, output that token once as the entire final response: "
+    "no summary, URL, verdict, Markdown, or explanation. Do not repeat the token "
+    "or add role delimiters. Never use another tool to print it.\n"
+    "- PUBLICATION FAILURE: if publication still fails after the permitted fallback, "
+    "output the complete review text instead. End now with the prepared review text "
+    "as the final message (or finish message), not just a failure summary. "
+    "Do not make another submission attempt or perform more bookkeeping. "
+    "Never emit the success token on failure."
+)
+
 CONFIG_FILENAME = os.environ.get("AUTOMATION_CONFIG_PATH") or "config.json"
 
 # Config keys, paired with the type each must have. A wrong type is a hard
@@ -764,6 +796,7 @@ def _build_review_prompt(
     workspace_instructions: str | None = None,
     github_token_secret: str = "GITHUB_PERSONAL_ACCESS_TOKEN",
     trigger_description: str | None = None,
+    include_completion_contract: bool = True,
 ) -> str:
     number = pr.get("number", "?")
     title = pr.get("title", "(no title)")
@@ -869,9 +902,7 @@ def _build_review_prompt(
         "11. If there are no material issues, still publish a review saying so, with the "
         "disclosure and the verdict.\n"
         f"\nReview instructions:\n{tone}{extra}{guide_section}\n\n"
-        "After GitHub accepts the review, output exactly `GITHUB_REVIEW_POSTED`. "
-        "If publishing still fails after the fallback in step 8, output the complete review text "
-        "so it can be posted as a comment instead."
+        + (REVIEW_COMPLETION_CONTRACT if include_completion_contract else "")
     )
 
 
