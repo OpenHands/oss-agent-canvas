@@ -244,6 +244,21 @@ def discover(context, output):
     return receipt
 
 
+def links_to(origin, target):
+    body = origin["body"]
+    if re.search(re.escape(target["url"]) + r"(?![\w])", body, re.I):
+        return True
+    match = RESOURCE.fullmatch(target["url"])
+    if not match:
+        return False
+    qualified = re.escape(match[1]) + "#" + match[3] + r"\b"
+    if re.search(r"(?<![\w/])" + qualified, body, re.I):
+        return True
+    return origin["repository"].casefold() == match[1].casefold() and bool(
+        re.search(r"(?<![\w/#])#" + match[3] + r"\b", body)
+    )
+
+
 def link_errors(resources):
     issues = [r for r in resources if r["kind"] == "issues" and r["state"] == "open"]
     prs = [r for r in resources if r["kind"] == "pull" and r["state"] == "open"]
@@ -278,15 +293,15 @@ def link_errors(resources):
             if (
                 can_link(issue, other)
                 and other["url"] != issue["url"]
-                and other["url"] not in issue["body"]
+                and not links_to(issue, other)
             ):
                 problems.append(f"{issue['url']} does not link {other['url']}")
         for pr in prs:
-            if can_link(issue, pr) and pr["url"] not in issue["body"]:
+            if can_link(issue, pr) and not links_to(issue, pr):
                 problems.append(f"{issue['url']} does not link {pr['url']}")
     for pr in prs:
         if not any(
-            issue["repository"] == pr["repository"] and issue["url"] in pr["body"]
+            issue["repository"] == pr["repository"] and links_to(pr, issue)
             for issue in issues
         ):
             problems.append(f"{pr['url']} does not link its repository's topic issue")

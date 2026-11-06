@@ -420,3 +420,24 @@ def test_upstream_recurrence_history_is_discovered_without_a_previous_repair():
         "Acme/app",
         "Upstream/sdk",
     ]
+
+
+def test_standard_github_issue_references_are_valid_links():
+    rows = resources()
+    for row in rows:
+        row["body"] = (
+            "Related: Example/automation#1, Example/sdk#1, Example/automation#2, Example/sdk#2"
+        )
+    assert topic_agent.link_errors(rows) == []
+    own_issue = rows[0]
+    local_pr = next(
+        r
+        for r in rows
+        if r["repository"] == own_issue["repository"] and r["kind"] == "pull"
+    )
+    local_pr["body"] = "See issue #1 for the problem and evidence."
+    assert topic_agent.links_to(local_pr, own_issue)
+    local_pr["body"] = "Unrelated #10 or Other/repo#1"
+    assert not topic_agent.links_to(local_pr, own_issue)
+    local_pr["body"] = "Evidence: https://github.com/Example/automation/issues/10"
+    assert not topic_agent.links_to(local_pr, own_issue)
