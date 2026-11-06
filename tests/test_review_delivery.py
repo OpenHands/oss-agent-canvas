@@ -81,7 +81,7 @@ class ConversationBoundary:
 
 class DeliveryTests(unittest.TestCase):
     def execute(self, outcomes, *, status="idle", record=None, check=None,
-                deadline=900, fresh_delivery=False):
+                deadline=900, fresh_delivery=False, reserve_attempt=None):
         results = []
         for scripts in SCRIPTS:
             conversation = ConversationBoundary(outcomes, status)
@@ -94,6 +94,7 @@ class DeliveryTests(unittest.TestCase):
                 check or (lambda: "published" if conversation.published else "pending"),
                 state, lambda: saved.append(dict(state)), deadline,
                 clock=clock, sleep=clock.sleep, fresh_delivery=fresh_delivery,
+                reserve_attempt=reserve_attempt,
             )
             results.append((result, conversation, clock, state, saved))
         return results
@@ -186,6 +187,14 @@ class DeliveryTests(unittest.TestCase):
     def test_exhausted_delivery_cannot_reset_budget(self):
         for result, conversation, _, record, _ in self.execute(
             [], record={"attempts": 3}
+        ):
+            self.assertEqual(result, "incomplete")
+            self.assertEqual(conversation.runs, 0)
+            self.assertEqual(record["reason"], "attempts-exhausted")
+
+    def test_shared_reservation_can_reject_a_stale_local_budget(self):
+        for result, conversation, _, record, _ in self.execute(
+            [], record={"attempts": 0}, reserve_attempt=lambda: 4
         ):
             self.assertEqual(result, "incomplete")
             self.assertEqual(conversation.runs, 0)

@@ -37,7 +37,8 @@ def delivery_lock(key):
 
 
 def complete_review(conversation, check_delivery, record, save, deadline, *,
-                    fresh_delivery=False, clock=time.monotonic, sleep=time.sleep):
+                    fresh_delivery=False, reserve_attempt=None,
+                    clock=time.monotonic, sleep=time.sleep):
     """Resume only transient errors; keep the existing history and retry budget."""
     def finish(outcome, reason):
         record.update(outcome=outcome, reason=reason)
@@ -85,7 +86,11 @@ def complete_review(conversation, check_delivery, record, save, deadline, *,
                                   else "incomplete", verdict)
             if clock() >= deadline:
                 return finish("incomplete", "deadline-exhausted")
-            record.update(attempts=attempts + 1, outcome="pending", reason="")
+            reserved = reserve_attempt() if reserve_attempt else attempts + 1
+            if reserved > MAX_ATTEMPTS:
+                return finish("incomplete", "attempts-exhausted")
+            record.update(attempts=max(attempts + 1, reserved),
+                          outcome="pending", reason="")
             save()
             if clock() >= deadline:
                 return finish("incomplete", "deadline-exhausted")

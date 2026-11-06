@@ -179,12 +179,23 @@ class AgentConversationDispatcher:
                 def save():
                     _kv_request(state_key, "PUT", record)
 
+                counter_key = "review-attempts-" + str(uuid5(
+                    conversation_id, head or delivery
+                ))
+                if _kv_request(counter_key, "GET") is None:
+                    _kv_request(counter_key + "/incr", "POST",
+                                {"by": record["attempts"]})
+
+                def reserve_attempt():
+                    return _kv_request(counter_key + "/incr", "POST", {"by": 1})["value"]
+
                 save()
                 conversation.update_secrets(self._secrets)
                 outcome = complete_review(
                     conversation, check_delivery, record, save,
                     self._delivery_deadline,
                     fresh_delivery=record.pop("fresh_delivery", False),
+                    reserve_attempt=reserve_attempt,
                 )
                 return {
                     "disposition": disposition,
