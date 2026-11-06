@@ -97,8 +97,8 @@ def _fallback(payload, rejection):
         for error in errors
     ):
         raise rejection
-    body = payload["body"].rstrip()
-    assessment, verdict = body.rsplit("\n", 1)
+    lines = payload["body"].rstrip().splitlines()
+    assessment, verdict = "\n".join(lines[:-1]), lines[-1]
     findings = "\n\n".join(
         f"{comment['path']}:{comment['line']}\n{comment['body']}"
         for comment in payload["comments"]

@@ -191,6 +191,18 @@ class PublicationTests(unittest.TestCase):
             self.publish(payload)
         self.assertEqual(len(self.api.posts), 2)
 
+    def test_inline_fallback_handles_every_accepted_line_separator(self):
+        rejection = self.module.Rejected(422, {"errors": [
+            {"resource": "PullRequestReviewComment", "field": "line"}]})
+        for separator in ["\n", "\r\n", "\r"]:
+            payload = self.payload(event="COMMENT", body=BODY.replace("\n", separator),
+                                   comments=[{"path": "file.py", "line": 1, "side": "RIGHT", "body": "Defect."}])
+            self.module.validate_payload(payload, HEAD)
+            fallback = self.module._fallback(payload, rejection)
+            self.module.validate_payload(fallback, HEAD)
+            self.assertIn("Defect.", fallback["body"])
+            self.assertTrue(fallback["body"].endswith("✅ APPROVED"))
+
     def test_other_rejections_do_not_retry(self):
         for status in [403, 422, 500]:
             self.receipt.unlink(missing_ok=True)
