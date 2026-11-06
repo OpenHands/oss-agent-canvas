@@ -480,3 +480,46 @@ not that any recovered lead is a confirmed defect or a successful repair.
 
 Earlier [validation reports](TOPIC_VALIDATION.md) concern previous versions and
 should not be treated as validation of this architecture.
+
+## Repair-scope validation — 2026-11-06
+
+Two independent native-agent runs used the same saved **63 production findings
+across ten automations**, with live private Laminar reads and fresh issues/PRs.
+Each selected five topics. Customer-only mode created five PRs in its one configured
+repository; broader mode created four there and one in the SDK. All ten carry
+`automation-improvement`. Independent review accepted five; five remain draft.
+
+| Scope | Output | Reviewed outcome |
+| --- | --- | --- |
+| Customer | [#132](https://github.com/OpenHands/oss-agent-canvas/pull/132) | Ready: safe diagnostic preparation removes captured credential values while retaining useful flags; 14 independent focused tests pass. |
+| Customer / broader | [#130](https://github.com/OpenHands/oss-agent-canvas/pull/130), [#134](https://github.com/OpenHands/oss-agent-canvas/pull/134) | Ready alternative publication safeguards: three captured empty-body accepts become zero; readable controls remain intact. Choose one variant. |
+| Broader | [#135](https://github.com/OpenHands/oss-agent-canvas/pull/135) | Ready: verify required triage updates before acknowledging completion or suppressing retries; 16 focused tests pass. |
+| Broader | [SDK #6552](https://github.com/OpenHands/software-agent-sdk/pull/6552) | Ready regression coverage for instrumented stream-startup retries. Tests only; it does not deploy a runtime fix. Deployment/application prerequisites remain explicit. |
+| Customer | [#129](https://github.com/OpenHands/oss-agent-canvas/pull/129) | Draft: provider-interrupted review was retried; reporting replays still lack valid paired behavior/control evidence. |
+| Customer | [#131](https://github.com/OpenHands/oss-agent-canvas/pull/131) | Draft: fixture permissions, SDK isolation and incomplete reconstructions prevent a valid workspace-behavior comparison. |
+| Customer | [#136](https://github.com/OpenHands/oss-agent-canvas/pull/136) | Draft: an independently reproduced clarified-request regression remains after the bounded revision. |
+| Broader | [#128](https://github.com/OpenHands/oss-agent-canvas/pull/128) | Draft: the exhausted-publication path still attempts a forbidden extra submission. |
+| Broader | [#133](https://github.com/OpenHands/oss-agent-canvas/pull/133) | Draft: some reporting improves, but delivered bodies retain factual errors and a control regression. |
+
+These are scoped projections, real loopback/SDK checks and regression tests—not
+complete historical-task replays. Exact historical environments, missing controls,
+shared inherited suite failures and CI/human requirements remain visible in each
+PR. Ready means ready for human review. The two QC runs intentionally excluded
+previous and parallel prototype outputs; their publication variants overlap.
+
+**338 local tests pass.** Coverage includes scope propagation through resumed
+repairs, out-of-scope output/recovery holds, private/public link handling, complete
+private evidence indexes, standard GitHub issue references, verified new existing
+work and history discovery without widening customer scope. Live readback checks
+all ten PRs, comments and patches against scope, links, known worker credentials
+and captured editor-token values.
+
+The full repair runs started on `2be890a`. Follow-up privacy/discovery fixes were
+validated through the local suite, native latest-code triage checks, an additional
+native review and live GitHub readback/probes. Latest triage checks used the full
+63 findings for customer-only mode and a deterministic 12-finding sample for
+broader mode; a full broader preview timeout is retained in private receipts.
+The original repair cohorts were not replaced. Native inference for the two full
+runs was approximately **$76.61**; standalone projections and supplementary checks
+are outside that accounting. Both runs ended within their configured guards.
+Scheduled workers, production settings and deployments were unchanged.

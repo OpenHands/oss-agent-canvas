@@ -6,6 +6,7 @@
   "llm_base_url": "https://llm-proxy.eval.all-hands.dev",
   "automation_api_url": "http://127.0.0.1:8000/api/automation",
   "repository": "OpenHands/oss-agent-canvas",
+  "repair_scope": "customer_stack",
   "checkout": "/private/existing-canonical-repository",
   "base_branch": "main",
   "github_token_secret": "GITHUB_TOKEN",
@@ -35,16 +36,7 @@
   "max_topics_per_run": 10,
   "max_repair_attempts": 2,
   "repair_concurrency": 10,
-  "repositories": {
-    "OpenHands/software-agent-sdk": {
-      "checkout": "/private/existing-canonical-software-agent-sdk",
-      "base_branch": "main"
-    },
-    "OpenHands/extensions": {
-      "checkout": "/private/existing-canonical-extensions",
-      "base_branch": "main"
-    }
-  },
+  "repositories": {},
   "review_agent_profile": null,
   "review_model": "openai/gpt-6.1-sol",
   "review_agent": {
@@ -52,6 +44,5 @@
     "max_iterations": 80,
     "max_run_seconds": 900,
     "max_output_tokens": 16384
-  },
-  "repair_scope": "customer_stack"
+  }
 }
