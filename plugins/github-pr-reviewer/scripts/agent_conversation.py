@@ -20,7 +20,7 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm.message import TextContent
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
-from review_delivery import DELIVERY_BUDGET, complete_review
+from review_delivery import DELIVERY_BUDGET, MAX_ATTEMPTS, complete_review
 
 _CONVERSATION_KEY_PREFIX = "agent-conversation-"
 
@@ -104,19 +104,9 @@ class AgentConversationDispatcher:
         head: str = "",
         metadata: dict[str, str | int] | None = None,
         check_delivery: Callable[[], str] | None = None,
+        allow_same_head_refresh: bool = False,
     ) -> dict:
-        """Deliver one revision of `subject`, deduping a repeated head.
-
-        `delivery` keys the revision: a second trigger for the same revision
-        reuses the conversation without a new turn, and a changed head becomes a
-        new delivery. `head` is the revision's commit, and it is the guard that
-        matters when two triggers name the same commit - a re-request after the
-        bot's own handoff, say - because a delivery key that only counts triggers
-        would send a second turn and publish a second review of identical code.
-        A conversation already running for this head is reported `in_progress`
-        and left alone, whatever the new delivery says. Callers with no revision
-        identity leave `head` empty and keep the delivery-key-only behavior.
-        """
+        """A clarified request may reuse a finished head, but not its spent budget."""
         if check_delivery is None:
             return self._dispatch(subject=subject, delivery=delivery, prompt=prompt,
                                   head=head, metadata=metadata)
@@ -127,10 +117,11 @@ class AgentConversationDispatcher:
                         "outcome": "incomplete", "reason": "delivery-active"}
             return self._dispatch(subject=subject, delivery=delivery, prompt=prompt,
                                   head=head, metadata=metadata,
-                                  check_delivery=check_delivery)
+                                  check_delivery=check_delivery,
+                                  allow_same_head_refresh=allow_same_head_refresh)
 
     def _dispatch(self, *, subject, delivery, prompt, head="", metadata=None,
-                  check_delivery=None):
+                  check_delivery=None, allow_same_head_refresh=False):
         conversation_id = uuid5(NAMESPACE_URL, f"{self.automation_id}:{subject}")
         state_key = f"{_CONVERSATION_KEY_PREFIX}{conversation_id}"
         record = _kv_request(state_key, "GET") or {}
@@ -166,36 +157,59 @@ class AgentConversationDispatcher:
         try:
             if check_delivery is not None:
                 status = conversation.state.refresh_from_server()["execution_status"]
-                if disposition == "resumed" and not (same_delivery or same_head):
-                    if status in ("running", "paused"):
+                verdict = check_delivery()
+                if verdict != "pending":
+                    return {
+                        "disposition": disposition,
+                        "conversation_id": str(conversation_id),
+                        "outcome": "published" if verdict == "published" else
+                                   "superseded" if verdict == "superseded" else "incomplete",
+                        "reason": verdict,
+                        "attempts": record.get("attempts", 0),
+                    }
+                if disposition == "resumed" and not same_delivery and status in (
+                    "running", "paused"
+                ):
+                    return {
+                        "disposition": disposition,
+                        "conversation_id": str(conversation_id),
+                        "outcome": "incomplete",
+                        "reason": "previous-delivery-active",
+                    }
+                counter_key = "review-attempts-" + str(uuid5(
+                    conversation_id, head or delivery
+                ))
+                counter = _kv_request(counter_key, "GET")
+                if counter is None:
+                    attempts = record.get("attempts", int(status in ("running", "error")))
+                    counter = _kv_request(counter_key + "/incr", "POST", {
+                        "by": attempts if same_head or same_delivery else 0
+                    })["value"]
+                new_turn = disposition == "resumed" and not same_delivery and (
+                    not same_head or (allow_same_head_refresh and status == "finished")
+                )
+                if new_turn:
+                    if counter >= MAX_ATTEMPTS or time.monotonic() >= self._delivery_deadline:
                         return {
                             "disposition": disposition,
                             "conversation_id": str(conversation_id),
                             "outcome": "incomplete",
-                            "reason": "previous-delivery-active",
+                            "reason": "attempts-exhausted" if counter >= MAX_ATTEMPTS
+                                      else "deadline-exhausted",
+                            "attempts": counter,
                         }
                     conversation.send_message(prompt)
                     status = conversation.state.refresh_from_server()["execution_status"]
-                    record = {"fresh_delivery": True}
+                    record = {"fresh_delivery": True, "attempts": counter}
                 elif disposition == "created":
-                    record = {}
-                record.update(
-                    subject=subject, conversation_id=str(conversation_id),
-                    delivery=delivery, head=head,
-                )
-                if "attempts" not in record:
-                    record["attempts"] = 0 if record.get("fresh_delivery") else int(
-                        status in ("running", "error")
-                    )
+                    record = {"attempts": counter}
+                record.update(subject=subject, conversation_id=str(conversation_id))
+                if disposition == "created" or same_delivery or new_turn:
+                    record.update(delivery=delivery, head=head)
+                record.setdefault("attempts", counter)
+
                 def save():
                     _kv_request(state_key, "PUT", record)
-
-                counter_key = "review-attempts-" + str(uuid5(
-                    conversation_id, head or delivery
-                ))
-                if _kv_request(counter_key, "GET") is None:
-                    _kv_request(counter_key + "/incr", "POST",
-                                {"by": record["attempts"]})
 
                 def reserve_attempt():
                     return _kv_request(counter_key + "/incr", "POST", {"by": 1})["value"]

@@ -884,8 +884,14 @@ class PullRequestReviewer(GitHubRepository):
         Returns the reviewed head's latest submission time (for the log line) or
         None when the head should be reviewed.
         """
-        if not sha:
+        submitted_at = self._latest_reviewed_at(number, sha)
+        if not submitted_at or self._clarified_since(number, submitted_at):
             return None
+        return submitted_at
+
+    def _latest_reviewed_at(self, number, sha):
+        if not sha:
+            return ""
         submitted_at = ""
         for review in self.gh_pages(f"/pulls/{number}/reviews"):
             if review.get("commit_id") != sha:
@@ -897,11 +903,14 @@ class PullRequestReviewer(GitHubRepository):
             when = review.get("submitted_at") or ""
             if when > submitted_at:
                 submitted_at = when
-        if not submitted_at:
-            return None
-        if self._clarified_since(number, submitted_at):
-            return None
         return submitted_at
+
+    def _clarified_review_request(self, number, sha, trigger):
+        submitted_at = self._latest_reviewed_at(number, sha) if trigger else ""
+        return bool(
+            submitted_at and (trigger.get("created_at") or "") > submitted_at
+            and self._clarified_since(number, submitted_at)
+        )
 
     def _unrequested_head(self, pr):
         """The current-head delivery key for an unrequested PR, or None.
@@ -1181,6 +1190,9 @@ class PullRequestReviewer(GitHubRepository):
             prompt=self._prompt(pr, trigger, trigger_label, delivery_key),
             head=sha,
             metadata=metadata,
+            allow_same_head_refresh=self._clarified_review_request(
+                pr["number"], sha, trigger
+            ),
             check_delivery=lambda: self._review_delivery_state(
                 pr["number"], sha, trigger, trigger_label, delivery_key
             ),

@@ -1,9 +1,13 @@
 import importlib.util
 import sys
+import time
 import unittest
+from contextlib import contextmanager
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
-from uuid import uuid4
+from unittest.mock import patch
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
@@ -232,8 +236,10 @@ class DeliveryTests(unittest.TestCase):
             self.assertEqual(record["reason"], "unconfirmed-error")
 
     def test_plugin_copies_match(self):
-        self.assertEqual((SCRIPTS[0] / "review_delivery.py").read_bytes(),
-                         (SCRIPTS[1] / "review_delivery.py").read_bytes())
+        for filename in ("review_delivery.py", "agent_conversation.py", "worker.py"):
+            with self.subTest(filename=filename):
+                self.assertEqual((SCRIPTS[0] / filename).read_bytes(),
+                                 (SCRIPTS[1] / filename).read_bytes())
 
 
 class PublicationTests(unittest.TestCase):
@@ -323,6 +329,354 @@ class PublicationTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 intake.drain()
             self.assertEqual(len(calls), 1)
+
+
+class DispatchConversationBoundary(ConversationBoundary):
+    def __init__(self, outcomes, status="finished"):
+        super().__init__(outcomes, status)
+        self.prompts = []
+        self.trace = []
+        self.closed = 0
+
+    def refresh(self):
+        return {"execution_status": self.status}
+
+    def send_message(self, prompt):
+        self.trace.append("prompt")
+        self.prompts.append(prompt)
+        self.status = "idle"
+
+    def update_secrets(self, secrets):
+        assert secrets == {}
+
+    def close(self):
+        self.closed += 1
+
+
+class KVBoundary:
+    def __init__(self, values):
+        self.values = deepcopy(values)
+        self.calls = []
+
+    def __call__(self, key, method, value=None):
+        assert key.startswith(("agent-conversation-", "review-attempts-",
+                               "review-delivery-claim-"))
+        self.calls.append((key, method, deepcopy(value)))
+        if method == "GET":
+            assert value is None
+            return deepcopy(self.values.get(key))
+        if method == "PUT":
+            assert key.startswith("agent-conversation-")
+            assert isinstance(value, dict)
+            self.values[key] = deepcopy(value)
+            return {"value": deepcopy(value)}
+        assert method == "POST" and key.endswith(("/incr", "/decr"))
+        assert set(value) == {"by"} and isinstance(value["by"], int)
+        base, operation = key.rsplit("/", 1)
+        self.values[base] = self.values.get(base, 0) + (
+            value["by"] if operation == "incr" else -value["by"]
+        )
+        return {"value": self.values[base]}
+
+
+class DispatcherTests(unittest.TestCase):
+    workers = PublicationTests.workers
+
+    # Remote conversation, GitHub and KV doubles avoid production network/writes;
+    # dispatcher, complete_review and SDK error classification are not replaced.
+    @contextmanager
+    def boundary(self, worker, *, status="finished", attempts=1, outcomes=()):
+        module = sys.modules["agent_conversation"]
+        dispatcher = module.AgentConversationDispatcher.__new__(
+            module.AgentConversationDispatcher
+        )
+        dispatcher.automation_id = "isolated-test"
+        dispatcher.profile_id = UUID(int=1)
+        dispatcher._workspace = object()
+        dispatcher._secrets = {}
+        dispatcher._delivery_deadline = time.monotonic() + 900
+        conversation_id = uuid5(NAMESPACE_URL, "isolated-test:repo:pr:1")
+        state_key = "agent-conversation-" + str(conversation_id)
+        counter_key = "review-attempts-" + str(uuid5(conversation_id, "head"))
+        previous = {"subject": "repo:pr:1", "conversation_id": str(conversation_id),
+                    "delivery": "old", "head": "head", "attempts": attempts,
+                    "outcome": "published", "reason": "review-verified"}
+        kv = KVBoundary({state_key: previous, counter_key: attempts})
+        conversation = DispatchConversationBoundary(outcomes, status)
+
+        class RemoteBoundary:
+            @staticmethod
+            def attach(workspace, identity, *, visualizer):
+                assert workspace is dispatcher._workspace
+                assert identity == conversation_id and visualizer is None
+                return conversation
+
+            @staticmethod
+            def create(*args, **kwargs):
+                raise AssertionError("Existing conversation must be reused")
+
+        with patch.object(module, "_kv_request", kv), patch.object(
+            module, "RemoteConversation", RemoteBoundary
+        ):
+            yield dispatcher, conversation, kv, state_key, counter_key
+
+    @staticmethod
+    def dispatch(dispatcher, conversation, *, delivery="new", head="head",
+                 allow=None, verdict=None):
+        def check():
+            conversation.trace.append("check")
+            return verdict or ("published" if conversation.published else "pending")
+
+        kwargs = {} if allow is None else {"allow_same_head_refresh": allow}
+        return dispatcher.deliver(subject="repo:pr:1", delivery=delivery,
+                                  prompt="Clarified review request", head=head,
+                                  check_delivery=check, **kwargs)
+
+    def test_finished_clarified_request_sends_one_fresh_prompt(self):
+        for worker in self.workers():
+            with self.subTest(plugin=worker.__file__), self.boundary(
+                worker, outcomes=["published"]
+            ) as (dispatcher, conversation, kv, key, counter):
+                result = self.dispatch(dispatcher, conversation, allow=True)
+                self.assertEqual(result["outcome"], "published")
+                self.assertEqual(len(conversation.prompts), 1)
+                self.assertEqual(conversation.runs, 1)
+                self.assertLess(conversation.trace.index("check"),
+                                conversation.trace.index("prompt"))
+                self.assertEqual(kv.values[key]["delivery"], "new")
+                self.assertEqual(kv.values[counter], 2)
+                self.assertEqual(conversation.closed, 1)
+
+    def test_changed_trigger_without_flag_preserves_previous_identity(self):
+        for worker in self.workers():
+            with self.subTest(plugin=worker.__file__), self.boundary(worker) as state:
+                dispatcher, conversation, kv, key, counter = state
+                self.dispatch(dispatcher, conversation)
+                self.assertEqual(conversation.prompts, [])
+                self.assertEqual(conversation.runs, 0)
+                self.assertEqual(kv.values[key]["delivery"], "old")
+                self.assertEqual(kv.values[counter], 1)
+
+    def test_same_delivery_is_duplicate_even_with_refresh_permission(self):
+        for worker in self.workers():
+            with self.subTest(plugin=worker.__file__), self.boundary(worker) as state:
+                dispatcher, conversation, kv, key, counter = state
+                self.dispatch(dispatcher, conversation, delivery="old")
+                self.dispatch(dispatcher, conversation, delivery="old", allow=True)
+                self.assertEqual(conversation.prompts, [])
+                self.assertEqual(conversation.runs, 0)
+                self.assertEqual(kv.values[counter], 1)
+
+    def test_publication_is_checked_before_any_fresh_prompt(self):
+        for worker in self.workers():
+            with self.subTest(plugin=worker.__file__), self.boundary(worker) as state:
+                dispatcher, conversation, kv, key, counter = state
+                result = self.dispatch(dispatcher, conversation, allow=True,
+                                       verdict="published")
+                self.assertEqual(result["outcome"], "published")
+                self.assertEqual(conversation.prompts, [])
+                self.assertEqual(conversation.runs, 0)
+                self.assertEqual(kv.values[key]["delivery"], "old")
+                self.assertEqual(kv.values[counter], 1)
+
+    def test_active_owner_is_never_reprompted_or_reidentified(self):
+        for worker in self.workers():
+            for status in ("running", "paused"):
+                for allow in (False, True):
+                    with self.subTest(plugin=worker.__file__, status=status,
+                                      allow=allow), self.boundary(
+                        worker, status=status
+                    ) as (dispatcher, conversation, kv, key, counter):
+                        result = self.dispatch(dispatcher, conversation, allow=allow)
+                        self.assertEqual(result["outcome"], "incomplete")
+                        self.assertEqual(conversation.prompts, [])
+                        self.assertEqual(conversation.runs, 0)
+                        self.assertEqual(kv.values[key]["delivery"], "old")
+                        self.assertEqual(kv.values[counter], 1)
+
+    def test_changed_head_still_gets_a_new_turn_and_its_own_budget(self):
+        for worker in self.workers():
+            with self.subTest(plugin=worker.__file__), self.boundary(
+                worker, attempts=3, outcomes=["published"]
+            ) as (dispatcher, conversation, kv, key, counter):
+                result = self.dispatch(dispatcher, conversation, head="new-head")
+                self.assertEqual(result["outcome"], "published")
+                self.assertEqual(len(conversation.prompts), 1)
+                self.assertEqual(conversation.runs, 1)
+                self.assertEqual(kv.values[key]["head"], "new-head")
+                self.assertEqual(kv.values[counter], 3)
+
+    def test_clarifications_share_remaining_atomic_head_budget(self):
+        for worker in self.workers():
+            with self.subTest(plugin=worker.__file__), self.boundary(
+                worker, outcomes=["published", "published"]
+            ) as (dispatcher, conversation, kv, key, counter):
+                for delivery in ("new", "newer"):
+                    conversation.published = False
+                    result = self.dispatch(dispatcher, conversation,
+                                           delivery=delivery, allow=True)
+                    self.assertEqual(result["outcome"], "published")
+                self.assertEqual(kv.values[counter], 3)
+                conversation.published = False
+                result = self.dispatch(dispatcher, conversation,
+                                       delivery="exhausted", allow=True)
+                self.assertEqual(result["outcome"], "incomplete")
+                self.assertEqual(result["reason"], "attempts-exhausted")
+                self.assertEqual(len(conversation.prompts), 2)
+                self.assertEqual(conversation.runs, 2)
+                self.assertEqual(kv.values[key]["delivery"], "newer")
+                reservations = [call for call in kv.calls
+                                if call[:2] == (counter + "/incr", "POST")]
+                self.assertGreaterEqual(len(reservations), 2)
+
+    def test_exhausted_head_does_not_send_prompt_or_overwrite_delivery(self):
+        for worker in self.workers():
+            with self.subTest(plugin=worker.__file__), self.boundary(
+                worker, attempts=3
+            ) as (dispatcher, conversation, kv, key, counter):
+                result = self.dispatch(dispatcher, conversation, allow=True)
+                self.assertEqual(result["reason"], "attempts-exhausted")
+                self.assertEqual(conversation.prompts, [])
+                self.assertEqual(conversation.runs, 0)
+                self.assertEqual(kv.values[key]["delivery"], "old")
+
+    def test_clarified_delivery_classifies_real_sdk_errors_without_resetting_budget(self):
+        for worker in self.workers():
+            for code, reason in (("LLMServiceUnavailableError", "attempts-exhausted"),
+                                 ("LLMAuthenticationError", "non-transient-error")):
+                with self.subTest(plugin=worker.__file__, code=code), self.boundary(
+                    worker, attempts=2, outcomes=[code]
+                ) as (dispatcher, conversation, kv, key, counter):
+                    result = self.dispatch(dispatcher, conversation, allow=True)
+                    self.assertEqual(result["outcome"], "incomplete")
+                    self.assertEqual(result["reason"], reason)
+                    self.assertEqual(conversation.runs, 1)
+                    self.assertEqual(len(conversation.prompts), 1)
+                    self.assertEqual(kv.values[counter], 3)
+                    self.assertEqual(kv.values[key]["delivery"], "new")
+
+    def test_atomic_counter_exhaustion_beats_stale_local_attempts(self):
+        for worker in self.workers():
+            with self.subTest(plugin=worker.__file__), self.boundary(
+                worker, attempts=0
+            ) as (dispatcher, conversation, kv, key, counter):
+                kv.values[counter] = 3
+                result = self.dispatch(dispatcher, conversation, allow=True)
+                self.assertEqual(result["reason"], "attempts-exhausted")
+                self.assertEqual(conversation.prompts, [])
+                self.assertEqual(conversation.runs, 0)
+                self.assertEqual(kv.values[key]["delivery"], "old")
+
+    def test_contended_delivery_claim_does_not_admit_a_refresh(self):
+        for worker in self.workers():
+            with self.subTest(plugin=worker.__file__), self.boundary(worker) as state:
+                dispatcher, conversation, kv, key, counter = state
+                claim = "review-delivery-claim-" + key.removeprefix("agent-conversation-")
+                kv.values[claim] = 1
+                result = self.dispatch(dispatcher, conversation, allow=True)
+                self.assertEqual(result["reason"], "delivery-active")
+                self.assertEqual(conversation.prompts, [])
+                self.assertEqual(conversation.runs, 0)
+                self.assertEqual(kv.values[key]["delivery"], "old")
+                self.assertEqual(kv.values[counter], 1)
+                self.assertEqual(kv.values[claim], 1)
+
+    def test_clarification_after_rejected_trigger_can_admit_that_same_trigger(self):
+        for worker in self.workers():
+            with self.subTest(plugin=worker.__file__), self.boundary(
+                worker, outcomes=["published"]
+            ) as (dispatcher, conversation, kv, key, counter):
+                self.dispatch(dispatcher, conversation, allow=False)
+                self.assertEqual(kv.values[key]["delivery"], "old")
+                result = self.dispatch(dispatcher, conversation, allow=True)
+                self.assertEqual(result["outcome"], "published")
+                self.assertEqual(len(conversation.prompts), 1)
+                self.assertEqual(conversation.runs, 1)
+
+
+class WorkerClarificationTests(unittest.TestCase):
+    workers = PublicationTests.workers
+    review = staticmethod(PublicationTests.review)
+
+    def reviewer(self, module, reviews, comments):
+        reviewer = module.PullRequestReviewer.__new__(module.PullRequestReviewer)
+        reviewer.config = {}
+        reviewer.github_login = "review-bot"
+        reviewer.repository = "test/repo"
+        reviewer.token_name = "ISOLATED_GITHUB_TOKEN"
+
+        def pages(path):
+            if path == "/pulls/1/reviews":
+                return list(reviews)
+            if path == "/issues/1/comments":
+                return list(comments)
+            raise AssertionError("Unexpected GitHub read: " + path)
+
+        reviewer.gh_pages = pages
+        return reviewer
+
+    def test_latest_authenticated_current_head_review_is_used(self):
+        for module in self.workers():
+            reviews = [self.review(submitted_at="2026-01-01T00:03:00Z"),
+                       self.review(submitted_at="2026-01-01T00:01:00Z"),
+                       self.review(commit_id="other", submitted_at="2026-01-01T00:09:00Z"),
+                       self.review(user={"login": "human"},
+                                   submitted_at="2026-01-01T00:10:00Z")]
+            reviewer = self.reviewer(module, reviews, [])
+            self.assertEqual(reviewer._latest_reviewed_at(1, "head"),
+                             "2026-01-01T00:03:00Z")
+            self.assertFalse(reviewer._latest_reviewed_at(1, "missing"))
+
+    def test_clarified_request_routing_and_start_review_flag(self):
+        prior = self.review()
+        latest = self.review(submitted_at="2026-01-01T00:03:00Z")
+        trigger = {"id": 2, "created_at": "2026-01-01T00:04:00Z"}
+        comment = {"user": {"login": "author"},
+                   "created_at": "2026-01-01T00:02:00Z"}
+        cases = [
+            ("clarified", [prior], [comment], trigger, True),
+            ("no-comment", [prior], [], trigger, False),
+            ("no-prior-review", [], [comment], trigger, False),
+            ("clarification-arrives-after-request", [prior],
+             [dict(comment, created_at="2026-01-01T00:05:00Z")], trigger, True),
+            ("comment-at-review-time", [prior],
+             [dict(comment, created_at=prior["submitted_at"])], trigger, False),
+            ("request-at-review-time", [prior], [comment],
+             {"id": 2, "created_at": prior["submitted_at"]}, False),
+            ("older-than-latest-review", [prior, latest], [comment], trigger, False),
+            ("reviewer-own-comment", [prior],
+             [dict(comment, user={"login": "REVIEW-BOT"})], trigger, False),
+            ("trigger-account-comment", [prior],
+             [dict(comment, user={"login": "all-hands-bot"})], trigger, False),
+            ("scan", [prior], [comment], None, False),
+            ("missing-trigger-time", [prior], [comment], {"id": 2}, False),
+            ("request-before-review", [prior], [comment],
+             {"id": 2, "created_at": "2026-01-01T00:00:00Z"}, False),
+            ("newer-accepted-review", [prior, self.review(
+                submitted_at="2026-01-01T00:05:00Z")], [comment], trigger, False),
+        ]
+        for module in self.workers():
+            for name, reviews, comments, request, expected in cases:
+                with self.subTest(plugin=module.__file__, case=name):
+                    reviewer = self.reviewer(module, reviews, comments)
+                    self.assertEqual(reviewer._clarified_review_request(
+                        1, "head", request), expected)
+                    captured = []
+
+                    class DispatcherBoundary:
+                        def deliver(self, **kwargs):
+                            captured.append(kwargs)
+                            return {"disposition": "resumed", "conversation_id": "test",
+                                    "outcome": "published", "reason": "review-verified"}
+
+                    reviewer.dispatcher = DispatcherBoundary()
+                    pr = {"number": 1, "head": {"sha": "head"},
+                          "title": "Isolated test", "body": "", "user": {"login": "author"},
+                          "html_url": "https://example.invalid/test/repo/pull/1"}
+                    reviewer._start_review("repo", pr, request, "head", None,
+                                           "scan:test/repo:1:head" if request is None else None)
+                    self.assertEqual(captured[0]["allow_same_head_refresh"], expected)
+                    self.assertEqual(captured[0]["head"], "head")
 
 
 if __name__ == "__main__":
