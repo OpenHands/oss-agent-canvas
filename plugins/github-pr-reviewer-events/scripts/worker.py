@@ -1,16 +1,20 @@
 """Select requested PR heads and delegate each review to a sandboxed agent."""
 
+import hashlib
 import json
 import os
 import re
+import shlex
 import sys
 from functools import cached_property
+from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import quote
 
 import main as workflow
 from agent_conversation import AgentConversationDispatcher
 from github_client import GitHubRepository, run_repositories
+from publish_review import payload_path, validate_payload
 from maintainer_handoff import (
     HandoffConfigurationError,
     parse_maintainers,
@@ -39,6 +43,8 @@ NON_BLOCKING_CHECK_CONCLUSIONS = frozenset({"success", "neutral", "skipped"})
 SCAN_WINDOW = 10
 # The gate is deterministic; this disclosure is what tells a reader no model ran.
 WORKFLOW_DISCLOSURE = "no AI was used to generate this comment"
+PUBLISHER_SOURCE = Path(__file__).with_name("publish_review.py")
+PUBLISHER_PATH = f"/tmp/openhands-publish-review-{hashlib.sha256(PUBLISHER_SOURCE.read_bytes()).hexdigest()[:16]}.py"
 
 
 class ReviewIntake:
@@ -271,6 +277,8 @@ class PullRequestReviewer(GitHubRepository):
                 f"latest review request for `{self.trigger_reviewer}` "
                 f"event {trigger.get('id', '?')} at {trigger.get('created_at', '?')}"
             )
+        delivery = delivery_key or f"{trigger['id']}:{sha}"
+        publication_payload = payload_path(self.repository, number, sha, delivery)
         prompt = workflow._build_review_prompt(
             self.repository,
             pr,
@@ -279,6 +287,13 @@ class PullRequestReviewer(GitHubRepository):
             workspace_instructions=workspace,
             github_token_secret=token,
             trigger_description=trigger_description,
+            publication_payload_path=publication_payload,
+            publication_command=shlex.join([
+                "python3", PUBLISHER_PATH, "--repository", self.repository,
+                "--number", str(number), "--head", sha,
+                "--delivery", delivery,
+                "--token-env", token, "--payload", publication_payload,
+            ]),
         )
         if label:
             moved_head_instruction = (
@@ -322,7 +337,10 @@ class PullRequestReviewer(GitHubRepository):
             "modify tracked files.\n"
             "- Before publishing anything, read the PR's existing reviews and "
             "comments on GitHub. If this account has already published a review on "
-            f"`{sha}` and no one else has commented since that review, do NOT "
+            f"`{sha}`, first verify that it has an assessment, disclosure and verdict. "
+            "If it is empty, incomplete or pending, report an unverified publication to "
+            "the operator and stop without a replacement. If it is complete and no one "
+            "else has commented since that review, do NOT "
             "publish a second review and do NOT start another review pass: another "
             "review of identical code is a duplicate. Report the earlier verdict as "
             "still current and stop. Review the head again only when the head has "
@@ -338,7 +356,7 @@ class PullRequestReviewer(GitHubRepository):
             f"- {trigger_completion} after completing any configured "
             "human-review handoff. Never paste JSON artifacts or full command logs "
             "into comments.\n"
-            "- Once GitHub accepts the native review, stop immediately. Do not "
+            "- Once the publisher verifies the native review, stop immediately. Do not "
             "continue inspecting the repository, run more commands, or publish a "
             f"second result.{self_review_note}"
         )
@@ -400,6 +418,7 @@ class PullRequestReviewer(GitHubRepository):
         for review in sorted(
             completed, key=lambda item: item["submitted_at"], reverse=True
         ):
+            self._require_complete_review(review, head_sha)
             body = (review.get("body") or "").rstrip()
             if body.endswith("✅ APPROVED"):
                 approved = True
@@ -836,12 +855,23 @@ class PullRequestReviewer(GitHubRepository):
         what the completion handler reconciles, so a review this scan starts and
         a review it finds already present are the same set.
         """
-        return any(
-            review.get("commit_id") == sha
-            and ((review.get("user") or {}).get("login") or "").lower()
-            == self.github_login.lower()
-            for review in self.gh_pages(f"/pulls/{number}/reviews")
-        )
+        found = False
+        for review in self.gh_pages(f"/pulls/{number}/reviews"):
+            if (review.get("commit_id") == sha
+                    and ((review.get("user") or {}).get("login") or "").lower()
+                    == self.github_login.lower()):
+                self._require_complete_review(review, sha)
+                found = True
+        return found
+
+    @staticmethod
+    def _require_complete_review(review, sha):
+        if review.get("state") == "PENDING":
+            raise RuntimeError(f"Review {review.get('id')} is pending; do not start another")
+        try:
+            validate_payload({"commit_id": sha, "event": "COMMENT", "body": review.get("body")}, sha)
+        except ValueError as exc:
+            raise RuntimeError(f"Review {review.get('id')} is incomplete; operator reconciliation required") from exc
 
     def _clarified_since(self, number, submitted_at):
         """Whether a human clarified the pull request after a review.
@@ -886,6 +916,7 @@ class PullRequestReviewer(GitHubRepository):
                 self.github_login.lower()
             ):
                 continue
+            self._require_complete_review(review, sha)
             when = review.get("submitted_at") or ""
             if when > submitted_at:
                 submitted_at = when
@@ -1141,6 +1172,7 @@ class PullRequestReviewer(GitHubRepository):
         }
         if pr.get("html_url"):
             metadata["github.pr_url"] = pr["html_url"]
+        self.dispatcher.stage_file(PUBLISHER_SOURCE, PUBLISHER_PATH)
         result = self.dispatcher.deliver(
             subject=f"{repository_id}:pr:{pr['number']}",
             delivery=delivery_key or f"{trigger['id']}:{sha}",

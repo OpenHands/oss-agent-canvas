@@ -2,6 +2,7 @@
 
 import json
 import os
+from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -79,6 +80,13 @@ class AgentConversationDispatcher:
     def __exit__(self, *args):
         assert self._workspace is not None
         return self._workspace.__exit__(*args)
+
+    def stage_file(self, source: Path, destination: str) -> None:
+        if self._workspace is None:
+            raise RuntimeError("AgentConversationDispatcher must be used as a context")
+        result = self._workspace.file_upload(source, destination)
+        if not result.success:
+            raise RuntimeError(f"Could not stage review publisher: {result.error}")
 
     def deliver(
         self,
