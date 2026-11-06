@@ -1,39 +1,14 @@
 """Bound recovery without treating conversation completion as review delivery."""
 
-import fcntl
-import os
-import tempfile
 import time
-from contextlib import contextmanager
-from pathlib import Path
 from urllib.error import HTTPError, URLError
 
 import httpx
 from openhands.sdk.conversation.exceptions import ConversationRunError
-from openhands.sdk.event.conversation_error import ConversationErrorEvent
 
 MAX_ATTEMPTS = 3
 RETRY_WAITS = (20, 60)
 DELIVERY_BUDGET = 1000
-
-
-@contextmanager
-def delivery_lock(key):
-    directory = Path(tempfile.gettempdir()) / f"review-delivery-{os.getuid()}"
-    directory.mkdir(mode=0o700, exist_ok=True)
-    if directory.is_symlink() or directory.stat().st_uid != os.getuid():
-        raise RuntimeError("Untrusted review delivery lock directory")
-    fd = os.open(directory / key, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "w") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            yield False
-            return
-        try:
-            yield True
-        finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def complete_review(conversation, check_delivery, record, save, deadline, *,
@@ -45,6 +20,7 @@ def complete_review(conversation, check_delivery, record, save, deadline, *,
         save()
         return outcome
 
+    current_error = None
     while True:
         try:
             status = conversation.state.refresh_from_server()["execution_status"]
@@ -63,9 +39,10 @@ def complete_review(conversation, check_delivery, record, save, deadline, *,
                     sleep(min(2, deadline - clock()))
                 continue
             if status == "error" and not fresh_delivery:
-                error = next((event for event in reversed(conversation.state.events)
-                              if isinstance(event, ConversationErrorEvent)), None)
-                classification = error.classification if error else None
+                # Only the SDK run exception establishes ownership of this error.
+                if current_error is None:
+                    return finish("incomplete", "unconfirmed-error")
+                classification = current_error.classification
                 if not (classification and classification.kind == "transient"
                         and classification.retryable):
                     return finish("incomplete", "non-transient-error")
@@ -94,13 +71,22 @@ def complete_review(conversation, check_delivery, record, save, deadline, *,
             save()
             if clock() >= deadline:
                 return finish("incomplete", "deadline-exhausted")
+            was_fresh = fresh_delivery
+            record.pop("fresh_delivery", None)
+            save()
+            if clock() >= deadline:
+                if was_fresh:
+                    record["fresh_delivery"] = True
+                return finish("incomplete", "deadline-exhausted")
             fresh_delivery = False
+            current_error = None
             try:
                 conversation.run(blocking=True, poll_interval=2,
                                  timeout=deadline - clock())
             except ConversationRunError as exc:
                 if exc.conversation_error is None:
                     return finish("incomplete", "run-unconfirmed")
+                current_error = exc.conversation_error
                 # Reconcile publication before deciding whether this error is safe.
         except (httpx.HTTPError, HTTPError, URLError):
             return finish("incomplete", "verification-unavailable")

@@ -4,6 +4,7 @@ import json
 import os
 import time
 from collections.abc import Callable
+from contextlib import contextmanager
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -19,7 +20,7 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm.message import TextContent
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
-from review_delivery import DELIVERY_BUDGET, complete_review, delivery_lock
+from review_delivery import DELIVERY_BUDGET, complete_review
 
 _CONVERSATION_KEY_PREFIX = "agent-conversation-"
 
@@ -53,6 +54,16 @@ def _kv_request(key: str, method: str, value: dict | None = None) -> dict | None
             return None
         raise
     return body.get("value") if method == "GET" else body
+
+
+@contextmanager
+def delivery_claim(key):
+    # A crashed owner leaves the claim held; automatic expiry could fence nobody.
+    value = _kv_request(key + "/incr", "POST", {"by": 1})["value"]
+    try:
+        yield value == 1
+    finally:
+        _kv_request(key + "/decr", "POST", {"by": 1})
 
 
 class AgentConversationDispatcher:
@@ -110,7 +121,7 @@ class AgentConversationDispatcher:
             return self._dispatch(subject=subject, delivery=delivery, prompt=prompt,
                                   head=head, metadata=metadata)
         key = str(uuid5(NAMESPACE_URL, f"{self.automation_id}:{subject}"))
-        with delivery_lock(key) as acquired:
+        with delivery_claim("review-delivery-claim-" + key) as acquired:
             if not acquired:
                 return {"disposition": "resumed", "conversation_id": key,
                         "outcome": "incomplete", "reason": "delivery-active"}
@@ -194,7 +205,7 @@ class AgentConversationDispatcher:
                 outcome = complete_review(
                     conversation, check_delivery, record, save,
                     self._delivery_deadline,
-                    fresh_delivery=record.pop("fresh_delivery", False),
+                    fresh_delivery=record.get("fresh_delivery", False),
                     reserve_attempt=reserve_attempt,
                 )
                 return {

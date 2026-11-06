@@ -168,7 +168,7 @@ class DeliveryTests(unittest.TestCase):
         ):
             self.assertEqual(result, "incomplete")
             self.assertEqual(conversation.runs, 0)
-            self.assertEqual(record["reason"], "non-transient-error")
+            self.assertEqual(record["reason"], "unconfirmed-error")
 
     def test_new_delivery_can_run_after_an_old_error(self):
         for result, conversation, _, record, _ in self.execute(
@@ -215,16 +215,21 @@ class DeliveryTests(unittest.TestCase):
             self.assertEqual(result, "incomplete")
             self.assertEqual(conversation.runs, 0)
 
-    def test_same_host_delivery_lock_rejects_duplicate_handler(self):
-        for scripts in SCRIPTS:
-            module = load(scripts / "review_delivery.py")
-            key = str(uuid4())
-            with module.delivery_lock(key) as first:
-                with module.delivery_lock(key) as second:
-                    self.assertTrue(first)
-                    self.assertFalse(second)
-            with module.delivery_lock(key) as acquired:
-                self.assertTrue(acquired)
+    def test_interrupted_fresh_delivery_keeps_first_run_eligibility(self):
+        for result, conversation, _, record, _ in self.execute(
+            [], status="error", fresh_delivery=True,
+            record={"fresh_delivery": True},
+            check=lambda: "verification-unavailable",
+        ):
+            self.assertEqual(result, "incomplete")
+            self.assertEqual(conversation.runs, 0)
+            self.assertTrue(record["fresh_delivery"])
+
+    def test_cached_error_cannot_authorize_an_unowned_restart(self):
+        for result, conversation, _, record, _ in self.execute([], status="error"):
+            self.assertEqual(result, "incomplete")
+            self.assertEqual(conversation.runs, 0)
+            self.assertEqual(record["reason"], "unconfirmed-error")
 
     def test_plugin_copies_match(self):
         self.assertEqual((SCRIPTS[0] / "review_delivery.py").read_bytes(),
