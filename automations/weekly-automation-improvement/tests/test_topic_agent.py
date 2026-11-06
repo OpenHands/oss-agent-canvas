@@ -10,6 +10,13 @@ import topic_agent
 from test_topic_issue import public_body
 
 
+@pytest.fixture(autouse=True)
+def public_repository_metadata(monkeypatch):
+    monkeypatch.setattr(
+        topic_agent, "repository_private", lambda repository, request: False
+    )
+
+
 def context(tmp_path):
     for name in ("snapshot", "cohort"):
         write_json(tmp_path / (name + ".json"), {})

@@ -125,7 +125,9 @@ revisions still update that run's brief and PRs.
 
 **Raw evidence stays private.** Issues link to authorized access for inputs,
 Signals, prompts and logs. Public explanations use sanitized summaries; credential
-checks supplement agent privacy review.
+checks supplement agent privacy review. Public upstream work must not name or
+link private customer repositories; authorized readers retrieve the full evidence
+through a private index.
 
 **QC can start fresh.** `isolated_validation=true` with fresh state excludes earlier
 prototype outputs. It still runs repair agents and creates actual draft PRs.

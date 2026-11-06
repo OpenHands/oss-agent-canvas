@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from agent_runtime import AgentDeadline, create_agent
 from budget import BudgetExhausted
 from common import read_json, redact, replace_json, write_json
-from github_io import command, github_pages, IMPROVEMENT_LABEL
+from github_io import command, github_pages, IMPROVEMENT_LABEL, repository_private
 from laminar import Laminar
 from raw_evidence import EvidenceReader
 from repair_policy import instructions, permits, resource_errors
@@ -115,6 +115,10 @@ def evidence(
     return reader.execute(name, arguments)
 
 
+def can_link(origin, target):
+    return origin.get("private", False) or not target.get("private", False)
+
+
 def discover(context, output):
     urls, required = set(), set()
     for directory in [output, *sorted((output / "attempts").glob("*"))]:
@@ -137,6 +141,13 @@ def discover(context, output):
                 if name == "progress.md":
                     required.update(links)
     found, errors, reference_errors = {}, [], []
+    visibility = {}
+
+    def private(repository):
+        if repository not in visibility:
+            visibility[repository] = repository_private(repository, command)
+        return visibility[repository]
+
     for repository in context["repositories"]:
         try:
             rows = github_pages(
@@ -197,9 +208,22 @@ def discover(context, output):
                     )
             if body is None or not owns(context, body):
                 continue
+            catalog = set(context["repositories"]) | {
+                m[1] for m in RESOURCE.finditer(body)
+            }
+            weekly = RESOURCE.fullmatch(
+                context.get("triage_issue", {}).get("url") or ""
+            )
+            if weekly:
+                catalog.add(weekly[1])
+            private_names = [
+                name for name in sorted(catalog | {repository}) if private(name)
+            ]
             found[url] = {
                 "url": url,
                 "repository": repository,
+                "private": private(repository),
+                "private_repositories": private_names,
                 "kind": kind,
                 "number": number,
                 "body": body,
@@ -224,6 +248,25 @@ def link_errors(resources):
     issues = [r for r in resources if r["kind"] == "issues" and r["state"] == "open"]
     prs = [r for r in resources if r["kind"] == "pull" and r["state"] == "open"]
     problems = []
+    private_names = {r["repository"] for r in resources if r.get("private")}
+    private_names.update(
+        name for r in resources for name in r.get("private_repositories", [])
+    )
+    for resource in resources:
+        if not resource.get("private"):
+            text = (resource.get("title", "") + "\n" + resource["body"]).casefold()
+            for name in private_names:
+                if re.search(
+                    r"(?<![\w.-])"
+                    + re.escape(name.casefold())
+                    + r"(?:\.git)?(?![\w.-])",
+                    text,
+                ):
+                    problems.append(
+                        resource["url"]
+                        + ": public text references private repository "
+                        + name
+                    )
     for repository in {r["repository"] for r in issues + prs}:
         owned = [issue for issue in issues if issue["repository"] == repository]
         if len(owned) != 1:
@@ -232,10 +275,14 @@ def link_errors(resources):
             )
     for issue in issues:
         for other in issues:
-            if other["url"] != issue["url"] and other["url"] not in issue["body"]:
+            if (
+                can_link(issue, other)
+                and other["url"] != issue["url"]
+                and other["url"] not in issue["body"]
+            ):
                 problems.append(f"{issue['url']} does not link {other['url']}")
         for pr in prs:
-            if pr["url"] not in issue["body"]:
+            if can_link(issue, pr) and pr["url"] not in issue["body"]:
                 problems.append(f"{issue['url']} does not link {pr['url']}")
     for pr in prs:
         if not any(
@@ -374,7 +421,9 @@ def record_evidence(context, output, phase, resources):
                 [
                     r["url"]
                     for r in resources
-                    if r["state"] == "open" and r["url"] != reference["url"]
+                    if r["state"] == "open"
+                    and r["url"] != reference["url"]
+                    and can_link(reference, r)
                 ]
             )
             catalogs.append(
@@ -561,7 +610,7 @@ def prompt(context, context_path, output, review=False):
             "Check repair scope, configuration provenance, application path and the blast radius of shared settings; do not accept an unused configuration artifact as a deployed-behavior fix. "
             "Compare the coherent baseline repository/SDK versions against the complete proposed configuration. Distinguish original-input replay, captured-input projection and synthetic mechanism tests. Require genuine baseline defect reproduction for a mechanism claim; missing new files/imports or asserting a new implementation contract is insufficient. "
             "Assess the scoped improvement and no introduced control violations; do not demand that unrelated inherited problems disappear. Missing samples or unavailable historical environments must be explicit, not reconstructed indefinitely. "
-            "Inspect every related repository's PRs and compatibility/dependency claims. Confirm one issue per affected repository, reciprocal issue links and links to all related PRs. Correct missing cross-links and labels using normal GitHub tools. "
+            "Inspect every related repository's PRs and compatibility/dependency claims. Confirm one issue per affected repository and visibility-safe links: private issues can link public work; public text must not disclose private repository identities or URLs. Keep private counterparts in the private evidence index. Correct missing cross-links and labels using normal GitHub tools. "
             "Before deciding readiness, read each issue and its current-run brief without private artifacts: can a human understand the problem, concrete example, prevention, acceptance criteria and current verdict? Rewrite/correct only the current-run brief's sections to fix omissions, stale conclusions and append-only clutter; preserve the original description of reused issues, human content and the audit trail. Do the same for each current-run PR summary and Before / After Evidence section so they reflect the final reviewed scope and verdict. Check public patches/descriptions for private data. Put a concise independent verdict and evidence limitations on each PR and in the current-run issue brief. Mark accepted, sufficiently evidenced PRs ready for review; keep failed, inconclusive, unsafe or dependency-blocked changes draft. Recheck head SHAs before recording acceptance; a changed head invalidates the review. Never approve your own GitHub PR or merge. "
             f"Do not edit/push repair source or start another coding loop yourself. Finish one review and write {output / 'review.md'} with PR/issue URLs, exact reviewed SHAs, verdicts and remaining limitations. "
             f"Also write {output / 'review-decision.json'} with exactly two fields: decision (accepted, revise or blocked) and feedback (a concise nonempty explanation, at most 12000 characters). "
@@ -590,8 +639,8 @@ def prompt(context, context_path, output, review=False):
         "You own this topic end to end: diagnose, choose the repair location, implement, validate, commit, push and open/update the necessary PRs with normal GitHub tools. There is no separate publisher or patch-proposal protocol. "
         "Use existing canonical repositories and create worktrees for edits (new-pr when provided by repository instructions); do not clone another copy. If a checkout or permission is missing, report the exact prerequisite. The prepared checkouts are isolated starting worktrees, not an allowed-files list. "
         "One topic may require several PRs across one or several repositories. Prefer one coherent fix over a broad new framework; do not bundle independent problems. "
-        f"Establish ONE structured issue brief in each repository changed by the fix before coding: use a fresh issue's body or ONE new comment on a matching existing issue. Put {IMPROVEMENT_LABEL} and ownership markers in fresh issue creation requests so issue-triage workers recognize them. Also apply {IMPROVEMENT_LABEL} to reused issues so discovery recovers them and other triage workers avoid conflicting edits; leave their descriptions unchanged and put ownership markers only in your brief comment. Update this same brief throughout the run, not repeated summary comments. Cross-link repository issues, all related PRs, dependencies and any required merge/release order. One repository issue is the main entry point. No extra umbrella issue is required. "
-        "Include the weekly triage issue, private context/snapshot/cohort paths, worker access instructions and original trace/Signal references in Evidence; never dump raw inputs, prompts or logs publicly. Include catalog anchors <!-- topic-evidence:start --> / <!-- topic-evidence:end --> and <!-- topic-attempts:start --> / <!-- topic-attempts:end --> so actual private SDK records can be indexed after you finish. "
+        f"Establish ONE structured issue brief in each repository changed by the fix before coding: use a fresh issue's body or ONE new comment on a matching existing issue. Put {IMPROVEMENT_LABEL} and ownership markers in fresh issue creation requests so issue-triage workers recognize them. Also apply {IMPROVEMENT_LABEL} to reused issues so discovery recovers them and other triage workers avoid conflicting edits; leave their descriptions unchanged and put ownership markers only in your brief comment. Update this same brief throughout the run, not repeated summary comments. Cross-link repository issues, related PRs, dependencies and merge/release order only when visibility permits: private issues can link public counterparts, while public text must omit private repository identities/URLs. Retain the full relationship map in private evidence. One repository issue is the main entry point. No extra umbrella issue is required. "
+        "Include visibility-safe evidence references in Evidence and retain the complete weekly issue, context/snapshot/cohort paths, worker access instructions and original trace/Signal references privately. Do not expose private repository identities, customer deployment endpoints or sensitive worker paths on public upstream issues; use the opaque private evidence index instead. Never dump raw inputs, prompts or logs publicly. Include catalog anchors <!-- topic-evidence:start --> / <!-- topic-evidence:end --> and <!-- topic-attempts:start --> / <!-- topic-attempts:end --> so actual private SDK records can be indexed after you finish. "
         "Record the effective baseline and candidate configuration, source revisions and supported application path. For a shared configuration change, cover other affected automations as controls where available; compare task quality, cost and latency when relevant. A configuration-only repair can keep the SDK unchanged. "
         "Set observable acceptance criteria and record the affected runtime/dependency versions. Use isolated environments for baseline/candidate dependencies instead of replacing this running worker's SDK. Validate the whole fix: baseline SDK+automation versus patched SDK+automation as appropriate. Test intermediate combinations only when compatibility/dependency claims require them. "
         f"Use up to N={context['validation_sample_size']} selected negative and N random non-negative original inputs when available. You may construct an isolated replay from frozen inputs and captured external reads; no prebuilt evaluator adapter is required. Keep the inputs fixed; don't replace failed cases. Add meaningful synthetic regression/control tests where useful and identify their limits. "

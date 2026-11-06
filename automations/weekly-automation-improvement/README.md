@@ -68,7 +68,8 @@ prevent dispatch rather than treating unavailable history as absent work.
 Repair agents also check for existing work as a safeguard against changes after
 triage. For a newly selected problem, create a focused issue and cross-reference
 related work. Keep one main issue per affected repo.
-All repository issues link one another and all related PRs. Each PR links its local
+Repository issues link related work when visibility permits; private relationships
+remain in the private evidence index. Each PR links its local
 issue and describes dependencies and any required merge/release order. One issue
 is the main entry point; a separate umbrella is unnecessary.
 
@@ -147,7 +148,11 @@ including resumed repairs. Deterministic checks reject out-of-scope outputs and
 block acceptance; recurrence comments also check their destinations. These checks
 do not sandbox terminal tools or undo an unauthorized write. Use a dedicated
 worker and GitHub credentials whose write permissions match the intended scope;
-saved agent profiles and MCPs must not expose broader write credentials. Repository
+saved agent profiles and MCPs must not expose broader write credentials.
+Public upstream issues must not identify private customer repositories. Private
+issues can link public counterparts; public summaries retain an opaque private
+evidence index. The complete relationship map and raw references remain private.
+Unknown repository visibility blocks acceptance. Repository
 worktrees isolate source, not operating-system access. There are no file-count or
 patch-size limits. Missing checkouts remain explicit prerequisites.
 Install `tmux` on the worker before

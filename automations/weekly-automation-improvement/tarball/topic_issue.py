@@ -25,7 +25,7 @@ ISSUE_GUIDANCE = (
     "Maintain ONE current brief. During this run, read the current issue and comments, then rewrite the sections of your current-run body or brief comment rather than appending a Current repair attempt, dated continuation, competing summary or final-result appendix. Never rewrite an existing human-authored or previous-run issue description. "
     "Revise the same sections after diagnosis, a changed hypothesis, validation and independent review. Correct or remove disproved claims and obsolete blockers; Current status must reflect the latest verdict, PRs and remaining work. "
     "Preserve human-authored text and comments, including any HUMAN template section. Preserve all ownership markers, evidence/catalog anchors and links needed to retrieve past records. "
-    "Before rewriting your brief, save its full prior body or comment privately under validation/issue-history/ with a unique filename, so the evidence catalog retains its exact text. Keep historical evidence roots/access references in Evidence. Prior attempts belong in comments/catalogs with a concise historical link, not repeated narratives in the current brief. "
+    "Before rewriting your brief, save its full prior body or comment privately under validation/issue-history/ with a unique filename, so the evidence catalog retains its exact text. Keep historical evidence roots/access references in the private catalogs; include them in Evidence only when safe for the destination repository. Prior attempts belong in comments/catalogs with a concise historical link, not repeated narratives in the current brief. "
     "Never publish raw tasks, private quotations, credentials or sensitive customer details. Safe summaries and anonymized examples are required, not blanket omission of the explanation. "
 )
 
@@ -355,23 +355,16 @@ class TopicIssue:
 
     def record(self, title, summary, artifacts):
         catalog = [self.artifact(name, value) for name, value in artifacts.items()]
+        index = self.artifact("evidence-index.json", catalog)
         content = (
-            f"## {title}\n\n{summary}\n\n### Private evidence catalog\n\nRead each file with `read_issue_artifact(reference, offset)`. Raw content stays on the automation worker. Catalog root: `{self.evidence_root}`.\n\n| Evidence | Reference |\n|---|---|\n"
-            + "\n".join(
-                f"| {item['name']} | `{item['reference']}` |" for item in catalog
-            )
+            f"## {title}\n\n{summary}\n\n### Private evidence catalog\n\n"
+            f"The complete index contains {len(catalog)} artifacts. Read it with "
+            "`read_issue_artifact(reference, offset)`, then use the same tool for each indexed reference. "
+            "Raw content and storage/access details stay on the authorized automation worker.\n\n| Evidence | Reference |\n|---|---|\n"
+            f"| evidence-index.json | `{index['reference']}` |"
         )
         if len(content) > 60000:
-            index = self.artifact("evidence-index.json", catalog)
-            content = (
-                f"## {title}\n\n{summary}\n\n### Private evidence catalog\n\n"
-                f"The complete index contains {len(catalog)} artifacts. Read it with "
-                "`read_issue_artifact(reference, offset)`, then use the same tool for each indexed reference. "
-                f"Raw content stays on the automation worker. Catalog root: `{self.evidence_root}`.\n\n| Evidence | Reference |\n|---|---|\n"
-                f"| {index['name']} | `{index['reference']}` |"
-            )
-            if len(content) > 60000:
-                raise ValueError("Issue attempt summary exceeds its size budget")
+            raise ValueError("Issue attempt summary exceeds its size budget")
         if redact(content) != content:
             raise ValueError("Public evidence summary contains a possible credential")
         marker = f"{RECORD} {hashlib.sha256(content.encode()).hexdigest()} -->"

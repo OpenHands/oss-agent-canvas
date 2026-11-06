@@ -128,3 +128,148 @@ def test_out_of_scope_recurrence_cannot_publish_a_comment(tmp_path, monkeypatch)
 def test_catalog_cannot_disguise_an_upstream_checkout_as_a_customer_repository(source):
     with pytest.raises(ValueError, match="catalog name"):
         resolve({"repository": "Acme/app", "repositories": {"Acme/config": source}})
+
+
+@pytest.mark.parametrize(
+    "metadata,private",
+    [
+        ({"visibility": "public"}, False),
+        ({"visibility": "private"}, True),
+        ({"visibility": "internal", "private": False}, True),
+        ({"private": True}, True),
+    ],
+)
+def test_repository_visibility_is_resolved_from_github(monkeypatch, metadata, private):
+    import json
+
+    monkeypatch.setattr(topic_agent, "command", lambda argv: json.dumps(metadata))
+    assert topic_agent.repository_private("Acme/config", topic_agent.command) is private
+
+
+def test_missing_visibility_fails_closed(monkeypatch):
+    monkeypatch.setattr(topic_agent, "command", lambda argv: "{}")
+    with pytest.raises(ValueError, match="visibility"):
+        topic_agent.repository_private("Acme/config", topic_agent.command)
+
+
+def test_private_customer_and_public_upstream_issues_have_safe_reciprocal_links():
+    rows = resources()
+    for row in rows:
+        row["private"] = row["repository"] == "Example/automation"
+    for row in rows:
+        if not row["private"]:
+            row["body"] = "\n".join(r["url"] for r in rows if not r["private"])
+    assert topic_agent.link_errors(rows) == []
+    public = next(r for r in rows if not r["private"])
+    private = rows[0]
+    assert not topic_agent.can_link(public, private)
+    assert topic_agent.can_link(private, public)
+    public["body"] += "\n" + private["url"]
+    assert any(
+        "public text references private repository" in e
+        for e in topic_agent.link_errors(rows)
+    )
+
+
+def test_public_upstream_cannot_reference_a_private_weekly_home_issue():
+    row = resources()[-1] | {
+        "private": False,
+        "private_repositories": ["Acme/internal"],
+        "body": "See https://github.com/Acme/internal/issues/1",
+    }
+    assert any(
+        "public text references private repository" in e
+        for e in topic_agent.link_errors([row])
+    )
+
+
+def test_discovery_checks_private_weekly_and_linked_repository_visibility(
+    tmp_path, monkeypatch
+):
+    import json
+
+    ctx = context(tmp_path)
+    ctx["repositories"] = {"Acme/private": {}}
+    ctx["triage_issue"] = {"url": "https://github.com/Acme/private/issues/1"}
+    url = "https://github.com/Upstream/sdk/issues/2"
+    body = topic_agent.marker(ctx["topic"]) + "\n" + ctx["triage_issue"]["url"]
+    (tmp_path / "progress.md").write_text(url)
+    calls = []
+
+    def request(argv):
+        endpoint = argv[-1]
+        calls.append(endpoint)
+        if endpoint == "repos/Upstream/sdk/issues/2":
+            return json.dumps({"body": body, "state": "open", "title": "SDK repair"})
+        return json.dumps(
+            {"visibility": "private" if endpoint == "repos/Acme/private" else "public"}
+        )
+
+    monkeypatch.setattr(topic_agent, "command", request)
+    monkeypatch.setattr(topic_agent, "github_pages", lambda *a: [])
+    receipt = topic_agent.discover(ctx, tmp_path)
+    assert receipt["errors"] == []
+    resource = receipt["resources"][0]
+    assert resource["private"] is False
+    assert resource["private_repositories"] == ["Acme/private"]
+    assert calls.count("repos/Acme/private") == 1
+    assert any(
+        "public text references private repository" in e
+        for e in topic_agent.link_errors([resource])
+    )
+
+
+def test_recurrence_comments_hide_private_counterparts_but_keep_full_evidence(
+    tmp_path, monkeypatch
+):
+    import json
+    from types import SimpleNamespace
+    import tracked_work
+    from common import topic_id
+    from test_topic_issue import GitHub
+    from test_tracked_work import work
+    from test_weekly import record
+
+    rows = [record()]
+    existing = [work(1, repository="Acme/private"), work(2, repository="Upstream/sdk")]
+    candidate = {
+        "id": topic_id("shared", "known-problem"),
+        "representative_event_ids": [rows[0]["event"]["id"]],
+    }
+    captured = []
+    github = GitHub()
+
+    def request(argv):
+        if argv[-1] == "repos/Upstream/sdk":
+            return json.dumps({"visibility": "public"})
+        return github(argv)
+
+    issue = SimpleNamespace(
+        preview=False,
+        value={"html_url": "https://github.com/Acme/private/issues/77"},
+        artifact=lambda name, value: captured.append(value)
+        or {"reference": "a" * 64 + ".json"},
+    )
+    monkeypatch.setattr(tracked_work, "command", request)
+    tracked_work.comment(candidate, existing, rows, issue, tmp_path)
+    public = next(c for c in github.comments if "Upstream/sdk" in c["issue_url"])
+    private = next(c for c in github.comments if "Acme/private" in c["issue_url"])
+    assert "Acme/private" not in public["body"]
+    assert "Upstream/sdk" in private["body"]
+    assert issue.value["html_url"] in private["body"]
+    assert captured[0]["related_work"] == sorted(r["url"] for r in existing)
+    assert captured[0]["triage_issue"] == issue.value["html_url"]
+
+
+def test_private_repository_name_does_not_match_a_public_prefix_neighbor():
+    row = resources()[0] | {
+        "private": False,
+        "private_repositories": ["Acme/lib"],
+        "body": "Changes to Acme/library",
+    }
+    assert topic_agent.link_errors([row]) == []
+    row["body"] = "https://github.com/Acme/lib.git"
+    assert any(
+        "public text references private repository" in e
+        for e in topic_agent.link_errors([row])
+    )

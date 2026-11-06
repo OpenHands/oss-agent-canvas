@@ -15,10 +15,8 @@ def resolve(config):
     ):
         raise ValueError("Invalid repository slug")
     for name, source in repositories.items():
-        if (
-            not isinstance(source, dict)
-            or source.get("repository", name).casefold() != name.casefold()
-        ):
+        identity = source.get("repository", name) if isinstance(source, dict) else None
+        if not isinstance(identity, str) or identity.casefold() != name.casefold():
             raise ValueError(
                 "Repository checkout configuration must match its catalog name"
             )
@@ -45,9 +43,11 @@ def instructions(policy):
             "Do not use unrelated discovered credentials or seek broader access. If access or a checkout is missing, report the exact prerequisite. "
         )
     return boundary + (
+        "Pass this scope and privacy rules to any delegated agent. "
         "Choose the most maintainable repair layer: customer automation or SDK integration code, prompts/repository instructions, skills/plugins, tools/MCP configuration, agent/LLM profiles, hooks, context/memory settings, dependencies or runtime setup. "
         "Inspect the configuration actually used by the cited runs and its source of truth; current defaults alone do not prove historical behavior. "
         "For settings stored only in a UI/API, identify the supported application path; an unused configuration file is not a fix. Do not change live settings during repair. "
+        "Check repository visibility before public cross-repository writes. Public reports must not name or link private repositories or reveal customer deployment endpoints or sensitive worker paths; retain complete references in the private evidence index. "
         "Explain the chosen layer and affected shared profiles/automations in the issue. Preserve secret values privately and use references in Git. "
         "Do not broaden permissions, weaken acceptance criteria or hide Signals to claim improvement. "
     )

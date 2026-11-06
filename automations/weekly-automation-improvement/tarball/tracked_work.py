@@ -4,7 +4,7 @@ import re
 import uuid
 
 from common import encode, redact, write_json
-from github_io import command, github_pages
+from github_io import command, github_pages, repository_private
 from repair_policy import permits
 
 
@@ -47,26 +47,27 @@ def comment(topic, existing, records, issue, output, policy=None):
             str(uuid.UUID(event["trace_id"])),
         )
         evidence.append(f"- Signal event `{identifier}`; trace `{trace}`.")
-    artifact = issue.artifact(
-        "recurrence-evidence.json", {"topic": topic, "records": selected}
-    )
     brief = issue.value["html_url"]
     if brief is not None and not re.fullmatch(
         r"https://github.com/[\w.-]+/[\w.-]+/issues/[1-9][0-9]*", brief
     ):
         raise ValueError("Invalid weekly evidence issue URL")
-    body = (
-        "Weekly triage identified new findings matching the problem tracked here. "
-        "The problem may still be occurring; these findings are investigation leads, not proof of a regression or of an ineffective fix. "
-        "No new repair agent was dispatched for this topic.\n\n"
-        + "\n".join(evidence)
-        + f"\n\n[Current triage and private-data access instructions]({brief or '#preview'}). "
-        + f"Private evidence reference: `{artifact['reference']}` (read with `read_issue_artifact`). "
-        + "Raw inputs, original Signals and logs remain private.\n\nRelated work: "
-        + ", ".join(targets)
+    artifact = issue.artifact(
+        "recurrence-evidence.json",
+        {
+            "topic": topic,
+            "records": selected,
+            "related_work": targets,
+            "triage_issue": brief,
+        },
     )
-    if redact(body) != body or len(body) > 60000:
-        raise ValueError("Unsafe or oversized recurrence comment")
+    names = {
+        "/".join(url.split("/")[3:5]) for url in targets + ([brief] if brief else [])
+    }
+    visibility = {
+        name: True if issue.preview else repository_private(name, command)
+        for name in names
+    }
     receipts = []
     for target in targets:
         match = re.fullmatch(
@@ -75,6 +76,34 @@ def comment(topic, existing, records, issue, output, policy=None):
         )
         if match is None:
             raise ValueError("Invalid tracked work URL")
+        origin_private = visibility[match[1]]
+        links = [
+            url
+            for url in targets
+            if origin_private or not visibility["/".join(url.split("/")[3:5])]
+        ]
+        safe_brief = (
+            brief
+            if brief
+            and (origin_private or not visibility["/".join(brief.split("/")[3:5])])
+            else None
+        )
+        body = (
+            "Weekly triage identified new findings matching the problem tracked here. "
+            "The problem may still be occurring; these findings are investigation leads, not proof of a regression or of an ineffective fix. "
+            "No new repair agent was dispatched for this topic.\n\n"
+            + "\n".join(evidence)
+            + (
+                f"\n\n[Current triage and private-data access instructions]({safe_brief}). "
+                if safe_brief
+                else "\n\nFull context and access details remain in the private evidence index. "
+            )
+            + f"Private evidence reference: `{artifact['reference']}` (read with `read_issue_artifact`). "
+            + "Raw inputs, original Signals and logs remain private.\n\nRelated work: "
+            + ", ".join(links)
+        )
+        if redact(body) != body or len(body) > 60000:
+            raise ValueError("Unsafe or oversized recurrence comment")
         marker = (
             "<!-- automation-improvement-recurrence: "
             + hashlib.sha256(encode([target, events]).encode()).hexdigest()

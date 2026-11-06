@@ -25,3 +25,12 @@ def json_pages(text):
         rows.extend(page)
         pending = pending[end:].lstrip()
     return rows
+
+
+def repository_private(repository, request):
+    value = json.loads(request(["gh", "api", "repos/" + repository]))
+    if value.get("visibility") in ("public", "private", "internal"):
+        return value["visibility"] != "public"
+    if type(value.get("private")) is bool:
+        return value["private"]
+    raise ValueError("Repository visibility is unavailable")

@@ -147,6 +147,11 @@ def test_issue_sections_reuse_redaction_and_human_content(tmp_path, monkeypatch)
     assert "#issuecomment-" in result["content"]
 
 
+def private_index(issue, body):
+    reference = re.search(r"\| evidence-index.json \| `([a-f0-9]{64}\.json)`", body)[1]
+    return json.loads(issue.read_artifact(reference))
+
+
 def test_large_private_evidence_is_complete_paged_and_scoped(tmp_path, monkeypatch):
     github = GitHub(private=False)
     monkeypatch.setattr(topic_issue, "command", github)
@@ -170,8 +175,10 @@ def test_large_private_evidence_is_complete_paged_and_scoped(tmp_path, monkeypat
     )
     public = json.dumps(github.issues + github.comments)
     assert "actual observed output" not in public
-    assert artifact["reference"] in public
-    assert artifact["reference"] in topic_issue.redact(public)
+    index = private_index(issue, github.comments[-1]["body"])
+    assert artifact["reference"] == index[0]["reference"]
+    assert "events.json" not in public
+    assert str(issue.evidence_root) not in json.dumps(github.comments)
     other = snapshot(tmp_path)
     other["issue_evidence_dir"] = str(tmp_path / "other-private-evidence")
     isolated = TopicIssue.ensure(other, tmp_path / "other")
@@ -269,12 +276,15 @@ def test_failed_execution_context_is_published_without_a_receipt(tmp_path, monke
         "Actual API error" not in bodies
         and "Original task and exact policy" not in bodies
     )
-    assert "negative-1-1-candidate/events.json" in bodies
-    assert "comparison/budget.json" in bodies and "baseline-0-check.json" in bodies
-    assert (
-        "requests/coordinator.json" in bodies
-        and "Exact private repair prompt" not in bodies
+    names = "\n".join(
+        row["name"]
+        for comment in github.comments
+        for row in private_index(issue, comment["body"])
     )
+    assert "negative-1-1-candidate/events.json" in names
+    assert "comparison/budget.json" in names and "baseline-0-check.json" in names
+    assert "requests/coordinator.json" in names
+    assert "negative-1-1-candidate/events.json" not in bodies
     private = "\n".join(path.read_text() for path in issue.evidence_root.glob("*.json"))
     assert "Actual API error" in private and "Original task and exact policy" in private
     assert "Exact private repair prompt" in private
@@ -329,8 +339,8 @@ def test_body_indexes_rewrite_latest_references_without_losing_history(
     assert "Evidence — initial" not in issue.value["body"]
     assert "Evidence — corrected" in issue.value["body"]
     assert human in issue.value["body"]
-    assert old_ref in github.comments[0]["body"]
-    assert str(issue.evidence_root) in github.comments[0]["body"]
+    assert private_index(issue, github.comments[0]["body"])[0]["reference"] == old_ref
+    assert str(issue.evidence_root) not in github.comments[0]["body"]
     assert json.loads(issue.read_artifact(old_ref))["trace"] == "old-reference"
     assert len(issue.context()["records"]) == 2
     issue.related(["https://github.com/Example/source/pull/1"])

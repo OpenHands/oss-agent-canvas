@@ -38,8 +38,15 @@ def test_triage_agent_reads_the_issue_and_private_preparation_before_ranking(
         assert "Prepared 2 findings across 2 automations" in brief["content"]
         assert "PRIVATE ORIGINAL OBSERVATION" not in brief["content"]
         reference = re.search(
-            r"\| signal-records.json \| `([^`]+)`", github.comments[0]["body"]
+            r"\| evidence-index.json \| `([^`]+)`", github.comments[0]["body"]
         )[1]
+        triage_agent.evidence(
+            context, "read_issue_artifact", {"reference": reference, "offset": 0}
+        )
+        index = json.loads(json.loads(capsys.readouterr().out)["content"])
+        reference = next(
+            row["reference"] for row in index if row["name"] == "signal-records.json"
+        )
         triage_agent.evidence(
             context, "read_issue_artifact", {"reference": reference, "offset": 0}
         )
