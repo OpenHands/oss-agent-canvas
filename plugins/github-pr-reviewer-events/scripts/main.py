@@ -64,6 +64,24 @@ MAX_NEW_PER_RUN = 2
 # approving or merging the PR.
 MAINTAINER_DECISION_VERDICT = "🛑 MAINTAINER DECISION REQUIRED"
 
+REVIEW_COMPLETION_CONTRACT = (
+    "Publication and completion contract:\n"
+    "- Before submitting the review, finish all checks, task-tracker updates and any "
+    "temporary-file cleanup that can be done without deleting the submission payload. "
+    "Leave that payload for workspace teardown; cleanup is never a post-submit task. "
+    "Do not record publication as successful in advance.\n"
+    "- Read the submission response in the submitting invocation. Do not chain cleanup "
+    "or other work after the POST.\n"
+    "- Once GitHub accepts the native review (including a scope-stop review or an "
+    "allowed fallback), the next action must end this turn. No terminal, task tracker, "
+    "browser, or file tools; no follow-up verification or second publication.\n"
+    "- On acceptance, the entire final response must be exactly GITHUB_REVIEW_POSTED: no summary, "
+    "URL, verdict, Markdown, or explanation. If a finish tool is available, call it "
+    "with only that token as its final message. Do not use another tool to print it.\n"
+    "- If publication still fails after the permitted fallback, output the complete "
+    "review text instead. Never emit the success token on failure."
+)
+
 CONFIG_FILENAME = os.environ.get("AUTOMATION_CONFIG_PATH") or "config.json"
 
 # Config keys, paired with the type each must have. A wrong type is a hard
@@ -764,6 +782,7 @@ def _build_review_prompt(
     workspace_instructions: str | None = None,
     github_token_secret: str = "GITHUB_PERSONAL_ACCESS_TOKEN",
     trigger_description: str | None = None,
+    include_completion_contract: bool = True,
 ) -> str:
     number = pr.get("number", "?")
     title = pr.get("title", "(no title)")
@@ -869,9 +888,7 @@ def _build_review_prompt(
         "11. If there are no material issues, still publish a review saying so, with the "
         "disclosure and the verdict.\n"
         f"\nReview instructions:\n{tone}{extra}{guide_section}\n\n"
-        "After GitHub accepts the review, output exactly `GITHUB_REVIEW_POSTED`. "
-        "If publishing still fails after the fallback in step 8, output the complete review text "
-        "so it can be posted as a comment instead."
+        + (REVIEW_COMPLETION_CONTRACT if include_completion_contract else "")
     )
 
 

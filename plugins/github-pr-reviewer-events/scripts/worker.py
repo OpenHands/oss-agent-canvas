@@ -279,6 +279,7 @@ class PullRequestReviewer(GitHubRepository):
             workspace_instructions=workspace,
             github_token_secret=token,
             trigger_description=trigger_description,
+            include_completion_contract=False,
         )
         if label:
             moved_head_instruction = (
@@ -337,10 +338,8 @@ class PullRequestReviewer(GitHubRepository):
             f"If the head is no longer `{sha}`, {moved_head_instruction}.\n"
             f"- {trigger_completion} after completing any configured "
             "human-review handoff. Never paste JSON artifacts or full command logs "
-            "into comments.\n"
-            "- Once GitHub accepts the native review, stop immediately. Do not "
-            "continue inspecting the repository, run more commands, or publish a "
-            f"second result.{self_review_note}"
+            f"into comments.{self_review_note}\n\n"
+            + workflow.REVIEW_COMPLETION_CONTRACT
         )
 
     def _linked_issue_allows_handoff(self, pr):
