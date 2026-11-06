@@ -42,10 +42,22 @@ class ConversationBoundary:
         self.events = []
         self.runs = 0
         self.published = False
+        self.observations = 0
         self.state = SimpleNamespace(refresh_from_server=self.refresh,
                                      events=self.events)
 
     def refresh(self):
+        if self.status == "running":
+            self.observations += 1
+            if self.observations > 1:
+                outcome = next(self.outcomes)
+                if outcome == "published":
+                    self.published = True
+                    self.status = "finished"
+                else:
+                    self.status = "error"
+                    self.events.append(ConversationErrorEvent(
+                        source="environment", code=outcome, detail=""))
         return {"execution_status": self.status}
 
     def run(self, **kwargs):
@@ -69,7 +81,7 @@ class ConversationBoundary:
 
 class DeliveryTests(unittest.TestCase):
     def execute(self, outcomes, *, status="idle", record=None, check=None,
-                deadline=900):
+                deadline=900, fresh_delivery=False):
         results = []
         for scripts in SCRIPTS:
             conversation = ConversationBoundary(outcomes, status)
@@ -81,7 +93,7 @@ class DeliveryTests(unittest.TestCase):
                 conversation,
                 check or (lambda: "published" if conversation.published else "pending"),
                 state, lambda: saved.append(dict(state)), deadline,
-                clock=clock, sleep=clock.sleep,
+                clock=clock, sleep=clock.sleep, fresh_delivery=fresh_delivery,
             )
             results.append((result, conversation, clock, state, saved))
         return results
@@ -147,6 +159,23 @@ class DeliveryTests(unittest.TestCase):
         ):
             self.assertEqual(result, "published")
             self.assertEqual(record["attempts"], 1)
+            self.assertEqual(conversation.runs, 0)
+
+    def test_observation_classifies_the_event_before_restart(self):
+        for result, conversation, _, record, _ in self.execute(
+            ["LLMAuthenticationError"], status="running", record={"attempts": 1}
+        ):
+            self.assertEqual(result, "incomplete")
+            self.assertEqual(conversation.runs, 0)
+            self.assertEqual(record["reason"], "non-transient-error")
+
+    def test_new_delivery_can_run_after_an_old_error(self):
+        for result, conversation, _, record, _ in self.execute(
+            ["published"], status="error", fresh_delivery=True
+        ):
+            self.assertEqual(result, "published")
+            self.assertEqual(conversation.runs, 1)
+            self.assertEqual(record["attempts"], 1)
 
     def test_deadline_stops_before_start(self):
         for result, conversation, _, record, _ in self.execute([], deadline=0):
@@ -161,6 +190,32 @@ class DeliveryTests(unittest.TestCase):
             self.assertEqual(result, "incomplete")
             self.assertEqual(conversation.runs, 0)
             self.assertEqual(record["reason"], "attempts-exhausted")
+
+    def test_deadline_is_rechecked_after_reserving_attempt(self):
+        for scripts in SCRIPTS:
+            module = load(scripts / "review_delivery.py")
+            conversation = ConversationBoundary([])
+            clock = Clock()
+            record = {}
+
+            def slow_save():
+                clock.now = 2
+
+            result = module.complete_review(conversation, lambda: "pending", record,
+                                            slow_save, 1, clock=clock, sleep=clock.sleep)
+            self.assertEqual(result, "incomplete")
+            self.assertEqual(conversation.runs, 0)
+
+    def test_same_host_delivery_lock_rejects_duplicate_handler(self):
+        for scripts in SCRIPTS:
+            module = load(scripts / "review_delivery.py")
+            key = str(uuid4())
+            with module.delivery_lock(key) as first:
+                with module.delivery_lock(key) as second:
+                    self.assertTrue(first)
+                    self.assertFalse(second)
+            with module.delivery_lock(key) as acquired:
+                self.assertTrue(acquired)
 
     def test_plugin_copies_match(self):
         self.assertEqual((SCRIPTS[0] / "review_delivery.py").read_bytes(),

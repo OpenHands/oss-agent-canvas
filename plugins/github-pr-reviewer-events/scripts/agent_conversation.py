@@ -19,7 +19,7 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm.message import TextContent
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
-from review_delivery import DELIVERY_BUDGET, complete_review
+from review_delivery import DELIVERY_BUDGET, complete_review, delivery_lock
 
 _CONVERSATION_KEY_PREFIX = "agent-conversation-"
 
@@ -106,6 +106,20 @@ class AgentConversationDispatcher:
         and left alone, whatever the new delivery says. Callers with no revision
         identity leave `head` empty and keep the delivery-key-only behavior.
         """
+        if check_delivery is None:
+            return self._dispatch(subject=subject, delivery=delivery, prompt=prompt,
+                                  head=head, metadata=metadata)
+        key = str(uuid5(NAMESPACE_URL, f"{self.automation_id}:{subject}"))
+        with delivery_lock(key) as acquired:
+            if not acquired:
+                return {"disposition": "resumed", "conversation_id": key,
+                        "outcome": "incomplete", "reason": "delivery-active"}
+            return self._dispatch(subject=subject, delivery=delivery, prompt=prompt,
+                                  head=head, metadata=metadata,
+                                  check_delivery=check_delivery)
+
+    def _dispatch(self, *, subject, delivery, prompt, head="", metadata=None,
+                  check_delivery=None):
         conversation_id = uuid5(NAMESPACE_URL, f"{self.automation_id}:{subject}")
         state_key = f"{_CONVERSATION_KEY_PREFIX}{conversation_id}"
         record = _kv_request(state_key, "GET") or {}
@@ -151,15 +165,17 @@ class AgentConversationDispatcher:
                         }
                     conversation.send_message(prompt)
                     status = conversation.state.refresh_from_server()["execution_status"]
-                    record = {}
-                if not (same_delivery or same_head):
+                    record = {"fresh_delivery": True}
+                elif disposition == "created":
                     record = {}
                 record.update(
                     subject=subject, conversation_id=str(conversation_id),
                     delivery=delivery, head=head,
                 )
                 if "attempts" not in record:
-                    record["attempts"] = int(status in ("running", "error"))
+                    record["attempts"] = 0 if record.get("fresh_delivery") else int(
+                        status in ("running", "error")
+                    )
                 def save():
                     _kv_request(state_key, "PUT", record)
 
@@ -168,6 +184,7 @@ class AgentConversationDispatcher:
                 outcome = complete_review(
                     conversation, check_delivery, record, save,
                     self._delivery_deadline,
+                    fresh_delivery=record.pop("fresh_delivery", False),
                 )
                 return {
                     "disposition": disposition,
