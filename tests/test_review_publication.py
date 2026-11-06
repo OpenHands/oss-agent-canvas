@@ -1,14 +1,16 @@
+import ast
 import importlib.util
+import json
 import os
 import re
 import subprocess
 import sys
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import json
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import MethodType, SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULES = [
@@ -247,13 +249,24 @@ class PublicationTests(unittest.TestCase):
             path = Path(self.directory.name) / "payload.json"
             if text is not None:
                 path.write_text(text)
+            runner = Path(self.directory.name) / "runner.py"
+            runner.write_text(
+                "import runpy, sys\n"
+                "def audit(event, args):\n"
+                "    if event in ('socket.getaddrinfo', 'socket.connect'):\n"
+                "        raise SystemExit('UNEXPECTED_NETWORK_REQUEST')\n"
+                "sys.addaudithook(audit)\n"
+                "source = sys.argv.pop(1)\n"
+                "runpy.run_path(source, run_name='__main__')\n"
+            )
             result = subprocess.run([
-                sys.executable, "-B", str(MODULES[0]), "--repo", "owner/repo", "--number", "1",
-                "--head", HEAD, "--secret", "NONEXISTENT_REVIEW_TEST_SECRET", "--receipt", str(self.receipt), str(path),
-            ], capture_output=True, text=True, env={"PATH": os.environ.get("PATH", "")})
+                sys.executable, "-B", str(runner), str(MODULES[0]), "--repo", "owner/repo", "--number", "1",
+                "--head", HEAD, "--secret", "REVIEW_TEST_CREDENTIAL", "--receipt", str(self.receipt), str(path),
+            ], capture_output=True, text=True, env={"PATH": os.environ.get("PATH", ""), "REVIEW_TEST_CREDENTIAL": "local-test-only"})
             self.assertNotEqual(result.returncode, 0)
             self.assertNotIn("GITHUB_REVIEW_POSTED", result.stdout)
             self.assertIn("REVIEW_PUBLICATION_STOPPED", result.stderr)
+            self.assertNotIn("UNEXPECTED_NETWORK_REQUEST", result.stderr)
 
     def test_generated_prompt_delivers_exact_helper_and_fixed_target(self):
         for helper_path in MODULES:
@@ -280,6 +293,49 @@ class PublicationTests(unittest.TestCase):
             other = module._build_review_prompt("owner/repo", pr, HEAD, {"id": 13})
             self.assertNotEqual(re.findall(r"--receipt (\S+)", prompt),
                                 re.findall(r"--receipt (\S+)", other))
+
+    def test_worker_delivers_helper_for_each_trigger_mode(self):
+        for helper_path in MODULES:
+            sys.path.insert(0, str(helper_path.parent))
+            try:
+                workflow = load(helper_path.with_name("main.py"))
+            finally:
+                sys.path.pop(0)
+            tree = ast.parse(helper_path.with_name("worker.py").read_text())
+            reviewer = next(node for node in tree.body
+                            if isinstance(node, ast.ClassDef) and node.name == "PullRequestReviewer")
+            methods = [node for node in reviewer.body if isinstance(node, ast.FunctionDef)
+                       and node.name in ("_prompt", "_start_review")]
+            namespace = {"workflow": workflow, "json": json}
+            exec(compile(ast.Module(body=methods, type_ignores=[]), "worker-methods", "exec"), namespace)
+            deliveries = []
+
+            class DispatcherBoundary:
+                def deliver(self, **delivery):
+                    deliveries.append(delivery)
+                    return {"disposition": "delivered", "conversation_id": "local-only"}
+
+            worker = SimpleNamespace(repository="owner/repo", token_name="REVIEW_TEST_CREDENTIAL",
+                                     trigger_reviewer="review-bot", dispatcher=DispatcherBoundary())
+            worker._prompt = MethodType(namespace["_prompt"], worker)
+            pr = {"number": 1, "head": {"sha": HEAD}, "user": {"login": "contributor"}}
+            modes = [({"id": 12}, None, None), ({"id": 12}, None, None),
+                     ({"id": 13}, None, None), ({"id": 14}, "review-label", None),
+                     (None, None, "scheduled-head")]
+            for trigger, label, key in modes:
+                namespace["_start_review"](worker, 10, pr, trigger, HEAD, label, key)
+            receipts = []
+            for delivery in deliveries:
+                self.assertEqual(delivery["subject"], "10:pr:1")
+                prompt = delivery["prompt"]
+                self.assertIn(helper_path.read_text(), prompt)
+                self.assertIn("--reviewer review-bot", prompt)
+                self.assertIn("--secret REVIEW_TEST_CREDENTIAL", prompt)
+                receipts.append(re.findall(r"--receipt (\S+)", prompt)[-1])
+            self.assertEqual(receipts[0], receipts[1])
+            self.assertNotEqual(receipts[0], receipts[2])
+            self.assertEqual(len(set(receipts)), 4)
+            self.assertEqual(deliveries[-1]["delivery"], "scheduled-head")
 
     def test_modules_are_identical_and_standalone(self):
         self.assertEqual(MODULES[0].read_bytes(), MODULES[1].read_bytes())
