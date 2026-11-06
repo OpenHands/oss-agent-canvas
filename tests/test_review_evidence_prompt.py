@@ -76,6 +76,23 @@ class ReviewEvidencePromptTests(unittest.TestCase):
         self.assertIn("end with `🔄 CHANGES REQUESTED`", prompt)
         self.assertIn("and required verification is complete", prompt)
 
+    def test_future_approval_conditions_preserve_all_verification_gaps(self):
+        prompt = self.prompt()
+        self.assertIn("current or future approval", prompt)
+        self.assertIn("every unresolved required verification gap", prompt)
+        self.assertIn("a separate description gate does not resolve", prompt)
+        self.assertIn("Verification still needed:", prompt)
+        self.assertIn("another gate is the only obstacle", prompt)
+
+    def test_observed_actions_and_baseline_reproduction_need_evidence(self):
+        prompt = self.prompt()
+        self.assertIn("Do not claim an inspection, configuration read or base run", prompt)
+        self.assertIn("unchanged files or a diff alone", prompt)
+        self.assertIn("Preserve supported base reproductions", prompt)
+        self.assertIn("A job name is not evidence of its steps", prompt)
+        self.assertIn("obligations, not evidence that those actions occurred", prompt)
+        self.assertIn("qualitative evaluation conclusions", prompt)
+
     def test_verification_gap_completes_without_approval_handoff(self):
         class LocalReviewer(self.worker.PullRequestReviewer):
             # Replace only GitHub I/O to prevent writes to real pull requests.
