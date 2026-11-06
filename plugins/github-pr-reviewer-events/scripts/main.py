@@ -764,7 +764,11 @@ def _build_review_prompt(
     workspace_instructions: str | None = None,
     github_token_secret: str = "GITHUB_PERSONAL_ACCESS_TOKEN",
     trigger_description: str | None = None,
+    publication_command: str | None = None,
+    publication_payload_path: str | None = None,
 ) -> str:
+    if publication_command and not publication_payload_path:
+        raise ValueError("Guarded publication requires a task-specific payload path")
     number = pr.get("number", "?")
     title = pr.get("title", "(no title)")
     body = (pr.get("body") or "").strip() or "(no description)"
@@ -793,10 +797,31 @@ def _build_review_prompt(
         "Do not clone, fetch, check out, or delete the repository."
     )
 
+    submit_target = (
+        "the guarded publisher described below"
+        if publication_command else f"`POST /repos/{repo}/pulls/{number}/reviews`"
+    )
+    publication_safety = (
+        f"8. Write the complete JSON payload to `{publication_payload_path}`, with `commit_id`, `event`, "
+        "`body` and optional `comments`. Do not use shell command substitution to read the body. "
+        "Publish ONLY by running this staged helper, never by raw gh/curl/REST writes:\n"
+        f"   `{publication_command}`\n"
+        "   The helper validates before writing, handles a confirmed inline-position rejection "
+        "by moving findings into the body, and verifies the accepted response. It preserves a "
+        "local intent journal on any uncertain outcome. Do not delete or change the helper, "
+        "delivery identity or journal. Never create a replacement for an accepted, incomplete, "
+        "or uncertain review; report the failure to the operator.\n"
+        if publication_command else
+        "8. If a finding cannot be attached to a changed line, put it in the review body instead. "
+        "If the API rejects the inline positions, retry with every finding in the body and no `comments` array. "
+        "If GitHub forbids the configured bot from approving its own PR, retry the clean review with "
+        "`event: COMMENT` and keep the approved verdict.\n"
+    )
+
     return (
         "You are an AI code reviewer. Review the GitHub pull request below and publish "
-        "the review directly to GitHub. Do not modify files, push commits, or merge "
-        "the pull request.\n\n"
+        "the review directly to GitHub. Do not modify repository files, push commits, or merge "
+        "the pull request. Temporary review payload artifacts and the publisher's journal are allowed.\n\n"
         f"Repository : {repo}\n"
         f"PR #{number}: \"{title}\"\n"
         f"Author     : @{author}\n"
@@ -821,7 +846,7 @@ def _build_review_prompt(
         "and the repository guidance you read remain useful background, but every mutable fact "
         "above must be re-established now; never repeat an earlier finding, verdict, or "
         "label/priority claim that the state you just read does not support.\n"
-        f"   Use `gh` or GitHub REST API calls with `{github_token_secret}`; never print secret values.\n"
+        f"   Use `gh` or GitHub REST API calls with `{github_token_secret}` for reads; never print secret values.\n"
         "3. Before reviewing, you MUST read the repository's own guidance to understand the repo first.\n"
         "   Read `AGENTS.md` at the repository root (and any nested `AGENTS.md` covering the "
         "changed files), plus other relevant docs when present - e.g. `CONTRIBUTING.md`, "
@@ -832,7 +857,7 @@ def _build_review_prompt(
         "whether this change belongs in this repository and has the product/architecture direction "
         "it needs. If it does, continue the technical review unchanged. If it does not, or needs a "
         "product/architecture decision, stop here and publish exactly one review with "
-        f"`POST /repos/{repo}/pulls/{number}/reviews`, using `commit_id` equal to the Head SHA above "
+        f"{submit_target}, using `commit_id` equal to the Head SHA above "
         "and `event: COMMENT`. Briefly say whether the change should move repositories, close, or "
         "receive a maintainer decision; when it belongs elsewhere, name the likely owning repository "
         "only if the evidence supports it. Do not run tests or report implementation findings. This "
@@ -847,7 +872,7 @@ def _build_review_prompt(
         "credential, configuration, or external state stayed unchanged. Do not add speculative or "
         "out-of-scope notes: every blocking or non-blocking observation must identify demonstrated "
         "behavior on the current head and explain why it matters to the merge decision.\n"
-        f"7. Publish one review with `POST /repos/{repo}/pulls/{number}/reviews`, using "
+        f"7. Publish one review with {submit_target}, using "
         "`commit_id` equal to the Head SHA above. Use `event: APPROVE` when there are "
         "no material findings; otherwise use `event: COMMENT`. Never use "
         "`REQUEST_CHANGES`.\n"
@@ -858,20 +883,23 @@ def _build_review_prompt(
         "   Put the overall assessment in `body`, and each line-specific finding in the `comments` "
         "array with `path`, `line`, `side: RIGHT`, and `body`.\n"
         "   Only create inline comments for actionable findings; do not open praise or nitpick threads.\n"
-        "8. If a finding cannot be attached to a changed line, put it in the review body instead. "
-        "If the API rejects the inline positions, retry with every finding in the body and no `comments` array. "
-        "If GitHub forbids the configured bot from approving its own PR, retry the clean review with "
-        "`event: COMMENT` and keep the approved verdict.\n"
-        "9. Begin the review body with this disclosure: "
+        + publication_safety
+        + "9. Begin the review body with this disclosure: "
         "`_This review was posted by an AI agent (OpenHands)._`\n"
         "10. End the review body with a verdict on its own line: either `✅ APPROVED` "
         "or `🔄 CHANGES REQUESTED`.\n"
         "11. If there are no material issues, still publish a review saying so, with the "
         "disclosure and the verdict.\n"
         f"\nReview instructions:\n{tone}{extra}{guide_section}\n\n"
-        "After GitHub accepts the review, output exactly `GITHUB_REVIEW_POSTED`. "
-        "If publishing still fails after the fallback in step 8, output the complete review text "
-        "so it can be posted as a comment instead."
+        + (
+            "Only after the helper exits successfully with `GITHUB_REVIEW_POSTED`, output exactly "
+            "`GITHUB_REVIEW_POSTED` and stop. On failure, report publication as unverified with "
+            "the review ID if known and the journal path; do not claim success or repost."
+            if publication_command else
+            "After GitHub accepts the review, output exactly `GITHUB_REVIEW_POSTED`. "
+            "If publishing still fails after the fallback in step 8, output the complete review text "
+            "so it can be posted as a comment instead."
+        )
     )
 
 
