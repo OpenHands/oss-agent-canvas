@@ -1,0 +1,397 @@
+import copy
+import json
+import re
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).parents[1] / "tarball"))
+import topic_issue
+from topic_issue import TopicIssue, IssueReader, SECTIONS, public_issue_errors
+
+
+def public_body(evidence="Source and run links remain available below."):
+    content = (
+        "The review bot reports success when required checks did not complete, misleading maintainers.",
+        "A compiler was killed, but the review called its check successful.",
+        "Report each check's own completed result and explicitly disclose interrupted checks.",
+        "Compare the same failing and control inputs; a killed check must remain incomplete while a real pass stays passing.",
+        "Investigation underway; no improvement is established yet.",
+        evidence + "\n<!-- topic-evidence:start -->\n<!-- topic-evidence:end -->",
+        "Previous attempts remain in comments.\n<!-- topic-attempts:start -->\n<!-- topic-attempts:end -->",
+    )
+    return "\n\n".join(
+        f"## {name}\n\n{text}" for name, text in zip(SECTIONS, content, strict=True)
+    )
+
+
+class GitHub:
+    def __init__(self, private=True):
+        self.private = private
+        self.issues, self.comments, self.calls = [], [], []
+
+    def __call__(self, argv):
+        self.calls.append(argv)
+        if argv[:3] == ["gh", "label", "create"]:
+            return ""
+        assert argv[:2] == ["gh", "api"]
+        endpoint = next(item for item in argv if item.startswith("repos/"))
+        payload = (
+            json.loads(Path(argv[argv.index("--input") + 1]).read_text())
+            if "--input" in argv
+            else None
+        )
+        method = argv[argv.index("--method") + 1] if "--method" in argv else "GET"
+        repository = "/".join(endpoint.split("/")[1:3])
+        if endpoint == "repos/" + repository:
+            value = {"private": self.private}
+        elif "/issues/comments/" in endpoint:
+            identifier = int(endpoint.rsplit("/", 1)[1])
+            value = next(item for item in self.comments if item["id"] == identifier)
+            if method == "PATCH":
+                value.update(payload)
+        elif "/comments" in endpoint:
+            number = int(endpoint.split("/issues/")[1].split("/")[0])
+            issue_url = f"https://api.github.com/repos/{repository}/issues/{number}"
+            if method == "POST":
+                assert len(payload["body"]) < 65536
+                value = {
+                    "id": len(self.comments) + 1,
+                    "html_url": f"https://github.com/{repository}/issues/{number}#issuecomment-{len(self.comments) + 1}",
+                    "issue_url": issue_url,
+                    **payload,
+                }
+                self.comments.append(value)
+            else:
+                value = [
+                    item for item in self.comments if item["issue_url"] == issue_url
+                ]
+        elif re.search(r"/issues/[0-9]+$", endpoint):
+            number = int(endpoint.rsplit("/", 1)[1])
+            value = next(item for item in self.issues if item["number"] == number)
+            if method == "PATCH":
+                value.update(payload)
+        elif method == "POST":
+            value = {
+                "number": len(self.issues) + 1,
+                "html_url": f"https://github.com/{repository}/issues/{len(self.issues) + 1}",
+                "state": "open",
+                **payload,
+            }
+            self.issues.append(value)
+        else:
+            value = self.issues
+        return json.dumps(copy.deepcopy(value))
+
+
+def snapshot(tmp_path):
+    return {
+        "project_id": "project",
+        "app_url": None,
+        "source": {
+            "repository": "Example/source",
+            "revision": "a" * 40,
+            "automation_ids": ["automation"],
+            "files": {"worker.py": "source"},
+        },
+        "issue_evidence_dir": str(tmp_path / "private-evidence"),
+        "topic": {
+            "id": "topic",
+            "key": "one-failure",
+            "title": "One failure",
+            "reason": "Investigate evidence",
+        },
+        "samples": [
+            {
+                "case_id": "c1",
+                "conversation_id": "conversation",
+                "trace_ids": ["trace"],
+                "selected_event_ids": ["event"],
+                "initial_instructions": [{"role": "user", "content": "Original task"}],
+            }
+        ],
+    }
+
+
+def test_issue_sections_reuse_redaction_and_human_content(tmp_path, monkeypatch):
+    github = GitHub()
+    monkeypatch.setattr(topic_issue, "command", github)
+    issue = TopicIssue.ensure(snapshot(tmp_path), tmp_path / "first")
+    issue.frozen(snapshot(tmp_path))
+    issue.value["body"] += "\nHuman clarification stays here.\n"
+    github.issues[0]["body"] = issue.value["body"]
+    issue.record(
+        "Attempts and decisions — first",
+        "Not proven",
+        {"failure.json": {"api_key": "private-value", "outcome": "Wrong labels"}},
+    )
+    initial_count = len(github.comments)
+    again = TopicIssue.ensure(snapshot(tmp_path), tmp_path / "second")
+    again.record(
+        "Attempts and decisions — first",
+        "Not proven",
+        {"failure.json": {"api_key": "private-value", "outcome": "Wrong labels"}},
+    )
+    assert len(github.issues) == 1 and len(github.comments) == initial_count
+    assert "Human clarification stays here" in again.value["body"]
+    assert all("## " + section in issue.value["body"] for section in SECTIONS)
+    assert "private-value" not in json.dumps(github.comments)
+    reader = IssueReader(SimpleNamespace(schemas=[]), again, tmp_path / "reads")
+    result = reader.execute("read_issue", {"section": "Validation", "offset": 0})
+    assert result["content"].startswith("## Validation\n")
+    assert "## Evidence" not in result["content"]
+    assert result["records"]
+    result = reader.execute("read_issue", {"section": "Evidence", "offset": 0})
+    assert "#issuecomment-" in result["content"]
+
+
+def private_index(issue, body):
+    reference = re.search(r"\| evidence-index.json \| `([a-f0-9]{64}\.json)`", body)[1]
+    return json.loads(issue.read_artifact(reference))
+
+
+def test_large_private_evidence_is_complete_paged_and_scoped(tmp_path, monkeypatch):
+    github = GitHub(private=False)
+    monkeypatch.setattr(topic_issue, "command", github)
+    issue = TopicIssue.ensure(snapshot(tmp_path), tmp_path / "first")
+    content = {"events": [f"Tool {i}: actual observed output\n" for i in range(9000)]}
+    artifact = issue.artifact("events.json", content)
+    reader = IssueReader(SimpleNamespace(schemas=[]), issue, tmp_path / "reads")
+    offset, pages = 0, []
+    while True:
+        page = reader.execute(
+            "read_issue_artifact",
+            {"reference": artifact["reference"], "offset": offset},
+        )
+        pages.append(page["content"])
+        if page["next_offset"] is None:
+            break
+        offset = page["next_offset"]
+    assert json.loads("".join(pages)) == content
+    issue.record(
+        "Attempts and decisions — test", "Not proven", {"events.json": content}
+    )
+    public = json.dumps(github.issues + github.comments)
+    assert "actual observed output" not in public
+    index = private_index(issue, github.comments[-1]["body"])
+    assert artifact["reference"] == index[0]["reference"]
+    assert "events.json" not in public
+    assert str(issue.evidence_root) not in json.dumps(github.comments)
+    other = snapshot(tmp_path)
+    other["issue_evidence_dir"] = str(tmp_path / "other-private-evidence")
+    isolated = TopicIssue.ensure(other, tmp_path / "other")
+    with pytest.raises(ValueError, match="missing"):
+        isolated.read_artifact(artifact["reference"])
+    with pytest.raises(ValueError):
+        issue.read_artifact("../../outside")
+    path = issue.evidence_root / artifact["reference"]
+    path.write_text("tampered")
+    with pytest.raises(ValueError, match="modified"):
+        issue.read_artifact(artifact["reference"])
+
+
+def test_public_issue_contains_references_only_and_comment_reads_are_scoped(
+    tmp_path, monkeypatch
+):
+    github = GitHub(private=False)
+    monkeypatch.setattr(topic_issue, "command", github)
+    data = snapshot(tmp_path)
+    data["topic"]["reason"] = "Private customer detail"
+    issue = TopicIssue.ensure(data, tmp_path / "first")
+    issue.frozen(data)
+    assert issue.repository == data["source"]["repository"]
+    assert "Private customer detail" not in json.dumps(github.issues + github.comments)
+    reader = IssueReader(SimpleNamespace(schemas=[]), issue, tmp_path / "reads")
+    identifier = github.comments[0]["id"]
+    assert reader.execute(
+        "read_issue_comment", {"comment_id": identifier, "offset": 0}
+    )["content"]
+    github.comments[0]["issue_url"] = (
+        "https://api.github.com/repos/Other/project/issues/1"
+    )
+    with pytest.raises(ValueError, match="outside"):
+        reader.execute("read_issue_comment", {"comment_id": identifier, "offset": 0})
+    with pytest.raises(ValueError):
+        reader.execute("read_issue_comment", {"comment_id": True, "offset": 0})
+
+
+def test_preview_never_calls_github(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        topic_issue, "command", lambda *a: pytest.fail("Preview called GitHub")
+    )
+    issue = TopicIssue.ensure(snapshot(tmp_path), tmp_path, preview=True)
+    issue.frozen(snapshot(tmp_path))
+    issue.attempt(tmp_path / "analysis", {"proposals": [], "errors": []})
+    assert issue.context()["url"] is None
+    assert len(issue.context()["records"]) == 2
+
+
+def test_issue_reader_keeps_existing_production_evidence_tools(tmp_path):
+    calls = []
+    original = SimpleNamespace(
+        schemas=[{"name": "read_trace"}],
+        execute=lambda name, args: calls.append((name, args))
+        or {"raw": "production evidence"},
+    )
+    issue = TopicIssue.ensure(snapshot(tmp_path), tmp_path / "preview", preview=True)
+    reader = IssueReader(original, issue, tmp_path / "reads")
+    assert {item["name"] for item in reader.schemas} == {
+        "read_trace",
+        "read_issue",
+        "read_issue_comment",
+        "read_issue_artifact",
+    }
+    assert reader.execute("read_trace", {"offset": 0}) == {"raw": "production evidence"}
+    assert calls == [("read_trace", {"offset": 0})]
+
+
+def test_failed_execution_context_is_published_without_a_receipt(tmp_path, monkeypatch):
+    github = GitHub()
+    monkeypatch.setattr(topic_issue, "command", github)
+    issue = TopicIssue.ensure(snapshot(tmp_path), tmp_path / "issue")
+    directory = tmp_path / "analysis/comparison/runs/negative-1-1-candidate"
+    directory.mkdir(parents=True)
+    (directory / "events.json").write_text(
+        json.dumps([{"tool": "rejected write", "error": "Actual API error"}])
+    )
+    (directory / "prompt.json").write_text(
+        json.dumps({"prompt": "Original task and exact policy"})
+    )
+    requests = tmp_path / "analysis/requests"
+    requests.mkdir()
+    (requests / "coordinator.json").write_text(
+        json.dumps({"input": "Exact private repair prompt"})
+    )
+    (tmp_path / "analysis/comparison/budget.json").write_text(
+        json.dumps({"reported_inference_cost_usd": 0.3, "complete": False})
+    )
+    (tmp_path / "analysis/baseline-0-check.json").write_text(
+        json.dumps({"exit_code": 124})
+    )
+    issue.attempt(tmp_path / "analysis", {"proposals": [], "errors": []})
+    bodies = "\n".join(item["body"] for item in github.comments)
+    assert (
+        "Actual API error" not in bodies
+        and "Original task and exact policy" not in bodies
+    )
+    names = "\n".join(
+        row["name"]
+        for comment in github.comments
+        for row in private_index(issue, comment["body"])
+    )
+    assert "negative-1-1-candidate/events.json" in names
+    assert "comparison/budget.json" in names and "baseline-0-check.json" in names
+    assert "requests/coordinator.json" in names
+    assert "negative-1-1-candidate/events.json" not in bodies
+    private = "\n".join(path.read_text() for path in issue.evidence_root.glob("*.json"))
+    assert "Actual API error" in private and "Original task and exact policy" in private
+    assert "Exact private repair prompt" in private
+
+
+def test_large_catalog_uses_complete_private_index_without_losing_references(
+    tmp_path, monkeypatch
+):
+    github = GitHub()
+    monkeypatch.setattr(topic_issue, "command", github)
+    issue = TopicIssue.ensure(snapshot(tmp_path), tmp_path / "issue")
+    artifacts = {
+        f"validation/run-{number:04d}/original-input.json": {"case": number}
+        for number in range(700)
+    }
+    issue.record(
+        "Evidence — large comparison", "Recorded inputs remain private.", artifacts
+    )
+    comment = github.comments[-1]["body"]
+    assert len(comment) < 60000
+    assert "700 artifacts" in comment
+    match = re.search(r"\| evidence-index.json \| `([a-f0-9]{64}\.json)`", comment)
+    assert match
+    index = json.loads(issue.read_artifact(match[1]))
+    assert len(index) == 700 and {row["name"] for row in index} == set(artifacts)
+    for row in (index[0], index[-1]):
+        assert (
+            json.loads(issue.read_artifact(row["reference"])) == artifacts[row["name"]]
+        )
+
+
+def test_body_indexes_rewrite_latest_references_without_losing_history(
+    tmp_path, monkeypatch
+):
+    github = GitHub()
+    monkeypatch.setattr(topic_issue, "command", github)
+    issue = TopicIssue.ensure(snapshot(tmp_path), tmp_path / "issue")
+    human = "\nHuman clarification: keep the existing notification routing.\n"
+    issue.update_body(public_body() + human)
+    first = issue.record(
+        "Evidence — initial",
+        "Observed an incomplete check",
+        {"raw.json": {"trace": "old-reference"}},
+    )
+    old_ref = issue.artifact("raw.json", {"trace": "old-reference"})["reference"]
+    second = issue.record(
+        "Evidence — corrected",
+        "The initial cause was disproved",
+        {"raw.json": {"trace": "new-reference"}},
+    )
+    assert len(github.comments) == 2 and first["id"] != second["id"]
+    assert "Evidence — initial" not in issue.value["body"]
+    assert "Evidence — corrected" in issue.value["body"]
+    assert human in issue.value["body"]
+    assert private_index(issue, github.comments[0]["body"])[0]["reference"] == old_ref
+    assert str(issue.evidence_root) not in github.comments[0]["body"]
+    assert json.loads(issue.read_artifact(old_ref))["trace"] == "old-reference"
+    assert len(issue.context()["records"]) == 2
+    issue.related(["https://github.com/Example/source/pull/1"])
+    issue.related(["https://github.com/Example/source/pull/2"])
+    assert issue.value["body"].count("### Related repair work") == 1
+    assert "/pull/1" not in issue.value["body"] and "/pull/2" in issue.value["body"]
+    assert human in issue.value["body"]
+    assert public_issue_errors(issue.value["body"]) == []
+
+
+@pytest.mark.parametrize(
+    "defect", ["missing", "duplicate", "order", "empty", "private", "generic"]
+)
+def test_public_issue_contract_rejects_unreviewable_bodies(defect):
+    body = public_body()
+    if defect == "missing":
+        body = body.replace("## Proposed prevention", "### Proposed prevention")
+    elif defect == "duplicate":
+        body += "\n## Current status\nAn obsolete verdict"
+    elif defect == "order":
+        body = (
+            body.replace("## Observed example", "## TEMP")
+            .replace("## Evidence", "## Observed example")
+            .replace("## TEMP", "## Evidence")
+        )
+    elif defect == "empty":
+        body = body.replace(
+            "Investigation underway; no improvement is established yet.",
+            "<!-- only a marker -->",
+        )
+    elif defect == "private":
+        body = body.replace(
+            "A compiler was killed",
+            "/var/lib/agent-canvas/raw-data.json: A compiler was killed",
+        )
+    else:
+        body += "\nSupporting observations and impact assessments are in the private evidence records linked below."
+    assert public_issue_errors(body)
+
+
+def test_public_writes_reject_credentials_but_private_artifacts_stay_readable(
+    tmp_path, monkeypatch
+):
+    github = GitHub()
+    monkeypatch.setattr(topic_issue, "command", github)
+    issue = TopicIssue.ensure(snapshot(tmp_path), tmp_path / "issue")
+    token = "sk-" + "a" * 40
+    before = copy.deepcopy(github.issues)
+    with pytest.raises(ValueError, match="credential"):
+        issue.update_body(public_body() + "\napi_key=" + token)
+    assert github.issues == before
+    with pytest.raises(ValueError, match="credential"):
+        issue.record("Evidence — unsafe", "api_key=" + token, {})
+    assert not github.comments
