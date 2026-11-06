@@ -24,6 +24,9 @@ def scan_processes(proc_root=Path("/proc")):
     except OSError:
         return unavailable_inventory()
 
+    if not entries:
+        return unavailable_inventory()
+
     result = unavailable_inventory()
     result["status"] = "ok"
     for entry in entries:
@@ -59,7 +62,10 @@ def valid_inventory(value):
         return False
     if value["status"] not in ("ok", "partial", "unavailable"):
         return False
-    if any(type(value[key]) is not int or value[key] < 0 for key in ("processes_scanned", "processes_unreadable")):
+    if any(
+        type(value[key]) is not int or value[key] < 0
+        for key in ("processes_scanned", "processes_unreadable")
+    ):
         return False
     if not isinstance(value["credential_arguments"], list):
         return False
@@ -68,7 +74,9 @@ def valid_inventory(value):
             return False
         if type(item["pid"]) is not int or item["pid"] <= 0:
             return False
-        if not isinstance(item["flags"], list) or not all(isinstance(flag, str) and flag in FLAGS for flag in item["flags"]):
+        if not isinstance(item["flags"], list) or not all(
+            isinstance(flag, str) and flag in FLAGS for flag in item["flags"]
+        ):
             return False
     return True
 

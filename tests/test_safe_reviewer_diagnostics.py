@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MODULES = [ROOT / "plugins/github-pr-reviewer/scripts/main.py"] + sorted(
+MODULES = sorted(ROOT.glob("plugins/github-pr-reviewer*/scripts/main.py")) + sorted(
     ROOT.glob("automations/github-pr-reviewer*/tarball/main.py")
 )
 

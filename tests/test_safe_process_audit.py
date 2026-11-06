@@ -69,8 +69,18 @@ class ProcessAuditTests(unittest.TestCase):
         self.assertEqual(result["credential_arguments"], [])
         self.assertNotIn(str(self.proc), json.dumps(result))
 
+    def test_empty_procfs_is_unavailable_not_clean(self):
+        self.assertEqual(self.module.scan_processes(self.proc)["status"], "unavailable")
+
     def test_missing_procfs_is_unavailable_not_clean(self):
         self.assertEqual(self.module.scan_processes(self.proc / "missing")["status"], "unavailable")
+
+    def test_oversized_process_is_partial_without_echoing_arguments(self):
+        self.process(1, b"private-value" * self.module.MAX_CMDLINE_BYTES)
+        result = self.module.scan_processes(self.proc)
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["processes_unreadable"], 1)
+        self.assertEqual(result["credential_arguments"], [])
 
     def test_invalid_bytes_and_unknown_flags_never_reach_output(self):
         self.process(1, b"\xff-private", b"--unknown=private-value", b"--client-secret=\xff-private")
