@@ -138,7 +138,8 @@ class IssueTriage(GitHubRepository):
             "is not completion. If any required write or final verification fails, choose "
             "BLOCKED instead: report the failed operation, HTTP status when available, "
             "confirmed partial changes, and remaining work. Never describe blocked work "
-            "as READY or triage completed. On an authorization denial, stop writing; do "
+            "as READY or triage completed. On an authorization denial for a required write, "
+            "stop writing; do "
             "not retry unchanged credentials, make probe writes, use another credential, "
             "or broaden permissions. Denied deletion of old automated comments is optional "
             "cleanup, not a blocked required write. Never post a success marker as a "
@@ -164,9 +165,13 @@ class IssueTriage(GitHubRepository):
             "Use repository-required heading names and include only applicable sections. "
             "Then apply the priority and `ready-for-dev` labels.\n\n"
             "DECISION NEEDED: Leave the human-owned issue body unchanged, removing only a "
-            "previous complete managed section if one exists. Delete prior automated "
-            "triage comments when allowed, remove `ready-for-dev`, and post one concise "
-            "replacement comment below the human discussion. Begin it with exactly:\n"
+            "previous complete managed section if one exists. Remove `ready-for-dev` "
+            "and apply the priority. If exactly one valid decision comment already ends "
+            "with this delivery marker, reuse it without posting a duplicate. Otherwise "
+            "post one concise replacement comment below the human discussion; if an "
+            "invalid or duplicate current-delivery comment cannot be corrected, report "
+            "BLOCKED. Delete older automated triage comments only when allowed; skip an "
+            "authorization-denied optional cleanup without retrying it. Begin with exactly:\n"
             "---\n"
             "**The following comments were added by the OpenHands AI agent.**\n\n"
             "Follow with `### Decision needed` and only the minimum focused questions. Do "
@@ -264,8 +269,10 @@ class IssueTriage(GitHubRepository):
                 issue, discussion, automated_comments, issues, marker, readiness_check
             ),
         )
+        self.dispatcher.remaining()
         current = self.gh("GET", f"/issues/{issue['number']}")
         final_comments = self.gh_pages(f"/issues/{issue['number']}/comments")
+        self.dispatcher.remaining()
         outcome = verified_outcome(issue, current, final_comments, marker, discussion)
         if outcome is None:
             raise RuntimeError(

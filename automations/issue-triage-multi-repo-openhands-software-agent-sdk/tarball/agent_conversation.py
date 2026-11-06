@@ -62,7 +62,7 @@ class AgentConversationDispatcher:
         self.automation_id = str(payload["automation_id"])
         self._workspace: RemoteWorkspace | None = None
         self._secrets = {}
-        self._deadline = time.monotonic() + 480
+        self.deadline = time.monotonic() + 480
 
     def __enter__(self):
         _register_tools()
@@ -81,7 +81,14 @@ class AgentConversationDispatcher:
         assert self._workspace is not None
         return self._workspace.__exit__(*args)
 
+    def remaining(self) -> float:
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Triage verification deadline exceeded")
+        return remaining
+
     def deliver(self, subject: str, delivery: str, prompt: str) -> dict[str, str]:
+        self.remaining()
         conversation_id = uuid5(NAMESPACE_URL, f"{self.automation_id}:{subject}")
         state_key = f"{_CONVERSATION_KEY_PREFIX}{conversation_id}"
         record = _kv_request(state_key, "GET") or {}
@@ -91,6 +98,7 @@ class AgentConversationDispatcher:
         same_delivery = record.get("delivery") == delivery
 
         try:
+            self.remaining()
             conversation = RemoteConversation.attach(
                 self._workspace, conversation_id, visualizer=None
             )
@@ -98,6 +106,7 @@ class AgentConversationDispatcher:
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code != 404:
                 raise
+            self.remaining()
             conversation = RemoteConversation.create(
                 self._workspace,
                 StartConversationRequest(
@@ -113,6 +122,7 @@ class AgentConversationDispatcher:
             )
             disposition = "created"
         try:
+            self.remaining()
             if disposition == "resumed":
                 status = conversation.state.execution_status
                 if status == ConversationExecutionStatus.RUNNING and not same_delivery:
@@ -131,6 +141,7 @@ class AgentConversationDispatcher:
                     ConversationExecutionStatus.FINISHED,
                     ConversationExecutionStatus.ERROR,
                 ):
+                    self.remaining()
                     conversation.send_message(prompt)
                     disposition = "retried" if same_delivery else "resumed"
             # This records delivery identity, not successful GitHub publication.
@@ -143,10 +154,8 @@ class AgentConversationDispatcher:
                     "delivery": delivery,
                 },
             )
-            remaining = self._deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError("Triage verification deadline exceeded")
-            conversation.run(timeout=remaining)
+            conversation.run(timeout=self.remaining())
+            self.remaining()
             if (
                 conversation.state.execution_status
                 != ConversationExecutionStatus.FINISHED

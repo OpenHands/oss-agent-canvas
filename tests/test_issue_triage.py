@@ -2,6 +2,7 @@ import contextlib
 import copy
 import importlib.util
 import io
+import json
 import sys
 import time
 import unittest
@@ -37,6 +38,9 @@ class GitHubBoundary:
         self.publish = publish
         self.deliveries = []
         self.read_error = None
+
+    def remaining(self):
+        return 10
 
     def deliver(self, **kwargs):
         self.deliveries.append(kwargs)
@@ -190,11 +194,78 @@ class TriageTests(unittest.TestCase):
             worker._submit(1, issue(), [issue()])
             self.assertEqual(len(boundary.comments), 1)
 
+    def test_partial_decision_retry_reuses_current_comment(self):
+        for modules in self.modules:
+            boundary = GitHubBoundary(issue(), publish_decision)
+            worker = self.repository(modules, boundary)
+            worker._submit(1, issue(), [issue()])
+            boundary.issue["labels"] = [{"name": "type:feature"}]
+
+            def repair_priority(boundary, prompt):
+                self.assertIn("reuse it without posting a duplicate", prompt)
+                self.assertIn("denial for a required write", prompt)
+                boundary.issue["labels"].append({"name": "priority:low"})
+
+            boundary.publish = repair_priority
+            worker._submit(1, boundary.issue, [boundary.issue])
+            self.assertEqual(len(boundary.comments), 1)
+
+    def test_verification_cannot_succeed_after_budget_exhausted(self):
+        for modules in self.modules:
+            boundary = GitHubBoundary(issue(), publish_ready)
+            worker = self.repository(modules, boundary)
+            reads = [0]
+
+            def remaining(reads=reads):
+                reads[0] += 1
+                if reads[0] > 1:
+                    raise TimeoutError("verification deadline")
+                return 10
+
+            boundary.remaining = remaining
+            with self.assertRaises(TimeoutError):
+                worker._submit(1, issue(), [issue()])
+
+    def test_github_reads_share_deadline_including_pagination(self):
+        # Only the external HTTP response is substituted; timeout calculation,
+        # response parsing, and pagination execute through the real transport.
+        for modules in self.modules:
+            module = modules["github_client"]
+            response = io.BytesIO(json.dumps([{}] * 100).encode())
+            response.headers = {}
+            with (
+                patch.object(module.time, "monotonic", side_effect=[479, 479.5, 480]),
+                patch.object(module, "urlopen", return_value=response) as request,
+                self.assertRaises(TimeoutError),
+            ):
+                module.github_paginate("test", "/example", deadline=480)
+            self.assertEqual(request.call_count, 1)
+            self.assertEqual(request.call_args.kwargs["timeout"], 1)
+
+            with (
+                patch.object(module.time, "monotonic", side_effect=[479, 480]),
+                patch.object(module, "urlopen", return_value=io.BytesIO(b"{}")),
+                self.assertRaises(TimeoutError),
+            ):
+                module.github_request("test", "GET", "/example", deadline=480)
+
+    def test_expired_dispatch_does_not_start_remote_work(self):
+        for modules in self.modules:
+            module = modules["agent_conversation"]
+            dispatcher = self.dispatcher(module)
+            dispatcher.deadline = time.monotonic() - 1
+            with (
+                patch.object(module, "_kv_request") as request,
+                self.assertRaises(TimeoutError),
+            ):
+                dispatcher.deliver("issue:1", "same", "triage")
+            request.assert_not_called()
+
     def dispatcher(self, module):
         dispatcher = module.AgentConversationDispatcher.__new__(
             module.AgentConversationDispatcher
         )
-        dispatcher._deadline = time.monotonic() + 10
+        dispatcher.deadline = time.monotonic() + 10
         dispatcher._workspace = object()
         dispatcher._secrets = {}
         dispatcher.automation_id = str(uuid4())
