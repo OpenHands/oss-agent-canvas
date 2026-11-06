@@ -39,6 +39,10 @@
     "OpenHands/software-agent-sdk": {
       "checkout": "/private/existing-canonical-software-agent-sdk",
       "base_branch": "main"
+    },
+    "OpenHands/extensions": {
+      "checkout": "/private/existing-canonical-extensions",
+      "base_branch": "main"
     }
   },
   "review_agent_profile": null,
@@ -48,5 +52,6 @@
     "max_iterations": 80,
     "max_run_seconds": 900,
     "max_output_tokens": 16384
-  }
+  },
+  "repair_scope": "customer_stack"
 }

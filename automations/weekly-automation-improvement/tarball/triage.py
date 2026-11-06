@@ -394,6 +394,7 @@ def triage(args, records, prs, completed_topics=()):
     context, references, prepared_records = prepare(
         records, prs, completed_topics, getattr(args, "retry_topic_ids", [])
     )
+    context["repair_policy"] = getattr(args, "repair_policy", None)
     write_json(args.output / "triage-input.json", context)
     write_json(args.output / "triage-references.json", references)
     schema = copy.deepcopy(TRIAGE)
@@ -411,7 +412,12 @@ def triage(args, records, prs, completed_topics=()):
         update = {"topic": topic, "existing_work_urls": urls}
         try:
             update["comments"] = comment(
-                topic, prs, records, issue, args.output / "recurrences"
+                topic,
+                prs,
+                records,
+                issue,
+                args.output / "recurrences",
+                policy=getattr(args, "repair_policy", None),
             )
             update["status"] = (
                 "recurrence_preview" if issue.preview else "recurrence_recorded"

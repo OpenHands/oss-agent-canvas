@@ -15,6 +15,7 @@ from common import encode, read_json, redact, replace_json, timestamp, write_jso
 from events import collect_events, hydrate_events
 from github_io import command, github_pages, IMPROVEMENT_LABEL
 from laminar import Laminar
+from repair_policy import resolve as repair_policy
 from sources import github_auth, native_request
 from triage import definition_key, triage
 
@@ -129,23 +130,17 @@ def configure_triage(args, config, state_dir, week, dry_run, inventory_path):
     args.triage_agent_profile = config.get("triage_agent_profile")
     args.triage_agent_config = config.get("triage_agent", {})
     args.isolated_validation = config.get("isolated_validation", False)
+    args.repair_policy = repair_policy(config)
 
 
 def repository_catalog(config):
+    repair_policy(config)
     configured = {
         config["repository"]: {
             "checkout": config["checkout"],
             "base_branch": config.get("base_branch", "main"),
         }
     }
-    for repository in ("OpenHands/software-agent-sdk", "OpenHands/extensions"):
-        if repository != config["repository"]:
-            configured[repository] = {
-                "checkout": str(
-                    Path(config["checkout"]).expanduser().parent
-                    / repository.split("/")[1]
-                )
-            }
     configured.update(config.get("repositories", {}))
     catalog = {}
     for repository, value in configured.items():
@@ -277,6 +272,7 @@ def prepare_topic(config, context, topic, root):
         "cohort_path": str(cohort_path),
         "state_dir": context["state_dir"],
         "repositories": context["repositories"],
+        "repair_policy": repair_policy(config),
         "validation_sample_size": config.get("validation_sample_size", 5),
         "evidence_location": config.get("evidence_location"),
         "previous_attempts": context["previous"],
@@ -359,6 +355,7 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
         "discovery_errors": discovery_errors,
         "topics": [],
         "max_topics_per_run": config.get("max_topics_per_run", 10),
+        "repair_policy": repair_policy(config),
         "isolated_validation": config.get("isolated_validation", False),
     }
     if records and not discovery_errors:
@@ -450,6 +447,7 @@ def run(config, *, dry_run=False, limit=3, seed=None):
             )
     if type(limit) is not int or not 1 <= limit <= 3:
         raise ValueError("Select one to three representatives per topic")
+    repair_policy(config)
     budget = RunBudget(config)
     load_environment(config)
     state_dir = Path(config["state_dir"]).expanduser().resolve()

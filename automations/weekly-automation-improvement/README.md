@@ -115,16 +115,42 @@ including findings carried over from earlier windows. Agents can inspect cited
 spans and conversation/task boundaries before assigning an owner. Candidate
 conversations are not counted as confirmed failures or selected arbitrarily for
 replay; unresolved attribution stays in the cohort's `attribution_gaps`. Possible
-owners are excluded from non-negative controls. Automation origin never limits
-which repository the repair agent may fix.
+owners are excluded from non-negative controls. Automation origin does not determine the repair destination; the configured repair
+scope determines where agents may propose changes.
 
-The repository catalog is starting context, not an allowed-repository list.
-Existing canonical checkouts supply isolated worktrees; there are no file-count
-or patch-size limits. A worktree separates source, not operating-system access.
-Use a dedicated development worker with the intended source/data permissions.
-The default source catalog includes sibling `software-agent-sdk` and `extensions`
-canonical checkouts; configure other locations through `repositories`. Missing
-checkouts remain explicit prerequisites. Install `tmux` on the worker before
+`repair_scope` defaults to `customer_stack`: the home `repository` plus entries
+in `repositories` are the repair destinations. `any_authorized` uses that same
+catalog as starting context and permits other relevant repositories when the
+installation authorizes access. No SDK or extensions repositories are implicitly
+added. Both modes consider customer-owned automation/SDK integration code,
+prompts, skills/plugins, tools/MCP configuration, hooks, agent/LLM profiles,
+compaction/memory settings, dependencies and runtime setup.
+
+```json
+{
+  "repair_scope": "customer_stack",
+  "repository": "acme/automations",
+  "checkout": "/existing/acme-automations",
+  "repositories": {
+    "acme/agent-config": {"checkout": "/existing/acme-agent-config"}
+  }
+}
+```
+
+Change only `repair_scope` to `any_authorized` to allow upstream proposals. In
+customer-only mode, agents may investigate upstream source but record upstream
+blockers in customer issues; they do not publish upstream issues or PRs. They must
+not invent a workaround when no sound customer-side fix exists.
+
+The scope is carried in private evidence and triage/repair/review instructions,
+including resumed repairs. Deterministic checks reject out-of-scope outputs and
+block acceptance; recurrence comments also check their destinations. These checks
+do not sandbox terminal tools or undo an unauthorized write. Use a dedicated
+worker and GitHub credentials whose write permissions match the intended scope;
+saved agent profiles and MCPs must not expose broader write credentials. Repository
+worktrees isolate source, not operating-system access. There are no file-count or
+patch-size limits. Missing checkouts remain explicit prerequisites.
+Install `tmux` on the worker before
 setup so native terminals support reliable interruption. A login-disabled service
 account also needs a usable tmux default shell, for example
 `set -g default-shell /bin/bash` in its `~/.tmux.conf`.
@@ -157,12 +183,23 @@ adapter or run the legacy publisher.
 Copy [weekly.example.json](weekly.example.json) outside git. Configure Laminar
 project/Signal/endpoints, proxy endpoint, home repository/canonical checkout,
 private state directory, native automation API and GitHub secret name. Register
-other useful existing checkouts under `repositories`, including the SDK. If no SDK
-entry is supplied, its expected sibling checkout is included with any access error.
+other customer checkouts under `repositories`. For upstream contributions, set
+`repair_scope=any_authorized` and optionally register relevant upstream checkouts.
 The agent must report missing prerequisites rather than clone an extra repository.
 Ensure `automation-improvement` exists in repositories where repairs will be opened.
 
+Configuration repairs must use the actual settings of the cited runs and their
+source of truth. Retain effective baseline/candidate settings privately. A profile
+stored only through a UI/API needs a supported application path; adding an unused
+JSON file is not a fix. Repair agents propose changes without changing live
+settings. Validate affected shared configurations across automations where data
+exists, and report task quality, cost and latency when relevant.
+
 Top-level settings:
+
+- `repair_scope`: **customer_stack** (default) or **any_authorized**. The home
+  repository and explicit `repositories` entries define the customer stack; the
+  latter mode can discover additional authorized destinations.
 
 - `max_topics_per_run`: default **10**, maximum topic investigations selected once
   from the ranked queue. Revisions do not consume another topic slot; the limit

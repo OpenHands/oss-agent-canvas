@@ -7,6 +7,7 @@ from pathlib import Path
 
 from budget import BudgetExhausted, RunBudget
 from common import read_json, redact, replace_json, write_json
+from repair_policy import permits, resolve as repair_policy, resource_errors
 
 
 def worker(request_path):
@@ -33,7 +34,19 @@ def worker(request_path):
                 recovered["errors"].append(
                     {"error": redact(str(recovery_error))[:1000]}
                 )
-        recovered["errors"] += hold_drafts(recovered["resources"])
+        recovered["errors"] += [
+            {"error": e}
+            for e in resource_errors(
+                repair_policy(request["config"]), recovered["resources"]
+            )
+        ]
+        recovered["errors"] += hold_drafts(
+            [
+                r
+                for r in recovered["resources"]
+                if permits(repair_policy(request["config"]), r["repository"])
+            ]
+        )
         result["outcome"] = {
             "topic": request["topic"],
             "status": "review_incomplete" if recovered["resources"] else "failed",
@@ -109,7 +122,11 @@ def execute(config, context, queue, state, budget):
             "resources": resources,
         }
         prs = [
-            r["url"] for r in resources if r["kind"] == "pull" and r["state"] == "open"
+            r["url"]
+            for r in resources
+            if r["kind"] == "pull"
+            and r["state"] == "open"
+            and permits(repair_policy(config), r["repository"])
         ]
         if prs:
             for identifier in topic["representative_event_ids"]:
@@ -206,7 +223,19 @@ def execute(config, context, queue, state, budget):
                         "resources": [],
                         "errors": [{"error": redact(str(error))[:2000]}],
                     }
-                recovered["errors"] += hold_drafts(recovered["resources"])
+                recovered["errors"] += [
+                    {"error": e}
+                    for e in resource_errors(
+                        repair_policy(config), recovered["resources"]
+                    )
+                ]
+                recovered["errors"] += hold_drafts(
+                    [
+                        r
+                        for r in recovered["resources"]
+                        if permits(repair_policy(config), r["repository"])
+                    ]
+                )
                 outcome = {
                     "topic": topic,
                     "status": "review_incomplete",

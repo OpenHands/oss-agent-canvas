@@ -4,7 +4,7 @@
 for a human merge decision.**
 
 - Flow-1 finds potential problems; OpenHands agents investigate and propose fixes.
-- Fixes can target automations, reusable extensions or the SDK, across repositories.
+- Fixes target customer code and configuration; upstream repairs are configurable.
 - Before/after evidence and independent review determine readiness. Unproven fixes
   stay draft; humans merge and deploy.
 
@@ -82,6 +82,13 @@ the next new topic receives the slot. The resulting new-topic queue can then run
 in parallel. A failed recurrence comment stays pending and never triggers a
 duplicate repair. If existing-work discovery fails, no repair agents start.
 
+**Choose the right repair layer.** Agents can improve prompts, skills/plugins,
+tools/MCP configuration, hooks, agent/LLM profiles, context settings, automation
+code, SDK integration or dependencies. The customer stack is the default scope;
+upstream proposals are optional. Configuration changes need a real application
+path and before/after settings, including effects on other users of shared
+profiles. GitHub permissions must match the configured scope.
+
 ## What makes a fix convincing?
 
 - Compare fixed inputs: up to **N finding-linked negative conversations** and
@@ -104,6 +111,7 @@ duplicate repair. If existing-work discovery fails, no repair agents start.
 | `repair_concurrency` | Defaults to the topic limit |
 | `validation_sample_size` | 5 inputs per comparison group when available |
 | Agent profiles | Configurable; built-in defaults are Luna / Sol 6.1 / Sol 6.1 |
+| `repair_scope` | `customer_stack`: home + configured repositories; `any_authorized`: other authorized destinations too |
 | Resource guards | Configurable cost, duration and conversation limits; parallel spend is not strictly capped globally |
 
 ## Issues, privacy and test runs

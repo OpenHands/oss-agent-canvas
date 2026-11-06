@@ -39,6 +39,7 @@ def test_topic_limit_counts_dispatches_not_prs_or_successes(
             [
                 {
                     "kind": "pull",
+                    "repository": "Example/repo",
                     "state": "open",
                     "url": f"https://github.com/Example/repo/pull/{n * 10 + i}",
                 }
@@ -82,7 +83,11 @@ def test_topic_limit_counts_dispatches_not_prs_or_successes(
     monkeypatch.setattr(parallel, "launch", launch)
     monkeypatch.setattr(parallel.time, "sleep", lambda _: None)
     receipt, updated = parallel.execute(
-        {"max_topics_per_run": count, "repair_concurrency": concurrency},
+        {
+            "repository": "Example/repo",
+            "max_topics_per_run": count,
+            "repair_concurrency": concurrency,
+        },
         context,
         queue,
         state,
@@ -129,15 +134,24 @@ def test_launch_failure_does_not_start_a_replacement_topic(tmp_path, monkeypatch
     assert len(state["topic_weeks"]) == 1
 
 
+@pytest.mark.parametrize(
+    "home,held", [("Example/sdk", True), ("Example/automation", False)]
+)
 def test_worker_exception_keeps_partial_remote_work_visible_and_draft(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, home, held
 ):
     import weekly
     import topic_agent
 
     request = tmp_path / "request.json"
     write_json(
-        request, {"config": {}, "context": {}, "topic": {"id": "one"}, "budget": {}}
+        request,
+        {
+            "config": {"repository": home},
+            "context": {},
+            "topic": {"id": "one"},
+            "budget": {},
+        },
     )
     write_json(tmp_path / "context.json", {"topic": {"id": "one"}})
     monkeypatch.setattr(weekly, "prepare_topic", lambda *a: {})
@@ -151,6 +165,7 @@ def test_worker_exception_keeps_partial_remote_work_visible_and_draft(
         "state": "open",
         "draft": False,
         "url": "https://github.com/Example/sdk/pull/2",
+        "repository": "Example/sdk",
     }
     monkeypatch.setattr(
         topic_agent, "discover", lambda *a: {"resources": [resource], "errors": []}
@@ -160,5 +175,9 @@ def test_worker_exception_keeps_partial_remote_work_visible_and_draft(
     parallel.worker(request)
     result = json.loads((tmp_path / "result.json").read_text())["outcome"]
     assert result["status"] == "review_incomplete"
-    assert result["resources"][0]["draft"]
-    assert "--undo" in calls[0]
+    assert result["resources"][0]["draft"] is held
+    if held:
+        assert "--undo" in calls[0]
+    else:
+        assert calls == []
+        assert "outside customer_stack" in result["errors"][0]["error"]

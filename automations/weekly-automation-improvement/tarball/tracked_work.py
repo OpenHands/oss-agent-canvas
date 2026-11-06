@@ -5,6 +5,7 @@ import uuid
 
 from common import encode, redact, write_json
 from github_io import command, github_pages
+from repair_policy import permits
 
 
 def matching(topic, existing):
@@ -26,11 +27,15 @@ def matching(topic, existing):
             return sorted(selected)
 
 
-def comment(topic, existing, records, issue, output):
+def comment(topic, existing, records, issue, output, policy=None):
     targets = matching(topic, existing)
     allowed = {item["url"] for item in existing}
     if not targets or not set(targets) <= allowed:
         raise ValueError("Recurrence must reference discovered issues or PRs")
+    if policy and any(
+        not permits(policy, "/".join(target.split("/")[3:5])) for target in targets
+    ):
+        raise ValueError("Recurrence target outside customer_stack repair scope")
     events = sorted(set(topic["representative_event_ids"]))
     by_id = {row["event"]["id"]: row for row in records}
     selected = [by_id[identifier] for identifier in events]

@@ -22,6 +22,7 @@ def context(tmp_path):
         },
         "automation_ids": ["one", "two"],
         "repositories": {},
+        "repair_policy": {"scope": "any_authorized", "repositories": []},
         "snapshot_path": str(tmp_path / "snapshot.json"),
         "cohort_path": str(tmp_path / "cohort.json"),
         "state_dir": str(tmp_path),
@@ -150,7 +151,7 @@ def test_normal_prompt_delegates_full_workflow_without_patch_or_repo_restriction
     repair = topic_agent.prompt(ctx, tmp_path / "context.json", tmp_path)
     review = topic_agent.prompt(ctx, tmp_path / "context.json", tmp_path, review=True)
     assert "no separate publisher" in repair
-    assert "not a restriction" in repair
+    assert "not a destination restriction" in repair
     assert "several PRs" in repair and "N=5" in repair
     assert "ONE structured issue brief in each repository" in repair
     assert "initially leave it draft" in repair

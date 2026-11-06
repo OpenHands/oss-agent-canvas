@@ -277,6 +277,9 @@ def test_laminar_sdk_uses_reachable_http_transport(monkeypatch):
         ("max_repair_attempts", "2"),
         ("review_agent_profile", "not/a/profile"),
         ("max_prs_per_run", 10),
+        ("repair_scope", "anywhere"),
+        ("repair_scope", None),
+        ("repositories", []),
     ],
 )
 def test_invalid_top_level_config_fails_before_access(name, value, monkeypatch):
@@ -296,7 +299,9 @@ def test_same_week_attempts_are_not_replaced_and_explicit_retry_is_respected():
     assert weekly.eligible_topics([topic], ledger, "2026-W45", [])[0] == [topic]
 
 
-def test_missing_sdk_checkout_is_context_not_a_repair_gate(tmp_path, monkeypatch):
+def test_only_explicit_repositories_are_registered_and_missing_checkouts_are_context(
+    tmp_path, monkeypatch
+):
     def revision(config):
         if config["repository"].endswith("software-agent-sdk"):
             raise FileNotFoundError("canonical checkout unavailable")
@@ -304,12 +309,17 @@ def test_missing_sdk_checkout_is_context_not_a_repair_gate(tmp_path, monkeypatch
 
     monkeypatch.setattr(weekly, "source_revision", revision)
     catalog = weekly.repository_catalog(
-        {"repository": "Example/automation", "checkout": str(tmp_path / "automation")}
+        {
+            "repository": "Example/automation",
+            "checkout": str(tmp_path / "automation"),
+            "repositories": {
+                "OpenHands/software-agent-sdk": {"checkout": str(tmp_path / "sdk")}
+            },
+        }
     )
     assert catalog["Example/automation"]["revision"] == "a" * 40
     assert "unavailable" in catalog["OpenHands/software-agent-sdk"]["error"]
-    assert catalog["OpenHands/extensions"]["revision"] == "a" * 40
-    assert catalog["OpenHands/extensions"]["checkout"] == str(tmp_path / "extensions")
+    assert "OpenHands/extensions" not in catalog
 
 
 def test_frozen_inventory_preview_never_launches_repair_or_changes_ledger(
