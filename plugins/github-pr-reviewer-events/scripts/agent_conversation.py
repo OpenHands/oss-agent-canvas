@@ -2,6 +2,8 @@
 
 import json
 import os
+import time
+from collections.abc import Callable
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -16,6 +18,8 @@ from openhands.sdk.conversation.request import (
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm.message import TextContent
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
+
+from review_delivery import DELIVERY_BUDGET, complete_review
 
 _CONVERSATION_KEY_PREFIX = "agent-conversation-"
 
@@ -62,6 +66,7 @@ class AgentConversationDispatcher:
         self.automation_id = str(payload["automation_id"])
         self._workspace: RemoteWorkspace | None = None
         self._secrets = {}
+        self._delivery_deadline = time.monotonic() + DELIVERY_BUDGET
 
     def __enter__(self):
         _register_tools()
@@ -87,7 +92,8 @@ class AgentConversationDispatcher:
         prompt: str,
         head: str = "",
         metadata: dict[str, str | int] | None = None,
-    ) -> dict[str, str]:
+        check_delivery: Callable[[], str] | None = None,
+    ) -> dict:
         """Deliver one revision of `subject`, deduping a repeated head.
 
         `delivery` keys the revision: a second trigger for the same revision
@@ -125,7 +131,7 @@ class AgentConversationDispatcher:
                     agent_profile_id=self.profile_id,
                     secrets=self._secrets,
                     initial_message=SendMessageRequest(
-                        content=[TextContent(text=prompt)], run=True
+                        content=[TextContent(text=prompt)], run=check_delivery is None
                     ),
                     **automation_conversation_kwargs(metadata=metadata),
                 ),
@@ -133,6 +139,43 @@ class AgentConversationDispatcher:
             )
             disposition = "created"
         try:
+            if check_delivery is not None:
+                status = conversation.state.refresh_from_server()["execution_status"]
+                if disposition == "resumed" and not (same_delivery or same_head):
+                    if status in ("running", "paused"):
+                        return {
+                            "disposition": disposition,
+                            "conversation_id": str(conversation_id),
+                            "outcome": "incomplete",
+                            "reason": "previous-delivery-active",
+                        }
+                    conversation.send_message(prompt)
+                    status = conversation.state.refresh_from_server()["execution_status"]
+                    record = {}
+                if not (same_delivery or same_head):
+                    record = {}
+                record.update(
+                    subject=subject, conversation_id=str(conversation_id),
+                    delivery=delivery, head=head,
+                )
+                if "attempts" not in record:
+                    record["attempts"] = int(status in ("running", "error"))
+                def save():
+                    _kv_request(state_key, "PUT", record)
+
+                save()
+                conversation.update_secrets(self._secrets)
+                outcome = complete_review(
+                    conversation, check_delivery, record, save,
+                    self._delivery_deadline,
+                )
+                return {
+                    "disposition": disposition,
+                    "conversation_id": str(conversation_id),
+                    "outcome": outcome,
+                    "reason": record["reason"],
+                    "attempts": record["attempts"],
+                }
             if disposition == "resumed":
                 running = (
                     conversation.state.execution_status

@@ -41,6 +41,12 @@ SCAN_WINDOW = 10
 WORKFLOW_DISCLOSURE = "no AI was used to generate this comment"
 
 
+class IncompleteReviewDelivery(RuntimeError):
+    def __init__(self, result):
+        super().__init__("Review delivery incomplete: " + result["reason"])
+        self.started_conversation = result["disposition"] == "created"
+
+
 class ReviewIntake:
     """The per-scan bound on new review conversations, shared across repositories.
 
@@ -100,6 +106,8 @@ class ReviewIntake:
             try:
                 result = record["start"]()
             except Exception as exc:  # noqa: BLE001 - one PR must not block the scan
+                if isinstance(exc, IncompleteReviewDelivery) and exc.started_conversation:
+                    self._started += 1
                 failures.append(record["number"])
                 print(
                     f"Failed to submit {record['repository']} PR "
@@ -1131,6 +1139,32 @@ class PullRequestReviewer(GitHubRepository):
                 + ", ".join(f"#{number}" for number in failures)
             )
 
+    def _review_delivery_state(self, number, sha, trigger, label, delivery_key):
+        current = self.gh("GET", f"/pulls/{number}")
+        if current.get("state") != "open" or current["head"]["sha"] != sha:
+            return "superseded"
+        reviews = [
+            review for review in self.gh_pages(f"/pulls/{number}/reviews")
+            if review.get("commit_id") == sha
+            and ((review.get("user") or {}).get("login") or "").lower()
+            == self.github_login.lower()
+            and review.get("state") in ("APPROVED", "CHANGES_REQUESTED", "COMMENTED")
+            and (review.get("submitted_at") or "")
+            > ((trigger or {}).get("created_at") or "")
+        ]
+        if reviews:
+            verdicts = ("✅ APPROVED", "🔄 CHANGES REQUESTED",
+                        workflow.MAINTAINER_DECISION_VERDICT)
+            return "published" if any(
+                (review.get("body") or "").rstrip().endswith(verdicts)
+                for review in reviews
+            ) else "invalid-review"
+        if label and label not in {item["name"] for item in current.get("labels", [])}:
+            return "request-withdrawn"
+        if not label and delivery_key is None and not self._outstanding_review_request(current):
+            return "request-withdrawn"
+        return "pending"
+
     def _start_review(
         self, repository_id, pr, trigger, sha, trigger_label, delivery_key=None
     ):
@@ -1147,6 +1181,9 @@ class PullRequestReviewer(GitHubRepository):
             prompt=self._prompt(pr, trigger, trigger_label, delivery_key),
             head=sha,
             metadata=metadata,
+            check_delivery=lambda: self._review_delivery_state(
+                pr["number"], sha, trigger, trigger_label, delivery_key
+            ),
         )
         print(
             json.dumps(
@@ -1156,10 +1193,15 @@ class PullRequestReviewer(GitHubRepository):
                     "head_sha": sha,
                     "disposition": result["disposition"],
                     "conversation_id": result["conversation_id"],
+                    "outcome": result["outcome"],
+                    "reason": result["reason"],
+                    "attempts": result.get("attempts", 0),
                 }
             ),
             flush=True,
         )
+        if result["outcome"] == "incomplete":
+            raise IncompleteReviewDelivery(result)
         return result
 
 
