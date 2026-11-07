@@ -94,6 +94,7 @@ class ReviewerReliabilityTests(unittest.TestCase):
                 deliver = load_function(path, 'deliver', namespace)
                 dispatcher = types.SimpleNamespace(automation_id='automation', _workspace=object(),
                     agent_url='http://agent', api_key='key', profile_id=UUID(int=1), _secrets={})
+                dispatcher._deliver_once = types.MethodType(load_function(path, '_deliver_once', namespace), dispatcher)
                 result = deliver(dispatcher, 'repo:pr:1', 'sha1', 'review', head='sha1')
                 replacement = uuid5(NAMESPACE_URL, f'{initial}:replacement')
                 self.assertEqual(result['conversation_id'], str(replacement))
@@ -158,6 +159,7 @@ class ReviewerReliabilityTests(unittest.TestCase):
         deliver = load_function(path, 'deliver', namespace)
         dispatcher = types.SimpleNamespace(automation_id='automation', _workspace=object(),
             agent_url='http://agent', api_key='key', profile_id=UUID(int=1), _secrets={})
+        dispatcher._deliver_once = types.MethodType(load_function(path, '_deliver_once', namespace), dispatcher)
         result = deliver(dispatcher, 'repo:pr:1', 'sha1', 'review', head='sha1')
         self.assertEqual(result['disposition'], 'created')
         self.assertEqual(result['conversation_id'], str(uuid5(NAMESPACE_URL, f'{initial}:replacement')))

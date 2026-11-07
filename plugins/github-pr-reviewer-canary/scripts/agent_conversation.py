@@ -95,6 +95,75 @@ class AgentConversationDispatcher:
         assert self._workspace is not None
         return self._workspace.__exit__(*args)
 
+    def _deliver_once(
+        self,
+        conversation_id: UUID,
+        prompt: str,
+        metadata: dict[str, str | int] | None,
+        same_delivery: bool,
+        same_head: bool,
+    ) -> str:
+        try:
+            conversation = RemoteConversation.attach(
+                self._workspace, conversation_id, visualizer=None
+            )
+            disposition = "resumed"
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404:
+                raise
+            conversation = RemoteConversation.create(
+                self._workspace,
+                StartConversationRequest(
+                    workspace=LocalWorkspace(working_dir="/workspace"),
+                    conversation_id=conversation_id,
+                    agent_profile_id=self.profile_id,
+                    secrets=self._secrets,
+                    initial_message=SendMessageRequest(
+                        content=[TextContent(text=prompt)], run=True
+                    ),
+                    **(
+                        automation_conversation_kwargs(metadata=metadata)
+                        | {"max_iterations": MAX_REVIEW_ITERATIONS}
+                    ),
+                ),
+                visualizer=None,
+            )
+            disposition = "created"
+
+        try:
+            if disposition == "resumed":
+                running = (
+                    conversation.state.execution_status
+                    == ConversationExecutionStatus.RUNNING
+                )
+                if running and (same_delivery or same_head):
+                    conversation.update_secrets(self._secrets)
+                    disposition = "in_progress"
+                elif same_delivery:
+                    if conversation.state.execution_status in (
+                        ConversationExecutionStatus.IDLE,
+                        ConversationExecutionStatus.PAUSED,
+                    ):
+                        conversation.update_secrets(self._secrets)
+                        conversation.run(blocking=False)
+                    elif (
+                        conversation.state.execution_status
+                        == ConversationExecutionStatus.ERROR
+                    ):
+                        conversation.update_secrets(self._secrets)
+                        conversation.send_message(prompt)
+                        conversation.run(blocking=False)
+                        disposition = "retried"
+                    else:
+                        disposition = "deduplicated"
+                else:
+                    conversation.update_secrets(self._secrets)
+                    conversation.send_message(prompt)
+                    conversation.run(blocking=False)
+        finally:
+            conversation.close()
+        return disposition
+
     def deliver(
         self,
         subject: str,
@@ -125,81 +194,22 @@ class AgentConversationDispatcher:
         same_head = bool(head) and record.get("head") == head
         conversation_id = UUID(record.get("conversation_id") or str(initial_id))
 
-        # A subject keeps its KV key, but an archived runtime cannot accept any
-        # new turns or secrets. Rotate the conversation ID, not the subject key.
+        # Rotate only the conversation ID: the KV key remains tied to the subject.
         for _ in range(5):
             if _runtime_archived(self.agent_url, self.api_key, conversation_id):
                 conversation_id = uuid5(NAMESPACE_URL, f"{conversation_id}:replacement")
                 same_delivery = same_head = False
             try:
-                try:
-                    conversation = RemoteConversation.attach(
-                        self._workspace, conversation_id, visualizer=None
-                    )
-                    disposition = "resumed"
-                except httpx.HTTPStatusError as exc:
-                    if exc.response.status_code != 404:
-                        raise
-                    conversation = RemoteConversation.create(
-                        self._workspace,
-                        StartConversationRequest(
-                            workspace=LocalWorkspace(working_dir="/workspace"),
-                            conversation_id=conversation_id,
-                            agent_profile_id=self.profile_id,
-                            secrets=self._secrets,
-                            initial_message=SendMessageRequest(
-                                content=[TextContent(text=prompt)], run=True
-                            ),
-                            **(
-                                automation_conversation_kwargs(metadata=metadata)
-                                | {"max_iterations": MAX_REVIEW_ITERATIONS}
-                            ),
-                        ),
-                        visualizer=None,
-                    )
-                    disposition = "created"
-
-                try:
-                    if disposition == "resumed":
-                        running = (
-                            conversation.state.execution_status
-                            == ConversationExecutionStatus.RUNNING
-                        )
-                        if running and (same_delivery or same_head):
-                            conversation.update_secrets(self._secrets)
-                            disposition = "in_progress"
-                        elif same_delivery:
-                            if conversation.state.execution_status in (
-                                ConversationExecutionStatus.IDLE,
-                                ConversationExecutionStatus.PAUSED,
-                            ):
-                                conversation.update_secrets(self._secrets)
-                                conversation.run(blocking=False)
-                            elif (
-                                conversation.state.execution_status
-                                == ConversationExecutionStatus.ERROR
-                            ):
-                                conversation.update_secrets(self._secrets)
-                                conversation.send_message(prompt)
-                                conversation.run(blocking=False)
-                                disposition = "retried"
-                            else:
-                                disposition = "deduplicated"
-                        else:
-                            conversation.update_secrets(self._secrets)
-                            conversation.send_message(prompt)
-                            conversation.run(blocking=False)
-                finally:
-                    conversation.close()
+                disposition = self._deliver_once(
+                    conversation_id, prompt, metadata, same_delivery, same_head
+                )
+                break
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code != 410:
                     raise
+                # Archiving can race with the preflight check and delivery.
                 conversation_id = uuid5(NAMESPACE_URL, f"{conversation_id}:replacement")
-                # The replacement has not handled this delivery yet, even if
-                # the archived conversation had the same head or delivery key.
                 same_delivery = same_head = False
-                continue
-            break
         else:
             raise RuntimeError(f"Too many archived runtimes for {subject}")
 
