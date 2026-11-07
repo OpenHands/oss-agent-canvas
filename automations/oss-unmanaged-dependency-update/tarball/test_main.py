@@ -61,7 +61,6 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /uvx /bin/
 COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /uvx /bin/
 NODE_TARBALL=/tmp/node-v22.19.0-linux-${NARCH}.tar.xz
 https://nodejs.org/dist/v22.19.0/node-v22.19.0-linux-${NARCH}.tar.xz
-ARG RELEASE_TAG="openvscode-server-v1.98.2"
 https://github.com/krallin/tini/releases/download/v0.19.0/tini-static-${TARCH}
 """
         self.assertEqual(
@@ -71,7 +70,6 @@ https://github.com/krallin/tini/releases/download/v0.19.0/tini-static-${TARCH}
                 "node": "24.21.0",
                 "uv": "0.11.6",
                 "acp_node": "22.19.0",
-                "openvscode": "1.98.2",
                 "tini": "0.19.0",
             },
         )
