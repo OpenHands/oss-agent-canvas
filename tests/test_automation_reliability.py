@@ -82,7 +82,6 @@ class ReviewerReliabilityTests(unittest.TestCase):
                         store.get(key) if method == 'GET' else store.__setitem__(key, value)
                     ),
                     '_runtime_archived': archived, 'RemoteConversation': Remote,
-                    'MAX_REVIEW_ITERATIONS': 48,
                     'httpx': types.SimpleNamespace(HTTPStatusError=HTTPStatusError),
                     'ConversationExecutionStatus': types.SimpleNamespace(RUNNING='running', IDLE='idle', PAUSED='paused', ERROR='error'),
                     'LocalWorkspace': lambda **kwargs: kwargs,
@@ -100,7 +99,7 @@ class ReviewerReliabilityTests(unittest.TestCase):
                 self.assertEqual(result['conversation_id'], str(replacement))
                 self.assertEqual(result['disposition'], 'created')
                 self.assertEqual(store[key]['conversation_id'], str(replacement))
-                self.assertEqual(created[0].max_iterations, 48)
+                self.assertFalse(hasattr(created[0], "max_iterations"))
                 again = deliver(dispatcher, 'repo:pr:1', 'sha1', 'review', head='sha1')
                 self.assertEqual(again['disposition'], 'in_progress')
                 self.assertEqual(len(created), 1)
@@ -147,7 +146,6 @@ class ReviewerReliabilityTests(unittest.TestCase):
                 store.get(key) if method == 'GET' else store.__setitem__(key, value)
             ),
             '_runtime_archived': lambda *args: False, 'RemoteConversation': Remote,
-            'MAX_REVIEW_ITERATIONS': 48,
             'httpx': types.SimpleNamespace(HTTPStatusError=HTTPStatusError),
             'ConversationExecutionStatus': types.SimpleNamespace(RUNNING='running', IDLE='idle', PAUSED='paused', ERROR='error'),
             'LocalWorkspace': lambda **kwargs: kwargs,

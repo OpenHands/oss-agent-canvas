@@ -18,7 +18,6 @@ from openhands.sdk.llm.message import TextContent
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
 _CONVERSATION_KEY_PREFIX = "agent-conversation-"
-MAX_REVIEW_ITERATIONS = 48
 
 
 def _register_tools() -> None:
@@ -121,10 +120,7 @@ class AgentConversationDispatcher:
                     initial_message=SendMessageRequest(
                         content=[TextContent(text=prompt)], run=True
                     ),
-                    **(
-                        automation_conversation_kwargs(metadata=metadata)
-                        | {"max_iterations": MAX_REVIEW_ITERATIONS}
-                    ),
+                    **automation_conversation_kwargs(metadata=metadata),
                 ),
                 visualizer=None,
             )
