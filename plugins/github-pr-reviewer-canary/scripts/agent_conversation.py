@@ -8,6 +8,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 import httpx
 from openhands.sdk import RemoteConversation
+from openhands.sdk.automation import automation_conversation_kwargs
 from openhands.sdk.conversation.request import (
     SendMessageRequest,
     StartConversationRequest,
@@ -50,6 +51,20 @@ def _kv_request(key: str, method: str, value: dict | None = None) -> dict | None
     return body.get("value") if method == "GET" else body
 
 
+def _runtime_archived(agent_url: str, api_key: str, conversation_id: UUID) -> bool:
+    request = Request(
+        f"{agent_url.rstrip('/')}/api/conversations/{conversation_id}/runtime",
+        headers={"X-Session-API-Key": api_key},
+    )
+    try:
+        with urlopen(request, timeout=15) as response:
+            return json.load(response).get("can_resume") is False
+    except HTTPError as exc:
+        if exc.code == 404:
+            return False
+        raise
+
+
 class AgentConversationDispatcher:
     """Deliver one revision at a time to a stable conversation for each subject."""
 
@@ -79,15 +94,14 @@ class AgentConversationDispatcher:
         assert self._workspace is not None
         return self._workspace.__exit__(*args)
 
-    def deliver(self, subject: str, delivery: str, prompt: str) -> dict[str, str]:
-        conversation_id = uuid5(NAMESPACE_URL, f"{self.automation_id}:{subject}")
-        state_key = f"{_CONVERSATION_KEY_PREFIX}{conversation_id}"
-        record = _kv_request(state_key, "GET") or {}
-        if self._workspace is None:
-            raise RuntimeError("AgentConversationDispatcher must be used as a context")
-
-        same_delivery = record.get("delivery") == delivery
-
+    def _deliver_once(
+        self,
+        conversation_id: UUID,
+        prompt: str,
+        metadata: dict[str, str | int] | None,
+        same_delivery: bool,
+        same_head: bool,
+    ) -> str:
         try:
             conversation = RemoteConversation.attach(
                 self._workspace, conversation_id, visualizer=None
@@ -106,25 +120,36 @@ class AgentConversationDispatcher:
                     initial_message=SendMessageRequest(
                         content=[TextContent(text=prompt)], run=True
                     ),
+                    **automation_conversation_kwargs(metadata=metadata),
                 ),
                 visualizer=None,
             )
             disposition = "created"
+
         try:
             if disposition == "resumed":
-                if same_delivery:
-                    if (
-                        conversation.state.execution_status
-                        == ConversationExecutionStatus.RUNNING
-                    ):
-                        conversation.update_secrets(self._secrets)
-                        disposition = "in_progress"
-                    elif conversation.state.execution_status in (
+                running = (
+                    conversation.state.execution_status
+                    == ConversationExecutionStatus.RUNNING
+                )
+                if running and (same_delivery or same_head):
+                    conversation.update_secrets(self._secrets)
+                    disposition = "in_progress"
+                elif same_delivery:
+                    if conversation.state.execution_status in (
                         ConversationExecutionStatus.IDLE,
                         ConversationExecutionStatus.PAUSED,
                     ):
                         conversation.update_secrets(self._secrets)
                         conversation.run(blocking=False)
+                    elif (
+                        conversation.state.execution_status
+                        == ConversationExecutionStatus.ERROR
+                    ):
+                        conversation.update_secrets(self._secrets)
+                        conversation.send_message(prompt)
+                        conversation.run(blocking=False)
+                        disposition = "retried"
                     else:
                         disposition = "deduplicated"
                 else:
@@ -133,6 +158,56 @@ class AgentConversationDispatcher:
                     conversation.run(blocking=False)
         finally:
             conversation.close()
+        return disposition
+
+    def deliver(
+        self,
+        subject: str,
+        delivery: str,
+        prompt: str,
+        head: str = "",
+        metadata: dict[str, str | int] | None = None,
+    ) -> dict[str, str]:
+        """Deliver one revision of `subject`, deduping a repeated head.
+
+        `delivery` keys the revision: a second trigger for the same revision
+        reuses the conversation without a new turn, and a changed head becomes a
+        new delivery. `head` is the revision's commit, and it is the guard that
+        matters when two triggers name the same commit - a re-request after the
+        bot's own handoff, say - because a delivery key that only counts triggers
+        would send a second turn and publish a second review of identical code.
+        A conversation already running for this head is reported `in_progress`
+        and left alone, whatever the new delivery says. Callers with no revision
+        identity leave `head` empty and keep the delivery-key-only behavior.
+        """
+        initial_id = uuid5(NAMESPACE_URL, f"{self.automation_id}:{subject}")
+        state_key = f"{_CONVERSATION_KEY_PREFIX}{initial_id}"
+        record = _kv_request(state_key, "GET") or {}
+        if self._workspace is None:
+            raise RuntimeError("AgentConversationDispatcher must be used as a context")
+
+        same_delivery = record.get("delivery") == delivery
+        same_head = bool(head) and record.get("head") == head
+        conversation_id = UUID(record.get("conversation_id") or str(initial_id))
+
+        # Rotate only the conversation ID: the KV key remains tied to the subject.
+        for _ in range(5):
+            if _runtime_archived(self.agent_url, self.api_key, conversation_id):
+                conversation_id = uuid5(NAMESPACE_URL, f"{conversation_id}:replacement")
+                same_delivery = same_head = False
+            try:
+                disposition = self._deliver_once(
+                    conversation_id, prompt, metadata, same_delivery, same_head
+                )
+                break
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 410:
+                    raise
+                # Archiving can race with the preflight check and delivery.
+                conversation_id = uuid5(NAMESPACE_URL, f"{conversation_id}:replacement")
+                same_delivery = same_head = False
+        else:
+            raise RuntimeError(f"Too many archived runtimes for {subject}")
 
         if disposition in ("deduplicated", "in_progress"):
             return {
@@ -147,6 +222,7 @@ class AgentConversationDispatcher:
                 "subject": subject,
                 "conversation_id": str(conversation_id),
                 "delivery": delivery,
+                "head": head or record.get("head") or "",
             },
         )
         return {
