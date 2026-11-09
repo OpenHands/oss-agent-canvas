@@ -1174,9 +1174,18 @@ def run_scan(dispatcher):
     failure is what the scan reports.
     """
     PullRequestReviewer.scan_intake = ReviewIntake()
+    payload = PullRequestReviewer._event_payload()
+    repository = ((payload or {}).get("repository") or {}).get("full_name", "")
+    extra_repositories = (
+        ("OpenHands/docs",) if repository.lower() == "openhands/docs" else ()
+    )
     failure = None
     try:
-        run_repositories(PullRequestReviewer, dispatcher=dispatcher)
+        run_repositories(
+            PullRequestReviewer,
+            dispatcher=dispatcher,
+            extra_repositories=extra_repositories,
+        )
     except Exception as exc:  # noqa: BLE001 - reported after the drain
         failure = exc
     try:

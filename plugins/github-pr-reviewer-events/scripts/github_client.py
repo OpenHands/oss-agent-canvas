@@ -318,7 +318,7 @@ class GitHubRepository:
         )
 
 
-def run_repositories(automation_type, conversation=None, dispatcher=None):
+def run_repositories(automation_type, conversation=None, dispatcher=None, extra_repositories=()):
     parser = argparse.ArgumentParser(description=automation_type.__doc__)
     parser.add_argument("--github-token-secret")
     args = parser.parse_args()
@@ -326,7 +326,9 @@ def run_repositories(automation_type, conversation=None, dispatcher=None):
     token_name = args.github_token_secret or config.get(
         "github_token_secret", "GITHUB_PERSONAL_ACCESS_TOKEN"
     )
-    repositories = config.get("repos") or [config["repository"]]
+    repositories = dict.fromkeys(
+        (config.get("repos") or [config["repository"]]) + list(extra_repositories)
+    )
     failures = []
     for repository in repositories:
         options = dict(
