@@ -147,7 +147,7 @@ def test_worker_exception_keeps_partial_remote_work_visible_and_draft(
     write_json(
         request,
         {
-            "config": {"repository": home},
+            "config": {"repository": home, "repair_scope": "customer_stack"},
             "context": {},
             "topic": {"id": "one"},
             "budget": {},

@@ -2,7 +2,7 @@ import re
 
 
 def resolve(config):
-    scope = config.get("repair_scope", "customer_stack")
+    scope = config.get("repair_scope", "any_authorized")
     if scope not in ("customer_stack", "any_authorized"):
         raise ValueError("repair_scope must be customer_stack or any_authorized")
     repositories = config.get("repositories", {})

@@ -4,7 +4,7 @@
 for a human merge decision.**
 
 - Flow-1 finds potential problems; OpenHands agents investigate and propose fixes.
-- Fixes target customer code and configuration; upstream repairs are configurable.
+- Fixes can target customer configuration or any relevant authorized repository.
 - Before/after evidence and independent review determine readiness. Unproven fixes
   stay draft; humans merge and deploy.
 
@@ -84,9 +84,9 @@ duplicate repair. If existing-work discovery fails, no repair agents start.
 
 **Choose the right repair layer.** Agents can improve prompts, skills/plugins,
 tools/MCP configuration, hooks, agent/LLM profiles, context settings, automation
-code, SDK integration or dependencies. The customer stack is the default scope;
-upstream proposals are optional. Configuration changes need a real application
-path and before/after settings, including effects on other users of shared
+code, SDK integration or dependencies. Any authorized repository is in scope by
+default; customer-only repairs are optional. Configuration changes need a real
+application path and before/after settings, including effects on other users of shared
 profiles. GitHub permissions must match the configured scope.
 
 ## What makes a fix convincing?
@@ -111,7 +111,7 @@ profiles. GitHub permissions must match the configured scope.
 | `repair_concurrency` | Defaults to the topic limit |
 | `validation_sample_size` | 5 inputs per comparison group when available |
 | Agent profiles | Configurable; built-in defaults are Luna / Sol 6.1 / Sol 6.1 |
-| `repair_scope` | `customer_stack`: home + configured repositories; `any_authorized`: other authorized destinations too |
+| `repair_scope` | `any_authorized` (default): any relevant authorized destination; `customer_stack`: home + configured repositories only |
 | Resource guards | Configurable cost, duration and conversation limits; parallel spend is not strictly capped globally |
 
 ## Issues, privacy and test runs

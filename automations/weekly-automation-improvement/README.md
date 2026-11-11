@@ -119,11 +119,12 @@ replay; unresolved attribution stays in the cohort's `attribution_gaps`. Possibl
 owners are excluded from non-negative controls. Automation origin does not determine the repair destination; the configured repair
 scope determines where agents may propose changes.
 
-`repair_scope` defaults to `customer_stack`: the home `repository` plus entries
-in `repositories` are the repair destinations. `any_authorized` uses that same
-catalog as starting context and permits other relevant repositories when the
-installation authorizes access. No SDK or extensions repositories are implicitly
-added. Both modes consider customer-owned automation/SDK integration code,
+`repair_scope` defaults to `any_authorized`: the home `repository` and entries
+in `repositories` provide starting context; other relevant repositories are
+permitted when the installation authorizes access. Set `customer_stack` to restrict
+repair destinations to the home repository plus the explicitly listed entries.
+No SDK or extensions repositories are implicitly added. Both modes consider
+customer-owned automation/SDK integration code,
 prompts, skills/plugins, tools/MCP configuration, hooks, agent/LLM profiles,
 compaction/memory settings, dependencies and runtime setup.
 
@@ -138,10 +139,11 @@ compaction/memory settings, dependencies and runtime setup.
 }
 ```
 
-Change only `repair_scope` to `any_authorized` to allow upstream proposals. In
-customer-only mode, agents may investigate upstream source but record upstream
-blockers in customer issues; they do not publish upstream issues or PRs. They must
-not invent a workaround when no sound customer-side fix exists.
+The example above opts into customer-only repairs. Upstream proposals are allowed
+by default when authorized. In customer-only mode, agents may investigate upstream
+source but record upstream blockers in customer issues; they do not publish
+upstream issues or PRs. They must not invent a workaround when no sound
+customer-side fix exists.
 
 The scope is carried in private evidence and triage/repair/review instructions,
 including resumed repairs. Deterministic checks reject out-of-scope outputs and
@@ -191,8 +193,8 @@ adapter or run the legacy publisher.
 Copy [weekly.example.json](weekly.example.json) outside git. Configure Laminar
 project/Signal/endpoints, proxy endpoint, home repository/canonical checkout,
 private state directory, native automation API and GitHub secret name. Register
-other customer checkouts under `repositories`. For upstream contributions, set
-`repair_scope=any_authorized` and optionally register relevant upstream checkouts.
+relevant checkouts under `repositories`. Upstream contributions are allowed by
+default when authorized; set `repair_scope=customer_stack` for customer-only repairs.
 The agent must report missing prerequisites rather than clone an extra repository.
 Ensure `automation-improvement` exists in repositories where repairs will be opened.
 
@@ -205,9 +207,9 @@ exists, and report task quality, cost and latency when relevant.
 
 Top-level settings:
 
-- `repair_scope`: **customer_stack** (default) or **any_authorized**. The home
-  repository and explicit `repositories` entries define the customer stack; the
-  latter mode can discover additional authorized destinations.
+- `repair_scope`: **any_authorized** (default) or **customer_stack**. The default
+  can discover additional authorized destinations. Customer-only mode restricts
+  repairs to the home repository and explicit `repositories` entries.
 
 - `max_topics_per_run`: default **10**, maximum topic investigations selected once
   from the ranked queue. Revisions do not consume another topic slot; the limit

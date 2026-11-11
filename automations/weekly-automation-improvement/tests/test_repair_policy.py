@@ -6,10 +6,11 @@ import topic_agent
 from budget import RunBudget
 
 
-def test_default_scope_uses_only_home_and_explicit_repositories():
+def test_customer_scope_uses_only_home_and_explicit_repositories():
     policy = resolve(
         {
             "repository": "Acme/automations",
+            "repair_scope": "customer_stack",
             "repositories": {"Acme/config": {"checkout": "/existing/config"}},
         }
     )
@@ -21,7 +22,7 @@ def test_default_scope_uses_only_home_and_explicit_repositories():
     assert not permits(policy, "OpenHands/software-agent-sdk")
     assert not permits(policy, "Acme/unregistered")
     assert permits(
-        resolve({"repository": "Acme/automations", "repair_scope": "any_authorized"}),
+        resolve({"repository": "Acme/automations"}),
         "OpenHands/software-agent-sdk",
     )
 
@@ -59,7 +60,9 @@ def test_out_of_scope_outputs_block_review_without_writing_to_other_repositories
     tmp_path, monkeypatch
 ):
     ctx = context(tmp_path)
-    ctx["repair_policy"] = resolve({"repository": "Example/automation"})
+    ctx["repair_policy"] = resolve(
+        {"repository": "Example/automation", "repair_scope": "customer_stack"}
+    )
     rows = resources()
     monkeypatch.setattr(
         topic_agent, "discover", lambda *a: {"resources": rows, "errors": []}
@@ -85,13 +88,11 @@ def test_out_of_scope_outputs_block_review_without_writing_to_other_repositories
     assert {r["repository"] for r in recorded + held} == {"Example/automation"}
 
 
-def test_any_authorized_accepts_evidenced_cross_repository_outputs(
+def test_default_scope_accepts_evidenced_cross_repository_outputs(
     tmp_path, monkeypatch
 ):
     ctx = context(tmp_path)
-    ctx["repair_policy"] = resolve(
-        {"repository": "Example/automation", "repair_scope": "any_authorized"}
-    )
+    ctx["repair_policy"] = resolve({"repository": "Example/automation"})
     monkeypatch.setattr(
         topic_agent, "discover", lambda *a: {"resources": resources(), "errors": []}
     )
@@ -120,7 +121,9 @@ def test_out_of_scope_recurrence_cannot_publish_a_comment(tmp_path, monkeypatch)
             [],
             None,
             tmp_path,
-            policy=resolve({"repository": "Acme/app"}),
+            policy=resolve(
+                {"repository": "Acme/app", "repair_scope": "customer_stack"}
+            ),
         )
 
 
@@ -281,7 +284,7 @@ def test_upstream_discovery_history_never_expands_customer_scope():
     state = {
         "topic_weeks": {"last/topic": {"resources": [{"repository": "Upstream/sdk"}]}}
     }
-    config = {"repository": "Acme/app"}
+    config = {"repository": "Acme/app", "repair_scope": "customer_stack"}
     assert weekly.discovery_repositories(config, {"Acme/app": {}}, state) == [
         "Acme/app"
     ]
