@@ -2,6 +2,7 @@
 
 import json
 import os
+import time
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -61,6 +62,7 @@ class AgentConversationDispatcher:
         self.automation_id = str(payload["automation_id"])
         self._workspace: RemoteWorkspace | None = None
         self._secrets = {}
+        self.deadline = time.monotonic() + 480
 
     def __enter__(self):
         _register_tools()
@@ -79,7 +81,14 @@ class AgentConversationDispatcher:
         assert self._workspace is not None
         return self._workspace.__exit__(*args)
 
+    def remaining(self) -> float:
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Triage verification deadline exceeded")
+        return remaining
+
     def deliver(self, subject: str, delivery: str, prompt: str) -> dict[str, str]:
+        self.remaining()
         conversation_id = uuid5(NAMESPACE_URL, f"{self.automation_id}:{subject}")
         state_key = f"{_CONVERSATION_KEY_PREFIX}{conversation_id}"
         record = _kv_request(state_key, "GET") or {}
@@ -89,6 +98,7 @@ class AgentConversationDispatcher:
         same_delivery = record.get("delivery") == delivery
 
         try:
+            self.remaining()
             conversation = RemoteConversation.attach(
                 self._workspace, conversation_id, visualizer=None
             )
@@ -96,6 +106,7 @@ class AgentConversationDispatcher:
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code != 404:
                 raise
+            self.remaining()
             conversation = RemoteConversation.create(
                 self._workspace,
                 StartConversationRequest(
@@ -104,63 +115,55 @@ class AgentConversationDispatcher:
                     agent_profile_id=self.profile_id,
                     secrets=self._secrets,
                     initial_message=SendMessageRequest(
-                        content=[TextContent(text=prompt)], run=True
+                        content=[TextContent(text=prompt)], run=False
                     ),
                 ),
                 visualizer=None,
             )
             disposition = "created"
         try:
+            self.remaining()
             if disposition == "resumed":
-                if same_delivery:
-                    if (
-                        conversation.state.execution_status
-                        == ConversationExecutionStatus.RUNNING
-                    ):
-                        conversation.update_secrets(self._secrets)
-                        disposition = "in_progress"
-                    elif conversation.state.execution_status in (
-                        ConversationExecutionStatus.IDLE,
-                        ConversationExecutionStatus.PAUSED,
-                    ):
-                        conversation.update_secrets(self._secrets)
-                        conversation.run(blocking=False)
-                    elif (
-                        conversation.state.execution_status
-                        == ConversationExecutionStatus.ERROR
-                    ):
-                        # The stored delivery matched but the conversation died, so
-                        # its work never finished. Re-send the prompt to retry it:
-                        # treating ERROR as deduplicated would strand the subject
-                        # forever, because the delivery never changes.
-                        conversation.update_secrets(self._secrets)
-                        conversation.send_message(prompt)
-                        conversation.run(blocking=False)
-                        disposition = "retried"
-                    else:
-                        disposition = "deduplicated"
-                else:
-                    conversation.update_secrets(self._secrets)
+                status = conversation.state.execution_status
+                if status == ConversationExecutionStatus.RUNNING and not same_delivery:
+                    raise RuntimeError(
+                        f"Previous triage revision still running: {conversation_id}"
+                    )
+                if status in (
+                    ConversationExecutionStatus.STUCK,
+                    ConversationExecutionStatus.WAITING_FOR_CONFIRMATION,
+                ):
+                    raise RuntimeError(
+                        f"Triage requires intervention: {conversation_id} ({status})"
+                    )
+                conversation.update_secrets(self._secrets)
+                if not same_delivery or status in (
+                    ConversationExecutionStatus.FINISHED,
+                    ConversationExecutionStatus.ERROR,
+                ):
+                    self.remaining()
                     conversation.send_message(prompt)
-                    conversation.run(blocking=False)
+                    disposition = "retried" if same_delivery else "resumed"
+            # This records delivery identity, not successful GitHub publication.
+            _kv_request(
+                state_key,
+                "PUT",
+                {
+                    "subject": subject,
+                    "conversation_id": str(conversation_id),
+                    "delivery": delivery,
+                },
+            )
+            conversation.run(timeout=self.remaining())
+            self.remaining()
+            if (
+                conversation.state.execution_status
+                != ConversationExecutionStatus.FINISHED
+            ):
+                raise RuntimeError(f"Triage did not finish: {conversation_id}")
         finally:
             conversation.close()
 
-        if disposition in ("deduplicated", "in_progress"):
-            return {
-                "disposition": disposition,
-                "conversation_id": str(conversation_id),
-            }
-
-        _kv_request(
-            state_key,
-            "PUT",
-            {
-                "subject": subject,
-                "conversation_id": str(conversation_id),
-                "delivery": delivery,
-            },
-        )
         return {
             "disposition": disposition,
             "conversation_id": str(conversation_id),
