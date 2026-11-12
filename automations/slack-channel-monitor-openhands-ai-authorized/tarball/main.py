@@ -26,7 +26,7 @@ import urllib.request
 from urllib.parse import quote, urlencode
 
 # ── Per-workspace configuration (substituted at build time) ───────────────────
-CONFIG = {   'authorized_email_domains': ['openhands.dev'],
+CONFIG = {   'authorized_email_domains': ['openhands.dev', 'all-hands.dev'],
     'authorized_emails': ['vasschiavo@gmail.com', 'gneubig@cs.cmu.edu', 'engel.nyst@gmail.com'],
     'bot_token_secret': 'SLACK_BOT_TOKEN_OPENHANDS_AI',
     'bot_user_id': 'U0BME18CF7S',
