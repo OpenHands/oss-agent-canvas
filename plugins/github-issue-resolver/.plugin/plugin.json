@@ -1,7 +1,7 @@
 {
   "name": "github-issue-resolver",
   "version": "0.1.0",
-  "description": "Executable automation plugin for GitHub Issue Resolver (multi-repo): extensions, OpenHands, software-agent-sdk, automation, enterprise.",
+  "description": "Executable automation plugin for GitHub Issue Resolver (multi-repo): extensions, OpenHands, software-agent-sdk, automation.",
   "author": {
     "name": "OpenHands",
     "email": "contact@all-hands.dev"
@@ -32,7 +32,7 @@
       "type": "event",
       "source": "github-events",
       "on": "*",
-      "filter": "contains(['OpenHands/extensions', 'OpenHands/OpenHands', 'OpenHands/software-agent-sdk', 'OpenHands/automation', 'OpenHands/enterprise', 'OpenHands/saas-deploy', 'OpenHands/evaluation'], repository.full_name) && ((action == 'assigned' && contains(keys(@), 'issue') && assignee.login == 'all-hands-bot') || starts_with(ref || '', 'refs/heads/openhands/issue-'))",
+      "filter": "contains(['OpenHands/extensions', 'OpenHands/OpenHands', 'OpenHands/software-agent-sdk', 'OpenHands/automation'], repository.full_name) && ((action == 'assigned' && contains(keys(@), 'issue') && assignee.login == 'all-hands-bot') || starts_with(ref || '', 'refs/heads/openhands/issue-'))",
       "destination": "dispatch_run",
       "subject_key_expr": null,
       "turn_text_expr": null,

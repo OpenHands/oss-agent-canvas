@@ -59,7 +59,7 @@ curl -X POST "${OPENHANDS_HOST}/api/automation/v1/plugin-spec" \
   -H "Authorization: Bearer ${OPENHANDS_API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "Issue Triage (multi-repo): extensions, OpenHands, software-agent-sdk, automation, enterprise",
+    "name": "Issue Triage (multi-repo): extensions, OpenHands, software-agent-sdk, automation",
     "plugin": {"source": "github:OpenHands/oss-agent-canvas", "repo_path": "plugins/issue-triage", "ref": "main"},
     "config": {},
     "observability_associations": {

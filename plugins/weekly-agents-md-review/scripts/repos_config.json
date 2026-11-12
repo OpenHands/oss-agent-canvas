@@ -14,9 +14,5 @@
   {
     "url": "https://github.com/OpenHands/automation",
     "ref": "main"
-  },
-  {
-    "url": "https://github.com/OpenHands/enterprise",
-    "ref": "main"
   }
 ]
