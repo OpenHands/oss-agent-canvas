@@ -1,0 +1,42 @@
+{
+  "name": "slack-channel-monitor-openhands",
+  "version": "0.1.0",
+  "description": "Executable automation plugin for Slack Channel Monitor - OpenHands AI Authorized.",
+  "author": {
+    "name": "OpenHands",
+    "email": "contact@all-hands.dev"
+  },
+  "homepage": "https://github.com/OpenHands/oss-agent-canvas",
+  "repository": "https://github.com/OpenHands/oss-agent-canvas",
+  "license": "MIT",
+  "keywords": [
+    "automation",
+    "slack-channel-monitor-openhands"
+  ],
+  "automation": {
+    "schema_version": "openhands.automation.plugin.v1",
+    "entrypoint": {
+      "runner": "script",
+      "working_dir": "scripts",
+      "command": "python3 main.py"
+    },
+    "runtime": {
+      "plugins": []
+    },
+    "config_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "suggested_trigger": {
+      "type": "event",
+      "source": "slack",
+      "on": "app_mention",
+      "filter": "team_id == 'T06P212QSEA'",
+      "destination": "dispatch_run",
+      "subject_key_expr": null,
+      "turn_text_expr": null,
+      "wake_agent": true
+    }
+  }
+}
