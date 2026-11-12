@@ -29,8 +29,8 @@ scripts/config.json   # defaults the deployed automation overrides
 | `heartbeat` | Daily one-line uptime summary (`<healthy>/<watched> healthy`) at `heartbeat_hour_utc` |
 
 Each alert names the automation, the failing-run count and start time, the last
-error (single line, truncated), and links the conversation. Re-alerts within
-24h thread on the original message instead of posting duplicates.
+run time and status. Raw errors and conversation links are omitted from public
+alerts. Re-alerts within 24h thread on the original message instead of posting duplicates.
 
 ## Data flow
 
@@ -42,7 +42,8 @@ error (single line, truncated), and links the conversation. Re-alerts within
    state machine in the KV store (`state` key) tracks per-automation status,
    streaks, in-alert flag, and the Slack ts of the open alert thread.
 3. Post to `alert_channel` with the `slack_token_secret` (default
-   `SLACK_BOT_TOKEN`, the All Hands AI workspace token for `C0BGK8NRYUX`).
+   `SLACK_BOT_TOKEN_OPENHANDS_AI`, the OpenHands community workspace token
+   for `#automations-debug` (`C0BLWB8PQ3B`)).
 
 ## Guardrails
 
