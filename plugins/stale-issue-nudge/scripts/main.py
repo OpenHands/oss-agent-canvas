@@ -16,7 +16,7 @@ Behaviour is driven by per-repo config in REPOS rather than being flattened:
     Issues labeled with anything in `exempt_labels` are never closed (but are
     still nudged).
 
-  OpenHands/extensions, OpenHands/automation, OpenHands/enterprise
+  OpenHands/extensions, OpenHands/automation
     Nudge only, same conservative policy as OpenHands/OpenHands.
 
 Both actions are restricted to issues (not PRs). Because posting a comment
@@ -60,11 +60,6 @@ REPOS = [
     },
     {
         "repo": "OpenHands/automation",
-        "close_enabled": False,
-        "mention_maintainers": False,
-    },
-    {
-        "repo": "OpenHands/enterprise",
         "close_enabled": False,
         "mention_maintainers": False,
     },

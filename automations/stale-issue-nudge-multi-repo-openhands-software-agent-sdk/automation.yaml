@@ -3,7 +3,7 @@ entrypoint: python3 main.py
 keep_alive: false
 model: null
 name: 'Stale Issue Nudge (multi-repo): extensions, OpenHands, software-agent-sdk,
-  automation, enterprise'
+  automation'
 preset_metadata: null
 prompt: null
 setup_script_path: null

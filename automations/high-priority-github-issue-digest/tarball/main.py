@@ -4,7 +4,7 @@ import urllib.parse
 import urllib.request
 
 REPOSITORIES = ("OpenHands/OpenHands", "OpenHands/software-agent-sdk")
-SLACK_CHANNEL = "C0BGK8NRYUX"
+SLACK_CHANNEL = "C0BLWB8PQ3B"
 ISSUE_LABEL = "priority:high"
 MAX_ISSUES_PER_REPOSITORY = 5
 
@@ -85,7 +85,7 @@ def format_summary(issues_by_repository):
 
 def main():
     github_token = get_secret("GITHUB_TOKEN")
-    slack_token = get_secret("SLACK_BOT_TOKEN")
+    slack_token = get_secret("SLACK_BOT_TOKEN_OPENHANDS_AI")
     issues = {
         repository: get_high_priority_issues(repository, github_token)
         for repository in REPOSITORIES

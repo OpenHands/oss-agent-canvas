@@ -136,7 +136,7 @@ class ConfigTest(WorkerTestBase):
         empty.mkdir()
         config = self.module.load_config(directory=empty)
         self.assertEqual(config["fail_threshold"], 2)
-        self.assertEqual(config["alert_channel"], "C0BGK8NRYUX")
+        self.assertEqual(config["alert_channel"], "C0BLWB8PQ3B")
         self.assertEqual(config["heartbeat_hour_utc"], 8)
 
     def test_unknown_keys_are_ignored(self):
@@ -174,12 +174,40 @@ class FlipDetectionTest(WorkerTestBase):
         self.run_main()
         self.assertEqual(len(self.slack.posts), 1)
         post = self.slack.posts[0]
-        self.assertEqual(post["channel"], "C0BGK8NRYUX")
+        self.assertEqual(post["channel"], "C0BLWB8PQ3B")
         self.assertIn("flipped to failing", post["text"])
         self.assertIn("PR Reviewer", post["text"])
-        self.assertIn("RuntimeError: boom", post["text"])
+        self.assertNotIn("RuntimeError: boom", post["text"])
         self.assertIn("2 consecutive failed runs", post["text"])
         self.assertIn("Sent by OpenHands on behalf of the user.", post["text"])
+
+    def test_public_alert_omits_raw_error_and_conversation_link(self):
+        text = self.module.format_alert({
+            "kind": "observed", "name": "PR Reviewer", "fail_count": 2,
+            "last_run": {"error_detail": "credential=synthetic-private-value",
+                         "conversation_id": "private-conversation",
+                         "status": "FAILED", "started_at": self.now},
+        }, self.module.CONFIG)
+        self.assertNotIn("synthetic-private-value", text)
+        self.assertNotIn("private-conversation", text)
+        self.assertIn("FAILED", text)
+
+    def test_channel_change_drops_old_thread_but_keeps_failure_state(self):
+        self.make_db([(self.AID, "PR Reviewer", "0 * * * *", 1, "ACTIVE")], [
+            (self.AID, "FAILED", "boom", self.ts(hours_ago=2), ""),
+            (self.AID, "FAILED", "boom", self.ts(hours_ago=1), ""),
+        ])
+        state = {"version": 1, "heartbeat_date": "", "alert_channel": "old-channel",
+                 "automations": {"PR Reviewer": {
+                     "status": "failing", "in_alert": True, "thread_ts": "old-thread",
+                     "first_alert_at": self.ts(hours_ago=30),
+                     "last_alert_at": self.ts(hours_ago=25), "fail_streak": 2}}}
+        self.module.save_state(state)
+        self.run_main()
+        self.assertEqual(len(self.slack.posts), 1)
+        self.assertIsNone(self.slack.posts[0]["thread_ts"])
+        self.assertIn("still failing", self.slack.posts[0]["text"])
+        self.assertEqual(self.module.load_state()["alert_channel"], "C0BLWB8PQ3B")
 
     def test_single_failure_does_not_alert(self):
         runs = [
@@ -270,6 +298,7 @@ class FlipDetectionTest(WorkerTestBase):
             json.dumps(
                 {
                     "version": 1,
+                    "alert_channel": "C0BLWB8PQ3B",
                     "heartbeat_date": "",
                     "automations": {
                         "PR Reviewer": {

@@ -48,7 +48,6 @@ DEFAULT_REPOS = [
     {"repo": "OpenHands/OpenHands"},
     {"repo": "OpenHands/software-agent-sdk"},
     {"repo": "OpenHands/automation"},
-    {"repo": "OpenHands/enterprise"},
 ]
 
 DEFAULT_OPENHANDS_URL = "https://oss-agent-canvas.ngrok.dev"

@@ -18,7 +18,7 @@ jobs:
           python-version: '3.13'
       - name: Discover and run repository and automation tests
         env:
-          SLACK_BOT_TOKEN: ci-test-placeholder
+          SLACK_BOT_TOKEN_OPENHANDS_AI: ci-test-placeholder
         run: |
           mapfile -t directories < <(find tests automations plugins -type f -name 'test_*.py' -printf '%h\n' | sort -u)
           if (( ${#directories[@]} == 0 )); then
