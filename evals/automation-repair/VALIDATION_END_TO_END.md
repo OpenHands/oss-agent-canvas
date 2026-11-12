@@ -1,0 +1,491 @@
+# Native OpenHands repair pipeline
+
+The repair worker now uses the standard OpenHands SDK Agent/Conversation with
+Sol 6.1, terminal/editor/browser/task tools and a real Git worktree. It can add
+files and tests; the former text-replacement/file/patch limits are removed.
+The issue is the shared brief and private evidence index. Compact task cards
+reference complete frozen inputs rather than duplicating entire trajectories.
+
+## Independent audit follow-up
+
+The audit's operational bugs are repaired: historical cohorts no longer load
+candidate-only files from the baseline; complete added/deleted/renamed manifests
+reach comparison requests; reservations begin immediately before a branch push,
+with reconciliation and explicit pending-publication status; and comparisons,
+semantic review and paired checks share the run budget/deadline. Partial check
+and comparison accounting receipts are indexed through the central issue.
+An unsupported historical adapter retains its result without replacing existing
+mechanism evidence.
+
+Regression coverage includes new files and renames, retryable preparation
+failures, uncertain-write recovery, exhausted budgets, interrupted accounting,
+process-group timeout cleanup, and preservation of existing evidence.
+
+The first unsteered weekly VM run started at `2026-10-29T22:32:05Z`, using
+capsule `weekly-unattended-dc4b328b74c2` and normal weekly configuration/state. It
+selected the provider-outage lead and opened [issue #67](https://github.com/OpenHands/oss-agent-canvas/issues/67)
+without an injected diagnosis or patch. The native coding attempt finished in
+3025.6 seconds at $5.6447 SDK-estimated cost. It produced a candidate but no PR:
+analysis treated late-closing empty parent spans as stale execution, and detected
+that only after coding. The run was stopped while its second topic was starting.
+
+The live run also exposed redaction of long test selectors and a hard category
+veto on provider findings. These are corrected: private operational check arrays
+are preserved exactly, test selectors remain readable in redacted artifacts,
+known empty conversation-wrapper timing updates are recorded separately from
+real execution changes, and failed preflight prevents expensive coding. Cause
+labels remain unverified leads; source scope and executed evidence govern repair
+acceptance.
+
+The unchanged candidate was revalidated with actual SDK 1.56.0 and corrected
+runtime context: two regression commands failed before and passed after; four
+control commands passed on both. The independent review rejected the candidate's
+blocking 1200-second waits against a 1200-second outer automation budget and its
+sequential-dispatch implications. The patch, original metadata, runtime settings,
+preflight and paired results are indexed in issue #67 for a subsequent attempt.
+No new accepted repair or successful unattended publication is claimed.
+
+The next run renamed overlapping provider clusters and created duplicate #69.
+It was stopped before implementing another patch. Its frozen inputs and partial
+agent progress are archived in [issue #67](https://github.com/OpenHands/oss-agent-canvas/issues/67#issuecomment-6511347829),
+and #69 is closed with a backlink. Retryable topic identities are now retained
+when a majority of finding clusters overlap, preserving the same issue and
+evidence namespace despite a changed generated title. Focused weekly tests cover
+renamed retries, unrelated clusters and uncertain-publication reservations.
+
+A separate live existing-PR check on #66 preserved its complete three-file
+manifest, including the added helper and test, and reached the trusted evaluator.
+That adapter declined unsupported historical execution, recorded zero new
+inference cost, and left existing PR evidence unchanged.
+
+Source discovery now retains deployed timeout/trigger settings for both coder
+and reviewer, and the coding brief includes its own deadline/shared budget.
+
+The subsequent unattended run finished with no new PR after reaching its $15
+inference threshold ($15.0148 reported; 8980.8 seconds). Its revised provider
+repair reproduced two baseline failures, corrected both, and preserved 13 passing
+controls. The reviewer could not verify the additional claimed 48-test safety
+suite because the submitted paired commands omitted it. Another reporting lead
+was correctly rejected: prompt-text checks did not reproduce the false published
+claim, and its observed continuation still made that claim on both versions.
+
+The publisher now accepts `candidate_checks` alongside paired `checks`. It runs
+them on the actual candidate, retains output/exit receipts, blocks publication on
+failure and includes successful results in independent review and PR evidence.
+They provide new-feature safety coverage, not baseline-defect evidence. The coding
+prompt explicitly requests the relevant safety/full-suite commands. The saved
+provider candidate was revalidated without another code-generation attempt.
+
+An independent execution audit found seven Sol conversations across five triage
+passes, rather than one infinite conversation. Sol consumed $14.584; automatic
+revisions accounted for $5.589. One revision correctly returned no proposal after
+its experiment still reproduced the false claim, but the orchestrator discarded
+that conclusion because it required a changed patch. The same condition blocked
+corrections to check commands that kept the code unchanged. Retry state retained
+neither source/evidence identity nor useful conclusions for subsequent triage.
+
+Automatic revision is now opt-in. Every complete revision report is retained,
+including explicit unsupported or unrepaired conclusions. A changed check suite
+can revalidate the same patch; an identical failed attempt is not resubmitted.
+Failed/unrepaired attempts retain source-content/runtime and Signal-record
+fingerprints, and wait for changes or an explicit topic retry. Compact conclusions
+reach triage, without discarding unrelated defects from a mixed cluster. A
+no-progress pass exits. The agent brief explicitly permits a focused supported
+repair or an honest unresolved conclusion without reconstructing missing history.
+
+The saved provider candidate's full 48-test suite passed independently in 27.881
+seconds, with no inference. This verifies the missing safety-suite receipt; it
+does not bypass independent review or establish historical review quality.
+
+The evidence-only recovery then published [PR #78](https://github.com/OpenHands/oss-agent-canvas/pull/78)
+at the unchanged saved commit `8fecac473371b8741ed787d5862fae544cb509a7`.
+The publisher reran two behavioral regressions failing before/passing after,
+13 paired controls passing on both, and all 48 candidate tests. Independent Sol
+review accepted bounded recovery, PR-facing failure status and deadline mechanisms.
+The recovery took 89.275 seconds and reported $0.1447345 for one review request;
+there was no new coding conversation. The PR is a labeled draft for human review.
+This recovers existing work after a harness fix; it does not claim fresh unattended
+weekly success, historical model replay or production review-quality improvement.
+The complete worker/evaluator suite passes 307 tests; lint/format checks pass.
+
+The subsequent profile configuration adds top-level `repair_agent_profile` and
+the standalone `--repair-agent-profile` option. Null retains the exact Sol 6.1
+default and its five tool sets. A real SDK 1.56.0 construction check loaded the
+saved `factory-developer` profile at revision 2, preserving its GLM 5.3 Flash model,
+four configured tool sets and one referenced secret. No conversation/model run
+was started. Profile identity/model/tools are retained in receipts; model and
+service credentials are not copied into those metadata fields. The worker/eval
+suite passes 315 tests, including profile propagation, defaults, credential
+handling and failures without fallback.
+
+## Qualified reporting repair: PR #66
+
+[PR #66](https://github.com/OpenHands/oss-agent-canvas/pull/66) was generated by
+the native Sol agent from two persisted Flow-1 findings, then published by the
+paired-check/evidence-review path. It appends runner-observed activity to the
+actual conversation when the preceding answer inaccurately claims no writes.
+It preserves the original answer and performs no additional model run.
+
+| Executed check | Baseline | Candidate |
+|---|---:|---:|
+| Reporting, delivery/status and snapshot regressions | 14 fail | 14 pass |
+| Read-only, successful docs work and execution-error controls | 3 pass | 3 pass |
+| Existing maintainer and Slack-directory checks | 16 pass | 16 pass |
+
+The same test asset was overlaid onto the unchanged baseline. Regression
+failures were behavioral assertions, not import/setup failures. The tests use
+real Git and the SDK/server event/persistence path, with model execution and
+external writes substituted. The independent evidence review supported the
+narrow reporting mechanism.
+
+Baseline: `5dba224799d97e3ac8e16568288601fcecd4f6ea`.
+Published candidate: `e50eb9b0a5501d31d04d9774dbfb98d66cab3952`.
+
+The private recorded-event projection exercised both available negative inputs
+and five randomly selected completed non-negative inputs (N=5). Candidate reports
+persisted for 7/7; original answers and projected Git state were preserved for
+7/7 on both source versions. It omitted truncated/unusable records and did not
+rerun original models or remote writes. This is reporting/projection evidence,
+not a historical task-quality or statistical improvement claim.
+
+A separate synthetic delivery check used the service's SDK 1.56.0 against the
+real local Agent Server: the report persisted after a fresh client reopened the
+conversation, with measured branch/worktree changes. No GitHub writes occurred.
+Its reporting-module hash matches the exact published candidate:
+`1f876f4a0490e8b3e32d6e999c64420d551dc663a62f25a3b9ef9d69d82082c6`.
+
+## Calibration and remaining scope
+
+The first native candidate added runner logs only. Despite passing its new tests,
+the actual evidence reviewer rejected it because the false operator-facing answer
+was unchanged. A separate proposed resolved-trigger repair was rejected after
+original chronology disproved its premise; [issue #63](https://github.com/OpenHands/oss-agent-canvas/issues/63)
+retains that investigation. Acceptance was not relaxed to obtain PR #66.
+
+The repair does not prevent mutations, clean up work, verify remote-write
+attribution or make the model more truthful. The appended SDK user-role report
+leaves a completed conversation idle; human review controls merge/deployment.
+No production automation or deployment was replaced by this validation.
+
+Evidence is indexed in [issue #62](https://github.com/OpenHands/oss-agent-canvas/issues/62).
+Private worker state contains `native-improver-20261029/7da8a12d1d98/`
+with `report-revision`, `audit-calibration`, `terminal-evidence-proof` and
+`live-report-delivery-v3`. Earlier failed attempts remain retained.
+The successful repair conversation took 2776 seconds and recorded $4.6500474
+in SDK-estimated cost; these estimates are not billing receipts.
+
+## Earlier evaluator and retained experiments
+
+One semantic validation stage follows paired execution: freeze original task inputs
+and a pinned real repository; execute baseline and candidate through the actual SDK;
+then let one Sol agent inspect the task and outcomes, with optional raw-run/source
+reads. Code checks source/input identity, actual deliverables, preserved human text,
+readback and runtime integrity. There is no separate gold-label generation or
+quote-adjudication stage. N defaults to 5 and counts distinct inputs; the example
+uses two repetitions. These are development observations, not statistical proof.
+
+The corrected implementation covers label-only false passes, missing implementation
+files, wrong-repository/GraphQL responses, fabricated empty searches, pagination,
+contradictory semantic controls and unchanged executed prompts. Unsupported data is
+explicit. Recorded-run reviews keep a separate audit directory. Redaction preserves
+the non-secret triage protocol checksum; corrupted input markers are rejected.
+
+## Publication safety: positive mechanism evidence (#54)
+
+The separate moved-head experiment has two valid pairs: baseline published on the
+wrong head 2/2 times; candidate prevented publication 2/2 times. One valid original
+body-file-failure pair also supports the guard. Other original trials retain runtime
+or coverage gaps; missing same-cohort controls block a broader acceptance claim.
+This is useful safety-mechanism evidence, not a general reviewer-quality benchmark.
+
+Tested candidate `703ad30a6e3864437aeeaf65061cdb8d0a144a21`; current #54 head
+`e904068189798df4207a2b9b6b3fafaf7970a52c` differs only in README/tests. Runtime
+publication code is identical; the exact current head was not rerun. Both artifacts
+and current rescoring are retained under `automation-simple-validation-20261029/guard-evidence`.
+
+## Historical-input diagnosis (#60): not a qualified repair
+
+The N=5 comparison completed **24 SDK executions**: one available negative and five
+originally random non-negative inputs, both source versions, two repetitions.
+Pinned full repository archives and related reads replaced the toy source checkout.
+Sol completed its assessment with eight optional reads, **$0.5079 proxy-reported
+cost**, and approximately 74 seconds. Code attached exact artifact references.
+
+A valid pair under that scorer showed a completed baseline decision and a candidate
+duplicate/missing decision after rejected comment operations. Another repetition
+suggested a priority fix, but its replay could not establish valid evidence. Four
+of ten control pairs met the then-current validity requirements; the rest retained
+runtime or unbacked-response gaps. There was no qualified improvement.
+
+Further inspection found an additional input defect: secret redaction had removed
+the task's checksum marker. That can cause false deliverable failures, so this entire
+experiment is now diagnostic rather than qualification evidence. No causal regression
+or general benefit is claimed. The implementation now preserves that protocol marker
+while continuing to remove credentials, and rejects previously corrupted cohorts.
+
+Raw runs: `automation-simple-validation-20261029/e4e1b0f37d99`. Completed semantic
+review: `full-review-bd0f3498364e`. Earlier first-pass reviews and an audit-directory
+collision remain retained; rescoring never reran SDK executions or replaced inputs.
+
+A fresh **N=1 diagnostic canary** refetches original task messages from Laminar and
+randomly downsamples one of the original five controls with seed `20261029`. It
+uses two repetitions, intact markers, the same pinned source snapshots and corrected
+API coverage. It does not replace the original N=5 experiment. Its artifacts are
+under `automation-simple-validation-20261029/canary-4470c6209387`.
+
+The canary completed all **eight planned execution attempts**: seven finished and
+one candidate reached its SDK step limit. Both control pairs were valid and passed
+on both versions. The negative baseline chose medium in both repetitions; the
+candidate completed one matching decision and one run made no writes before its
+step limit. Sol completed the assessment with eight optional reads in approximately
+56 seconds, **$0.2389 proxy-reported cost**. Context was sufficient; the incomplete
+runtime outcome remains unknown rather than a behavioral regression. No paired fix
+was demonstrated, so **#60 stays draft and unqualified**. The corrected replay and
+one-agent review work end to end without claiming that this prompt repair helps.
+
+A later reporting-only correction keeps baseline reproduction independent of candidate
+completion. On these same artifacts and Sol judgments, target reproduction is now
+**not reproduced** (both baseline runs chose medium), rather than unknown. The
+qualification stays inconclusive. No SDK or model execution was repeated; retained
+correction receipt: `consolidation/canary-reporting-correction.json`.
+
+## Issue-linked context access
+
+The updated worker creates/reuses a sectioned issue in the repair repository and
+links its PR back to it. [Issue #61](https://github.com/OpenHands/oss-agent-canvas/issues/61)
+indexes the retained #60 inputs and eight-attempt comparison with 47 private files.
+Public records contain references and controlled status/source metadata, without
+raw private tasks, prompts, source snapshots or run logs.
+
+A real Sol 6.1 canary on the OSS VM read the issue's Evidence section, its frozen
+context catalog, then paged through the private original-context artifact. It
+correctly recovered the frozen baseline and presence of original task instructions.
+Four evidence reads cost **$0.0263271 proxy-reported** in **11.649 seconds**. Audit
+records separate the model's four reads from the three preceding deterministic
+access checks. This demonstrates retrieval, not an improved repair or a fresh
+end-to-end repair-generation experiment. Existing #60 stays draft/unqualified.
+
+Artifacts: `automation-issue-context-20261029/4ff79e853537`. Two preceding setup
+failures (null optional app URL; unsupported `gh --slurp` on the VM's gh 2.23)
+remain retained; neither called Sol or reran an automation. Pagination now works
+with concatenated JSON pages on that installed CLI. All 47 catalogued replay files were subsequently read and integrity-checked using
+the worker account; files are 0600 and the evidence directory is 0700. The public
+[access-verification record](https://github.com/OpenHands/oss-agent-canvas/issues/61#issuecomment-6503187388)
+references the private model/tool audits. No extra key, cloud storage, deployment
+or new model stage was needed.
+
+## Other calibration and checks
+
+The #59 factual-error incident is supported by its original trace, but the baseline
+already avoided that specific error in three reconstructed target trials. Formatting
+passes do not demonstrate a factual-accuracy improvement. It remains draft/unproven.
+A one-off Sol policy check correctly recognized SDK issue #6295 as actual workflow
+pain (medium/high, approximately $0.003), correcting the earlier Luna label. This is
+a calibration check, not an added labeling stage or a repair-quality benchmark.
+
+**261 tests pass** after the audit fixes and issue-linked context handoff;
+Ruff, formatting and whitespace checks pass. The [independent audit](PIPELINE_AUDIT.md)
+identifies remaining repair-generation and calibration limits. The earlier bounded
+correctness review did not establish general pipeline quality. Historical
+execution currently covers issue triage; reviewer fixtures remain mechanism tests,
+not substitutes for a historical reviewer adapter. No production schedule, deployment
+or weekly-ledger replacement is part of this work. Generated repair PRs remain draft.
+
+# Earlier experiments (superseded evaluator)
+
+# Historical-cohort validation
+
+On 2026-10-29, the stronger user-configurable protocol selected **N=5** from live
+self-hosted Laminar: one available topic-linked negative conversation and five
+uniformly sampled non-negative conversations from the same automation. Selection
+was frozen with seed `20261029`; no selected input was replaced. Luna assigned
+expected outcomes without candidate code, candidate outputs or Signal labels.
+Both versions then executed each original native task: **12 executions**.
+
+The result for [PR #60](https://github.com/OpenHands/oss-agent-canvas/pull/60) is
+**inconclusive**. The original negative task passed on both versions, so the target
+failure did not reproduce. One control passed on both versions; another candidate
+execution did not finish. Other controls exposed readiness errors and unsupported
+write attempts (PUT on the issue endpoint and POST to a different issue).
+One control changed from an incorrect priority to an incorrect readiness decision;
+that is a new violation, not a pass. These results supersede the smaller checkpoint
+qualification below. The example remains a labeled draft; improvement is unproven.
+
+The report now has separate negative-input and random non-negative-input tables,
+linked to the selected Laminar traces. It compares all strict failures and reports
+new violations relative to paired controls. Existing failures are visible rather
+than assumed absent just because Flow-1 produced no Signal. Runtime or unmodeled
+mutation errors block acceptance. Current root repository guidance is pinned and
+shared, but complete historical implementations and linked discussions are not
+reconstructed. AI expectations and a small development cohort are not statistical
+proof. The candidate already existed before this backfill; no candidate outputs
+were used to assign these expectations.
+
+Private artifacts under `automation-cohort-validation-20261029`:
+
+- `077da19bb716`: frozen selection and successful native Sol `read_signal` canary
+  (one read, $0.0058095 proxy-reported cost).
+- `evaluation-935e73a6cbd7`: repository-guidance enrichment, independently frozen
+  expectations, original tasks and twelve retained executions.
+- `evidence-a431cc067f12`: current scorer receipt and PR-description update, reusing
+  every execution with zero additional inference. Relative-control acceptance is
+  disclosed in the report; no input, annotation or raw execution changed.
+
+The full worker/evaluator suite passes **231 tests**. Ruff and whitespace checks
+pass. N is a positive top-level `validation_sample_size`, default **5**, independently
+of repetitions. Historical execution currently supports issue-priority topics;
+reviewer-family adapters remain pending and cannot silently use three old fixtures.
+Production schedules, deployments and the weekly production ledger were unchanged.
+
+## Additional architecture check
+
+A later seven-day inventory contained 29 usable finding events linked to five
+automations. Issue triage had six negative conversations and 35 eligible
+non-negative controls; the main reviewer had 18 negative conversations and eight
+controls. Finding volume is not the limiting factor.
+
+An explicit pilot selected two actual priority-overescalation findings, froze
+those inputs plus five uniformly sampled non-negative inputs, and ran the normal
+Luna → Sol → comparison path. Sol generated one focused pre-write evidence check.
+Both fresh negative baseline executions already chose low priority; neither
+historical priority error reproduced. The initial AI annotation also incorrectly
+treated mock-mode evidence as actual-product reproduction and inferred an
+unobserved dependency state. That experiment was invalidated and interrupted;
+completed and interrupted artifacts remain retained. No new repair qualified or
+was published from it.
+
+The test exposed a separate transport bug: applying secret redaction to an
+already serialized JSON context could corrupt embedded source expressions.
+The transport now redacts structured inputs before encoding and separately
+sanitizes structured function-call audit arguments. An extracted-policy annotation
+pass, without candidate code or outcomes, produced grounded categories and exact
+task quotes for all seven selected inputs. The two synthetic negatives now map to
+low priority, and the unobserved dependency maps to unspecified readiness. This
+is a separately retained annotation correction, not a successful repair comparison.
+
+Private artifacts: `automation-architecture-validation-20261029/0d9437ebd2d0`
+retains the original pilot; `annotations-716483ffcc01` retains rejected,
+non-verbatim quotes; `annotations-a53550a65701` retains the successful grounded
+annotation pass on the same selected inputs and repository snapshots. The normal
+publication gate kept the unproven patch local. Existing #60/#59 remain draft and
+inconclusive. Meaningful repair validation still needs better replay coverage and
+reproducible failures; the stronger architecture has no qualified positive example
+from these historical-input experiments yet.
+
+# Earlier checkpoint experiment (superseded qualification)
+
+On 2026-10-29, the prototype produced
+[repair PR #60](https://github.com/OpenHands/oss-agent-canvas/pull/60) with
+**Before / After Evidence already in its initial description**. Its label is
+`automation-improvement`; it remains a draft for human review.
+The implementation is consolidated in [#49](https://github.com/OpenHands/oss-agent-canvas/pull/49).
+The earlier validation work was developed in [#55](https://github.com/OpenHands/oss-agent-canvas/pull/55).
+
+## Executed chain
+
+1. Read a persisted Flow-1 finding and native issue-triage input from self-hosted
+   Laminar. The pilot explicitly selected the historical finding behind #53 and
+   used a private ledger; it was not a random sample or population-quality study.
+2. Luna selected the priority-underrating topic. Sol generated one focused edit:
+   audit reported user harm immediately before writing priority, keeping scope
+   and readiness separate. The generated patch was not edited manually.
+3. Run the actual baseline/candidate prompt through SDK/tools 1.58.2 against frozen
+   GitHub state. Retain prompts, model/tool events, API requests and outcome checks.
+4. Rescore all six completed executions under the corrected acceptance rule,
+   reuse the exact tested candidate commit, and let the normal publication gate
+   push/create the labeled draft. No new agent inference was used in recovery.
+5. Verify the published head, source diff and evidence receipt agree. Close #53
+   as superseded, retaining its separate comparison and development history.
+
+Baseline: `5dba224799d97e3ac8e16568288601fcecd4f6ea`.
+Candidate and published PR head: `de27818424adbbafbe20d525a2b31c2d6396c855`.
+The patch changes only `plugins/issue-triage/scripts/worker.py` and adds ten lines.
+This is the configured baseline; the historical executed revision was not verified.
+
+## Observed behavior
+
+Both versions used `openai/glm-5.3-flash`, high effort, 30 steps, 4096 output
+tokens, a 120-second request timeout and a 420-second trial budget. There was one
+execution per version/case, with no retries inside a cohort.
+
+| Frozen scenario | Baseline | Candidate |
+|---|---|---|
+| Original reported paid harm | Medium priority; passed | Medium priority; passed |
+| Reported harm, unknown monetary amount | Low priority; failed | Medium priority; passed |
+| Speculative risk without reported harm | Low priority, but incorrectly ready for development | Low priority; readiness and preservation checks passed |
+
+Candidate: **3/3 strict passes**, no execution errors. Baseline: **1/3 strict
+passes**, including the specific priority violation being repaired. Human text
+and unrelated labels were preserved by the candidate. One candidate optional
+research read and two baseline optional research reads were unsupported; the
+priority contract observes the complete required issue and verifies final labels.
+It does not evaluate full repository research or general triage quality.
+
+Baseline median agent-loop time: **68.40s**; candidate: **29.77s**. SDK-estimated
+comparison costs were **$0.0279 baseline / $0.0192 candidate**, not billed costs.
+Luna/Sol generation separately reported **$0.063651475** through proxy headers.
+These timings/costs describe this small development comparison, not population
+performance. Container setup and publication are outside agent-loop timings.
+
+## Acceptance correction and retained attempts
+
+The earlier rule required every baseline control to pass. That rejects a repair
+when the old version has an additional genuine behavioral failure, even if the
+candidate passes the control and fixes the specific reproduced target error.
+The corrected rule requires complete, error-free executions on both versions,
+a paired target-specific baseline violation, every candidate check passing and
+passing candidate controls. Baseline behavioral failures stay visible. Missing
+required inputs, provider/runtime failures and unmodeled mutations still block
+acceptance. Unrelated formatting improvements cannot prove a factual-claims fix.
+
+This rule was revised during development. The original verdict was inconclusive;
+PR #60 explicitly discloses that rescoring changed it. No frozen inputs, candidate
+patch, model settings or raw executions were changed for recovery. This is
+post-development evidence, not independent confirmation or statistical proof.
+Some cases use reconstructed draft checkpoints derived from observed failures;
+they are not exact full-history production replays or a held-out benchmark.
+
+Earlier cohorts remain retained: the initial 60-second request timeout failed,
+the 180-second trial budget also timed out, and another cohort exposed fixture
+handling of trailing-slash reads and invalid named-label POST requests. The final
+execution cohort fixed those responses and strengthened checks against transient
+human-text replacement. None of those earlier results was silently rerolled.
+
+Private VM artifacts, under the agent's state directory:
+
+- Original Flow-1 → Luna → Sol run:
+  `automation-evidence-publisher-20261029/cbd351ad62a0`.
+- Revised request timeout: `.../protocol120-80680c059ba6`.
+- Revised trial budget: `.../protocol420-b744998bae51`.
+- Completed corrected-fixture executions: `.../fixture420-86c92dad9c8f`.
+- Rescoring and exact-commit publication: `.../recovered-193e10263f91`.
+- Legacy draft backfills: `automation-evidence-backfill-20261029/86c92dad9c8f`.
+
+The public PR contains full source revisions and manifest/comparison hashes.
+Private receipts also bind the frozen request and scoring implementations.
+Recovery validates the retained commit's parent and complete diff before reuse.
+
+## Other repairs and checks
+
+[#53](https://github.com/OpenHands/oss-agent-canvas/pull/53) received its own
+positive six-execution comparison, then was closed as superseded by #60.
+[#59](https://github.com/OpenHands/oss-agent-canvas/pull/59) received twelve
+executions and remains explicitly **inconclusive**: baseline factual-claim errors
+were not reproduced, so its formatting-only advantage cannot establish the target
+fix. The earlier incomplete/fixture-limited evidence on
+[#54](https://github.com/OpenHands/oss-agent-canvas/pull/54) remains retained.
+
+At that stage, the worker/comparison suite passed **198 tests in 87.66 seconds**. Ruff and
+whitespace checks pass. Integration tests exercise real Git/subprocess operations,
+publication gating, immutable receipt reuse, mismatched-commit rejection, retained
+candidate bundles, cleanup and a bounded Sol revision. Failed or inconclusive
+repairs retain their findings and release publication reservations.
+
+The supported contracts cover issue-priority decisions, explicit PR-description
+claims and reviewer publication. Other mechanisms remain pending. No general
+cross-automation quality evaluator is claimed.
+
+The pilot verified that the production weekly ledger hash was unchanged. Source
+worktrees were removed and candidate bundles retained. No real GitHub review,
+production automation, scheduled worker, deployment or Laminar Signal definition
+was replaced by this work. Merge/deployment remain separate reviewed actions.

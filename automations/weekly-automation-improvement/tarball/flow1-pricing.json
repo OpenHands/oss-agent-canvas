@@ -1,0 +1,7 @@
+{
+  "input_usd_per_million": 0.05,
+  "cached_input_usd_per_million": 0.01,
+  "output_usd_per_million": 0.30,
+  "source": "https://laminar.sh/pricing",
+  "checked_on": "2026-10-27"
+}
