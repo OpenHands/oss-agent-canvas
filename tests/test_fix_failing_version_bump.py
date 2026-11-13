@@ -224,6 +224,39 @@ class DeployedAutomationConfigTests(unittest.TestCase):
         self.assertEqual(deployed.read_text(), plugin.read_text())
 
 
+class MergeCapTests(unittest.TestCase):
+    """A single poll must merge every green dependabot PR, not just a few."""
+
+    def test_merges_all_green_prs_in_one_repo(self):
+        for path in MODULES:
+            with self.subTest(module=str(path.relative_to(ROOT))):
+                module = load_module(path)
+                module.AUTO_MERGE_DEPENDABOT = True
+                prs = [
+                    {
+                        "number": n,
+                        "head": {"sha": f"sha{n}", "ref": f"dependabot/{n}"},
+                        "user": {"login": "dependabot[bot]"},
+                    }
+                    for n in range(1, 8)
+                ]
+                merged = []
+                module._verify_repo = lambda *a, **k: None
+                module._list_open_prs = lambda *a, **k: prs
+                module._get_pr = lambda token, repo, number: prs[number - 1]
+                module._ci_status = lambda *a, **k: "clear"
+                module._maybe_merge_green_dependabot = (
+                    lambda token, repo, pr, head_sha, fixes, merges: merged.append(
+                        pr["number"]
+                    )
+                )
+                state = {"version": 1, "repos": {}}
+                module._process_repo(
+                    "owner/repo", "token", "http://agent", "key", "http://oh", state
+                )
+                self.assertEqual(merged, [1, 2, 3, 4, 5, 6, 7])
+
+
 class MaintainerHandoffTests(unittest.TestCase):
     def check_handoff(self, roster, reviews, requested, author, expected_login):
         for path in MODULES:
