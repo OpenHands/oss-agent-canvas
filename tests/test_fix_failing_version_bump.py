@@ -149,6 +149,9 @@ class ConfigTests(unittest.TestCase):
                 (clean / path.name).write_bytes(path.read_bytes())
                 module = load_module(clean / path.name)
                 self.assertFalse(module.AUTO_MERGE_DEPENDABOT)
+                self.assertTrue(module.HANDLE_DEPENDABOT)
+                self.assertEqual(module.PIN_BUMP_BRANCH, "")
+                self.assertFalse(module.PIN_BUMP_DRY_RUN)
                 self.assertEqual(module.MAINTAINERS, [])
                 self.assertEqual(
                     [entry["repo"] for entry in module.REPOS],
@@ -187,27 +190,88 @@ class ConfigTests(unittest.TestCase):
             {"maintainers": "neubig"},
             {"minimal_fix_max_files": 0},
             {"repos": []},
+            {"handle_dependabot": "no"},
+            {"pin_bump_branch": ["bump-pins"]},
+            {"pin_bump_dry_run": 1},
+            {"pin_bump_files": ["pyproject.toml"]},
+            {"pin_bump_files": {"OpenHands/automation": "pyproject.toml"}},
+            {"pin_bump_checks": {"OpenHands/OpenHands": [1]}},
         ]:
             with self.subTest(payload=payload):
                 self.write_config(payload)
                 with self.assertRaises(SystemExit):
                     load_module(self.tmp / MODULES[0].name)
 
+    def test_config_turns_pin_bumps_on(self):
+        for path in MODULES:
+            with self.subTest(module=str(path.relative_to(ROOT))):
+                self.write_config(
+                    {
+                        "handle_dependabot": False,
+                        "pin_bump_branch": "bump-pins",
+                        "pin_bump_author": "some-bot[bot]",
+                        "pin_bump_files": {"OpenHands/foo": ["pyproject.toml"]},
+                        "pin_bump_checks": {"OpenHands/foo": ["extra"]},
+                        "pin_bump_dry_run": True,
+                        "hold_label": "do not merge",
+                    }
+                )
+                module = load_module(self.tmp / path.name)
+                self.assertFalse(module.HANDLE_DEPENDABOT)
+                self.assertEqual(module.PIN_BUMP_BRANCH, "bump-pins")
+                self.assertEqual(module.PIN_BUMP_AUTHOR, "some-bot[bot]")
+                self.assertEqual(module.PIN_BUMP_FILES, {"OpenHands/foo": ["pyproject.toml"]})
+                self.assertEqual(module.PIN_BUMP_CHECKS, {"OpenHands/foo": ["extra"]})
+                self.assertTrue(module.PIN_BUMP_DRY_RUN)
+                self.assertEqual(module.HOLD_LABEL, "do not merge")
+
 
 class DeployedAutomationConfigTests(unittest.TestCase):
     def test_deployed_automation_ships_enabled_config(self):
         configs = list(
-            ROOT.glob("automations/fix-failing-version-bump-*/tarball/config.json")
+            ROOT.glob("automations/fix-failing-version-bump-dependabot-*/tarball/config.json")
         )
         self.assertEqual(len(configs), 1)
         payload = json.loads(configs[0].read_text())
         self.assertTrue(payload["auto_merge_dependabot"])
         self.assertTrue(payload["maintainers"])
+        # The dependabot deployment keeps doing dependabot only.
+        module = load_module(configs[0].with_name("main.py"))
+        self.assertTrue(module.HANDLE_DEPENDABOT)
+        self.assertEqual(module.PIN_BUMP_BRANCH, "")
+
+    def test_pin_bump_deployment_does_pin_bumps_only(self):
+        configs = list(
+            ROOT.glob("automations/fix-failing-version-bump-bump-pins-*/tarball/config.json")
+        )
+        self.assertEqual(len(configs), 1)
+        module = load_module(configs[0].with_name("main.py"))
+        self.assertFalse(module.HANDLE_DEPENDABOT)
+        self.assertEqual(module.PIN_BUMP_BRANCH, "bump-pins")
+        self.assertTrue(module.MAINTAINERS)
+        # Every repository it polls says which files a bump may change.
+        for entry in module.REPOS:
+            self.assertTrue(module.PIN_BUMP_FILES.get(entry["repo"]), entry["repo"])
 
     def test_deployed_tarball_and_plugin_scripts_match(self):
-        deployed = next(ROOT.glob("automations/fix-failing-version-bump-*/tarball/main.py"))
+        deployed = sorted(ROOT.glob("automations/fix-failing-version-bump-*/tarball/main.py"))
         plugin = next(ROOT.glob("plugins/fix-failing-version-bump/scripts/main.py"))
-        self.assertEqual(deployed.read_text(), plugin.read_text())
+        self.assertEqual(len(deployed), 2)
+        for path in deployed:
+            self.assertEqual(path.read_text(), plugin.read_text(), path)
+
+    def test_plugin_schema_declares_the_pin_bump_keys(self):
+        # The schema is closed (additionalProperties: false): a key the script
+        # reads but the schema omits could not be set through the plugin host.
+        manifest = json.loads(
+            (ROOT / "plugins/fix-failing-version-bump/.plugin/plugin.json").read_text()
+        )
+        declared = manifest["automation"]["config_schema"]["properties"]
+        for key in (
+            "handle_dependabot", "pin_bump_branch", "pin_bump_author", "pin_bump_files",
+            "pin_bump_checks", "pin_bump_dry_run", "hold_label",
+        ):
+            self.assertIn(key, declared)
 
 
 class MaintainerHandoffTests(unittest.TestCase):

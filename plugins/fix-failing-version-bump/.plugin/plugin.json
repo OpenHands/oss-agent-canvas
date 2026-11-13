@@ -1,7 +1,7 @@
 {
   "name": "fix-failing-version-bump",
-  "version": "0.2.0",
-  "description": "Executable automation plugin for Fix Failing Version Bump: diagnoses and fixes failing CI on dependabot version-bump PRs, and can auto-approve and merge green version-only bumps or minimal companion fixes while handing larger changes to a maintainer for review.",
+  "version": "0.3.0",
+  "description": "Executable automation plugin for Fix Failing Version Bump: diagnoses and fixes failing CI on dependabot version-bump PRs, and can auto-approve and merge green version-only bumps or minimal companion fixes while handing larger changes to a maintainer for review. Optionally does the same, under stricter rules, for the release bot's rolling pin-bump pull request.",
   "author": {
     "name": "OpenHands",
     "email": "contact@all-hands.dev"
@@ -64,6 +64,46 @@
         "minimal_fix_max_changed_lines": {
           "type": "integer",
           "default": 100
+        },
+        "handle_dependabot": {
+          "type": "boolean",
+          "default": true
+        },
+        "pin_bump_branch": {
+          "type": "string",
+          "default": ""
+        },
+        "pin_bump_author": {
+          "type": "string",
+          "default": "openhands-release-bot[bot]"
+        },
+        "pin_bump_files": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "default": {}
+        },
+        "pin_bump_checks": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "default": {}
+        },
+        "pin_bump_dry_run": {
+          "type": "boolean",
+          "default": false
+        },
+        "hold_label": {
+          "type": "string",
+          "default": "release: hold"
         }
       }
     },

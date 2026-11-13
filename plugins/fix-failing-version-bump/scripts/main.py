@@ -21,6 +21,11 @@ A fix is attempted at most once per (repo, PR, head SHA): pushing a new
 version-bump commit by dependabot is new information and re-triggers the
 attempt. A PR whose CI is still running is left alone this poll and retried
 next time. Closed/merged PRs are dropped from state.
+
+With `pin_bump_branch` set, the poll also looks after the rolling pull request
+that the release bot keeps open from that branch to move a repository's pins of
+upstream releases (the `bump-pins` workflow in OpenHands/release-actions). It
+is fixed and merged the same way, under stricter rules: see "Pin bumps" below.
 """
 
 import json
@@ -30,7 +35,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 # Configuration. The constants stay as the defaults and a config.json is
 # the override. Two setup paths write that file:
@@ -64,12 +69,35 @@ DEFAULT_MAX_MERGES_PER_RUN = 3
 DEFAULT_MINIMAL_FIX_MAX_FILES = 10
 DEFAULT_MINIMAL_FIX_MAX_CHANGED_LINES = 100
 
+# Pin bumps are off until `pin_bump_branch` names the branch the release bot's
+# rolling pull request comes from. `handle_dependabot` turns the dependabot
+# side off, so one deployment can do pin bumps only, on its own schedule.
+DEFAULT_HANDLE_DEPENDABOT = True
+DEFAULT_PIN_BUMP_BRANCH = ""
+DEFAULT_PIN_BUMP_AUTHOR = "openhands-release-bot[bot]"
+# Per repository ("owner/repo"): the files a pin bump is expected to change,
+# and status checks that must pass on top of the ones the base branch requires.
+DEFAULT_PIN_BUMP_FILES: dict[str, list[str]] = {}
+DEFAULT_PIN_BUMP_CHECKS: dict[str, list[str]] = {}
+# In a dry run a pin bump gets one comment per head saying what a live run
+# would do. Nothing is approved, merged, requested or fixed.
+DEFAULT_PIN_BUMP_DRY_RUN = False
+# A pin-bump pull request carrying this label is left alone.
+DEFAULT_HOLD_LABEL = "release: hold"
+
 REPOS = DEFAULT_REPOS
 AUTO_MERGE_DEPENDABOT = DEFAULT_AUTO_MERGE_DEPENDABOT
 MAINTAINERS: list[str] = list(DEFAULT_MAINTAINERS)
 MAX_MERGES_PER_RUN = DEFAULT_MAX_MERGES_PER_RUN
 MINIMAL_FIX_MAX_FILES = DEFAULT_MINIMAL_FIX_MAX_FILES
 MINIMAL_FIX_MAX_CHANGED_LINES = DEFAULT_MINIMAL_FIX_MAX_CHANGED_LINES
+HANDLE_DEPENDABOT = DEFAULT_HANDLE_DEPENDABOT
+PIN_BUMP_BRANCH = DEFAULT_PIN_BUMP_BRANCH
+PIN_BUMP_AUTHOR = DEFAULT_PIN_BUMP_AUTHOR
+PIN_BUMP_FILES: dict[str, list[str]] = dict(DEFAULT_PIN_BUMP_FILES)
+PIN_BUMP_CHECKS: dict[str, list[str]] = dict(DEFAULT_PIN_BUMP_CHECKS)
+PIN_BUMP_DRY_RUN = DEFAULT_PIN_BUMP_DRY_RUN
+HOLD_LABEL = DEFAULT_HOLD_LABEL
 
 CONFIG_FILENAME = os.environ.get("AUTOMATION_CONFIG_PATH") or "config.json"
 
@@ -84,6 +112,13 @@ _CONFIG_TYPES: dict[str, type] = {
     "minimal_fix_max_files": int,
     "minimal_fix_max_changed_lines": int,
     "openhands_url": str,
+    "handle_dependabot": bool,
+    "pin_bump_branch": str,
+    "pin_bump_author": str,
+    "pin_bump_files": dict,
+    "pin_bump_checks": dict,
+    "pin_bump_dry_run": bool,
+    "hold_label": str,
 }
 
 
@@ -124,6 +159,10 @@ def load_config(directory: Path | None = None) -> dict:
     for key in ("max_merges_per_run", "minimal_fix_max_files", "minimal_fix_max_changed_lines"):
         if key in config and config[key] < 1:
             raise SystemExit(f"{CONFIG_FILENAME}: {key} must be at least 1")
+    for key in ("pin_bump_files", "pin_bump_checks"):
+        for repo, names in config.get(key, {}).items():
+            if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+                raise SystemExit(f'{CONFIG_FILENAME}: {key}["{repo}"] must be a list of strings')
     return config
 
 
@@ -131,8 +170,17 @@ def apply_config(directory: Path | None = None) -> None:
     """Load config.json beside this script into the module constants."""
     global REPOS, AUTO_MERGE_DEPENDABOT, MAINTAINERS
     global MAX_MERGES_PER_RUN, MINIMAL_FIX_MAX_FILES, MINIMAL_FIX_MAX_CHANGED_LINES
+    global HANDLE_DEPENDABOT, PIN_BUMP_BRANCH, PIN_BUMP_AUTHOR, PIN_BUMP_FILES
+    global PIN_BUMP_CHECKS, PIN_BUMP_DRY_RUN, HOLD_LABEL
 
     config = load_config(directory)
+    HANDLE_DEPENDABOT = config.get("handle_dependabot", HANDLE_DEPENDABOT)
+    PIN_BUMP_BRANCH = config.get("pin_bump_branch", PIN_BUMP_BRANCH)
+    PIN_BUMP_AUTHOR = config.get("pin_bump_author", PIN_BUMP_AUTHOR)
+    PIN_BUMP_FILES = config.get("pin_bump_files", PIN_BUMP_FILES)
+    PIN_BUMP_CHECKS = config.get("pin_bump_checks", PIN_BUMP_CHECKS)
+    PIN_BUMP_DRY_RUN = config.get("pin_bump_dry_run", PIN_BUMP_DRY_RUN)
+    HOLD_LABEL = config.get("hold_label", HOLD_LABEL)
     if "repos" in config:
         REPOS = [{"repo": repo} for repo in config["repos"]]
     AUTO_MERGE_DEPENDABOT = config.get("auto_merge_dependabot", AUTO_MERGE_DEPENDABOT)
@@ -758,10 +806,10 @@ def _request_maintainer_review(token: str, repo: str, pr: dict, reason: str) -> 
     return None
 
 
-def _maintainer_handoff_comment(login: str | None, reason: str) -> str:
+def _maintainer_handoff_comment(login: str | None, reason: str, kind: str = "dependabot") -> str:
     mention = f"@{login}" if login else "maintainers"
     return (
-        f"{mention} — this dependabot PR's CI is green, but the auto-merge policy "
+        f"{mention} — this {kind} PR's CI is green, but the auto-merge policy "
         f"skipped it because {reason}. Please review and decide whether to merge."
     )
 
@@ -840,7 +888,345 @@ def _maybe_merge_green_dependabot(
     return False
 
 
-def _build_fix_prompt(repo: str, pr: dict, head_sha: str, head_branch: str, failed_checks: list[str]) -> str:
+# ── Pin bumps (the release bot's rolling bump-pins pull request) ──────────────
+#
+# The rules differ from dependabot's on purpose:
+#
+# - Only the pull request opened by PIN_BUMP_AUTHOR from PIN_BUMP_BRANCH of the
+#   repository itself, into its default branch, is touched. The author alone is
+#   not enough: the same bot opens the release pull requests, and an old
+#   per-version bump branch left open would downgrade the pins if merged.
+# - "Green" means every gating check reported success on the head commit: the
+#   status checks the base branch requires, plus PIN_BUMP_CHECKS. A check that
+#   has not reported yet counts as running, and checks outside the gate are
+#   ignored, so a flaky optional job neither blocks the merge nor starts a fix.
+# - The branch must have been pushed only by the bot and by this automation's
+#   own account (its fix commits land there). Anyone with write access can push
+#   to the branch, and the pull request would still read as the bot's.
+# - "Version-only" means the diff stays within PIN_BUMP_FILES for that repo;
+#   the minimal-fix thresholds apply to whatever else the pull request touches.
+
+_GATE_FAILED = ("failure", "timed_out", "action_required", "startup_failure")
+
+
+def _is_pin_bump(pr: dict, repo: str) -> bool:
+    if not PIN_BUMP_BRANCH:
+        return False
+    head = pr.get("head") or {}
+    base = pr.get("base") or {}
+    return (
+        _author_login(pr).lower() == PIN_BUMP_AUTHOR.lower()
+        and head.get("ref") == PIN_BUMP_BRANCH
+        and ((head.get("repo") or {}).get("full_name") or "").lower() == repo.lower()
+        and bool(base.get("ref"))
+        and base.get("ref") == (base.get("repo") or {}).get("default_branch")
+    )
+
+
+def _list_pin_bump_prs(token: str, repo: str) -> list[dict]:
+    owner = repo.split("/", 1)[0]
+    prs = _github_paginate(
+        token,
+        f"/repos/{repo}/pulls",
+        {"state": "open", "head": f"{owner}:{PIN_BUMP_BRANCH}"},
+    )
+    return [pr for pr in prs if _is_pin_bump(pr, repo)]
+
+
+def _required_checks(token: str, repo: str, branch: str) -> list[str]:
+    """Names of the status checks the branch's rulesets require."""
+    names: list[str] = []
+    for rule in _github_paginate(token, f"/repos/{repo}/rules/branches/{quote(branch, safe='')}"):
+        if rule.get("type") != "required_status_checks":
+            continue
+        for check in (rule.get("parameters") or {}).get("required_status_checks") or []:
+            name = check.get("context")
+            if name and name not in names:
+                names.append(name)
+    return names
+
+
+def _gate_status(token: str, repo: str, base_branch: str, head_sha: str) -> tuple[str, list[str]]:
+    """Returns ("running" | "failed" | "clear" | "unknown", names) for a pin bump.
+
+    `names` are the gating checks that failed, or that are still awaited. With
+    no gating check known the answer is "unknown", never "clear": merging needs
+    a check that said yes, not the absence of one that said no.
+    """
+    try:
+        gate = _required_checks(token, repo, base_branch)
+        gate += [name for name in PIN_BUMP_CHECKS.get(repo, []) if name not in gate]
+        if not gate:
+            print(f"  No gating checks known for {repo}; not treating any head as green")
+            return "unknown", []
+
+        # Check name -> conclusion of its newest run (None while it is running).
+        conclusions: dict[str, str | None] = {}
+        newest: dict[str, int] = {}
+        page = 1
+        while True:
+            data, _ = _github_request(
+                token, "GET", f"/repos/{repo}/commits/{head_sha}/check-runs",
+                params={"per_page": 100, "page": page},
+            )
+            runs = data.get("check_runs", [])
+            for run in runs:
+                name, run_id = run.get("name"), int(run.get("id") or 0)
+                if run_id < newest.get(name, 0):
+                    continue
+                newest[name] = run_id
+                conclusions[name] = run.get("conclusion") if run.get("status") == "completed" else None
+            if len(runs) < 100:
+                break
+            page += 1
+        status_data, _ = _github_request(token, "GET", f"/repos/{repo}/commits/{head_sha}/status")
+        for status in status_data.get("statuses", []):
+            if status.get("context") not in conclusions:
+                conclusions[status.get("context")] = {"success": "success", "pending": None}.get(
+                    status.get("state"), "failure"
+                )
+    except Exception as exc:
+        print(f"  Warning: could not determine the gate status for {head_sha[:12]}: {exc}")
+        return "unknown", []
+
+    failed = [name for name in gate if conclusions.get(name) in _GATE_FAILED]
+    # Not reported yet, still running, or ended without a verdict (cancelled, skipped).
+    awaited = [name for name in gate if name not in failed and conclusions.get(name) != "success"]
+    if awaited:
+        return "running", awaited
+    if failed:
+        return "failed", failed
+    return "clear", []
+
+
+def _foreign_pushers(token: str, repo: str, head_sha: str, trusted: set[str]) -> list[str] | None:
+    """Accounts outside `trusted` that pushed to the pin-bump branch since the
+    bot last rebuilt it. None when the activity log cannot vouch for this head:
+    it is unreadable, has not caught up, or shows no rebuild by the bot.
+    """
+    try:
+        log, _ = _github_request(
+            token, "GET", f"/repos/{repo}/activity",
+            params={"ref": f"refs/heads/{PIN_BUMP_BRANCH}", "per_page": 100},
+        )
+    except Exception as exc:
+        print(f"  Warning: could not read the activity of {PIN_BUMP_BRANCH} in {repo}: {exc}")
+        return None
+    if not isinstance(log, list) or not log or log[0].get("after") != head_sha:
+        return None
+
+    foreign: list[str] = []
+    for entry in log:  # newest first
+        actor = (entry.get("actor") or {}).get("login") or "(unknown)"
+        if actor.lower() not in trusted and actor not in foreign:
+            foreign.append(actor)
+        rebuilt = entry.get("activity_type") in ("branch_creation", "force_push")
+        if rebuilt and actor.lower() == PIN_BUMP_AUTHOR.lower():
+            return foreign
+    return None
+
+
+def _classify_pin_bump(token: str, repo: str, pr: dict) -> tuple[str, str]:
+    """Classify a green pin bump as ("version-only"|"minimal-fix"|"large", reason).
+
+    Like _classify_bump, except that "version-only" is this repository's own
+    list of pin files, and the minimal-fix bounds count only what lies outside it.
+    """
+    files = _pr_files(token, repo, pr["number"])
+    if not files:
+        return "large", "no changed files could be listed for the PR"
+    pins = set(PIN_BUMP_FILES.get(repo, []))
+    extra = [f for f in files if f.get("filename", "") not in pins]
+    if not extra:
+        return "version-only", "the diff only touches this repository's pin files"
+
+    changes = sum(int(f.get("additions") or 0) + int(f.get("deletions") or 0) for f in extra)
+    if len(extra) > MINIMAL_FIX_MAX_FILES:
+        return "large", (
+            f"besides the pin files the diff touches {len(extra)} files (beyond the "
+            f"{MINIMAL_FIX_MAX_FILES}-file minimal-fix threshold)"
+        )
+    if changes > MINIMAL_FIX_MAX_CHANGED_LINES:
+        return "large", (
+            f"besides the pin files the diff changes {changes} lines (beyond the "
+            f"{MINIMAL_FIX_MAX_CHANGED_LINES}-line minimal-fix threshold)"
+        )
+    return "minimal-fix", (
+        f"besides the pin files the diff stays within the minimal-fix bounds "
+        f"({len(extra)} files, {changes} changed lines)"
+    )
+
+
+def _pin_bump_record(repo: str, pr: dict, head_sha: str, status: str, **extra) -> dict:
+    return {
+        "repo": repo, "pr_number": pr["number"], "head_sha": head_sha,
+        "status": status, "last_activity": time.time(), **extra,
+    }
+
+
+def _pin_bump_dry_run(token: str, repo: str, pr: dict, head_sha: str, fixes: dict, would: str) -> None:
+    """Say once per head what a live run would have done, and do nothing else."""
+    number = pr["number"]
+    print(f"  DRY RUN: would {would} ({repo} PR #{number} at {head_sha[:12]})")
+    _post_github_comment(
+        token, repo, number,
+        _with_ai_disclosure(
+            f"🧪 **Dry run.** At `{head_sha[:12]}` OpenHands would {would}.\n\n"
+            "Nothing was approved, merged, requested or pushed."
+        ),
+    )
+    fixes[_fix_key(repo, number, head_sha)] = _pin_bump_record(repo, pr, head_sha, "dry-run")
+
+
+def _maybe_merge_green_pin_bump(
+    github_token: str,
+    repo: str,
+    pr: dict,
+    head_sha: str,
+    self_login: str,
+    fixes: dict,
+    merges: dict,
+) -> bool:
+    """Approve and merge a green pin bump, or hand it to a maintainer.
+
+    Returns True when the PR was merged this poll.
+    """
+    number = pr["number"]
+    key = _fix_key(repo, number, head_sha)
+    foreign = _foreign_pushers(github_token, repo, head_sha, {PIN_BUMP_AUTHOR.lower(), self_login.lower()})
+    if foreign is None:
+        print(f"  PR #{number} (pin bump): branch activity does not cover {head_sha[:12]} yet; re-checking next poll")
+        return False
+    if foreign:
+        kind, reason = "large", f"the branch was also pushed to by {', '.join(foreign)}"
+    else:
+        kind, reason = _classify_pin_bump(github_token, repo, pr)
+    print(f"  PR #{number} (pin bump, gate green) classified: {kind} — {reason}")
+
+    if kind == "large":
+        if PIN_BUMP_DRY_RUN:
+            _pin_bump_dry_run(
+                github_token, repo, pr, head_sha, fixes,
+                f"ask a maintainer to review this pull request instead of merging it, because {reason}",
+            )
+            return False
+        login = _request_maintainer_review(github_token, repo, pr, reason)
+        comment = _maintainer_handoff_comment(login, reason, "pin-bump")
+        _post_github_comment(github_token, repo, number, _with_ai_disclosure(comment))
+        fixes[key] = _pin_bump_record(repo, pr, head_sha, "handoff", maintainer=login)
+        return False
+
+    if PIN_BUMP_DRY_RUN:
+        _pin_bump_dry_run(
+            github_token, repo, pr, head_sha, fixes,
+            f"approve and squash-merge this pull request, because the gating checks passed and {reason}",
+        )
+        return False
+
+    if not _approve_pr(
+        github_token, repo, number,
+        f"✅ Auto-approved by OpenHands: the gating checks passed and {reason}.",
+    ):
+        fixes[key] = _pin_bump_record(repo, pr, head_sha, "handoff")
+        return False
+
+    merge_body = (
+        f"Auto-merged by OpenHands after the gating checks passed. {reason.capitalize()}."
+        f"\n\nApproved-by: {self_login or 'all-hands-bot'}"
+    )
+    if _merge_pr(github_token, repo, pr, merge_body):
+        merges[key] = {
+            "repo": repo,
+            "pr_number": number,
+            "head_sha": head_sha,
+            "classification": kind,
+            "merged_at": time.time(),
+        }
+        print(f"  Merged {repo} PR #{number} at {head_sha[:12]} ({kind})")
+        return True
+
+    # Approved but not merged (branch protection, conflict, stale head, ...).
+    _post_github_comment(
+        github_token, repo, number,
+        _with_ai_disclosure(
+            "✅ OpenHands approved this pin bump (gating checks green, version-only/minimal "
+            "change) but GitHub refused the merge. A maintainer merge may be needed."
+        ),
+    )
+    fixes[key] = _pin_bump_record(repo, pr, head_sha, "handoff")
+    return False
+
+
+def _process_pin_bump(
+    repo: str,
+    pr: dict,
+    github_token: str,
+    self_login: str,
+    agent_url: str,
+    api_key: str,
+    openhands_url: str,
+    fixes: dict,
+    merges: dict,
+    active_count: int,
+    merged_count: int,
+) -> tuple[str | None, bool]:
+    """One poll of a pin-bump PR. Returns (fix conversation started, merged)."""
+    number = pr["number"]
+    pr = _get_pr(github_token, repo, number)  # current head, labels and draft state
+    head_sha = _head_sha(pr)
+    if pr.get("state") != "open" or not _is_pin_bump(pr, repo) or not head_sha:
+        return None, False
+
+    rec = fixes.get(_fix_key(repo, number, head_sha))
+    status = (rec or {}).get("status")
+    # A finished fix attempt may have turned this same head green by re-running a
+    # flaky job rather than pushing, so the head stays eligible for the merge.
+    fix_attempted = status == "closed"
+    # A dry-run note does not count as handled once dry run is switched off.
+    if rec and not fix_attempted and (PIN_BUMP_DRY_RUN or status != "dry-run"):
+        print(f"  PR #{number} (pin bump) at {head_sha[:12]} already handled ({status})")
+        return None, False
+    labels = {(label.get("name") or "").lower() for label in pr.get("labels") or []}
+    if HOLD_LABEL and HOLD_LABEL.lower() in labels:
+        print(f"  PR #{number} (pin bump) carries the '{HOLD_LABEL}' label; leaving it alone")
+        return None, False
+    if pr.get("draft"):
+        print(f"  PR #{number} (pin bump) is a draft; leaving it alone")
+        return None, False
+
+    gate, names = _gate_status(github_token, repo, (pr.get("base") or {}).get("ref", ""), head_sha)
+    print(f"  PR #{number} (pin bump) at {head_sha[:12]} gate={gate}" + (f" ({', '.join(names)})" if names else ""))
+    if gate in ("running", "unknown"):
+        return None, False
+
+    if gate == "clear":
+        if merged_count >= MAX_MERGES_PER_RUN:
+            print(f"  PR #{number} mergeable but {merged_count} merged this run (max {MAX_MERGES_PER_RUN}); deferring")
+            return None, False
+        return None, _maybe_merge_green_pin_bump(github_token, repo, pr, head_sha, self_login, fixes, merges)
+
+    if fix_attempted:
+        print(f"  PR #{number} (pin bump) still fails after the fix attempt on {head_sha[:12]}; one attempt per head")
+        return None, False
+    if PIN_BUMP_DRY_RUN:
+        _pin_bump_dry_run(
+            github_token, repo, pr, head_sha, fixes,
+            f"start a fix conversation for the failing gating checks ({', '.join(names)})",
+        )
+        return None, False
+    if active_count >= MAX_CONCURRENT_FIXES:
+        print(f"  PR #{number} needs a fix but {active_count} in-flight (max {MAX_CONCURRENT_FIXES}); deferring")
+        return None, False
+    conv_id = _process_fix_request(
+        github_token, agent_url, api_key, openhands_url, repo, pr, head_sha, fixes,
+        failed_checks=names, pin_bump=True,
+    )
+    return conv_id, False
+
+
+def _build_fix_prompt(
+    repo: str, pr: dict, head_sha: str, head_branch: str, failed_checks: list[str], pin_bump: bool = False,
+) -> str:
     number = pr.get("number", "?")
     title = pr.get("title", "(no title)")
     body = (pr.get("body") or "").strip() or "(no description)"
@@ -849,21 +1235,61 @@ def _build_fix_prompt(repo: str, pr: dict, head_sha: str, head_branch: str, fail
     clone_url = f"https://github.com/{repo}.git"
     checks_str = "\n".join(f"- {c}" for c in failed_checks) or "- (names unavailable; inspect the check runs via the API)"
 
+    if pin_bump:
+        pin_files = ", ".join(PIN_BUMP_FILES.get(repo, [])) or "dependency manifests and lockfiles"
+        intro = (
+            "You are an AI software engineer. A pin-bump pull request's CI is failing, and "
+            "your job is to diagnose the failure and push a fix commit to its branch so CI "
+            "goes green. The release bot opened it to move this repository's pins of upstream "
+            f"OpenHands releases to newly published versions; it only edits the pin files "
+            f"({pin_files}). The failure is almost always a downstream incompatibility "
+            "introduced by the new upstream release, not a mistake in the bump itself.\n\n"
+        )
+        author_kind = "release bot"
+        checks_note = (
+            "Only the checks listed above gate the merge. Ignore any other failing check on "
+            "this commit.\n"
+        )
+        bump_rule = (
+            "Do NOT edit the pin files or the pinned versions: the bump-pins workflow "
+            "rebuilds this branch, dropping your commit, as soon as one of them differs from "
+            "what it would write. If a pinned release is genuinely unusable (e.g. yanked), "
+            "say so and stop.\n"
+        )
+        branch_note = (
+            "The bump-pins workflow owns this branch and keeps commits pushed to it until "
+            "the pins next change; pushing a follow-up commit is expected and safe.\n"
+        )
+    else:
+        intro = (
+            "You are an AI software engineer. A dependabot version-bump pull request's CI is "
+            "failing, and your job is to diagnose the failure and push a fix commit to the "
+            "dependabot branch so CI goes green. Dependabot only edits dependency manifests "
+            "(package.json, requirements.txt, pyproject.toml, Cargo.toml, go.mod, etc.) and "
+            "lockfiles; the failure is almost always a downstream incompatibility introduced by "
+            "the bumped version, not a mistake in the bump itself.\n\n"
+        )
+        author_kind = "dependabot"
+        checks_note = ""
+        bump_rule = (
+            "Do NOT modify the manifest/lockfile bump itself unless the bump is genuinely wrong "
+            "(e.g. a yanked release) — explain such a revert explicitly.\n"
+        )
+        branch_note = (
+            "Dependabot owns "
+            "this branch; pushing a follow-up commit is expected and safe.\n"
+        )
+
     return (
-        "You are an AI software engineer. A dependabot version-bump pull request's CI is "
-        "failing, and your job is to diagnose the failure and push a fix commit to the "
-        "dependabot branch so CI goes green. Dependabot only edits dependency manifests "
-        "(package.json, requirements.txt, pyproject.toml, Cargo.toml, go.mod, etc.) and "
-        "lockfiles; the failure is almost always a downstream incompatibility introduced by "
-        "the bumped version, not a mistake in the bump itself.\n\n"
+        f"{intro}"
         f"Repository : {repo}\n"
         f"Clone URL  : {clone_url}\n"
         f"PR #{number}: \"{title}\"\n"
-        f"Author     : @{_author_login(pr)} (dependabot)\n"
+        f"Author     : @{_author_login(pr)} ({author_kind})\n"
         f"Base → Head: {base_branch} ← {head_branch}\n"
         f"Head SHA   : {head_sha}\n"
         f"URL        : {html_url}\n"
-        f"\nFailing checks on {head_sha[:12]}:\n{checks_str}\n"
+        f"\nFailing checks on {head_sha[:12]}:\n{checks_str}\n{checks_note}"
         f"\nPR Description:\n---\n{body}\n---\n\n"
         "Required workflow:\n"
         "1. Clone the repository into a fresh working directory inside the workspace.\n"
@@ -879,12 +1305,10 @@ def _build_fix_prompt(repo: str, pr: dict, head_sha: str, head_branch: str, fail
         "version change in the PR diff (`gh pr diff` or `git diff` against the base branch).\n"
         "5. Make the minimal source fix needed for the bumped dependency to work. Prefer "
         "adapting call sites, types, or config over pinning or reverting the version bump. "
-        "Do NOT modify the manifest/lockfile bump itself unless the bump is genuinely wrong "
-        "(e.g. a yanked release) — explain such a revert explicitly.\n"
+        f"{bump_rule}"
         "6. Run the repo's own test/lint/build commands locally to confirm the fix works "
         "before pushing. Only push once local checks pass (or are clearly unrelated).\n"
-        f"7. Commit the fix with a clear message and push to `{head_branch}`. Dependabot owns "
-        "this branch; pushing a follow-up commit is expected and safe.\n"
+        f"7. Commit the fix with a clear message and push to `{head_branch}`. {branch_note}"
         "8. Optionally rerun just the failed CI jobs with `gh run rerun <id> --failed`.\n"
         "9. Report back concisely: what was failing, the root cause, the fix you pushed "
         "(commit SHA), and the resulting CI status. Do NOT close or merge the PR.\n\n"
@@ -908,6 +1332,8 @@ def _process_fix_request(
     pr: dict,
     head_sha: str,
     fixes: dict,
+    failed_checks: list[str] | None = None,
+    pin_bump: bool = False,
 ) -> str | None:
     number = pr["number"]
     head_branch = _head_branch(pr)
@@ -915,8 +1341,9 @@ def _process_fix_request(
     key = _fix_key(repo, number, head_sha)
 
     print(f"  Queuing fix for {repo} PR #{number} at {head_sha[:12]}: {title}")
-    failed_checks = _failed_check_names(github_token, repo, head_sha)
-    prompt = _build_fix_prompt(repo, pr, head_sha, head_branch, failed_checks)
+    if failed_checks is None:
+        failed_checks = _failed_check_names(github_token, repo, head_sha)
+    prompt = _build_fix_prompt(repo, pr, head_sha, head_branch, failed_checks, pin_bump=pin_bump)
 
     try:
         conv_id = create_conversation(agent_url, api_key, prompt)
@@ -941,7 +1368,8 @@ def _process_fix_request(
         repo,
         number,
         _with_ai_disclosure(
-            "🤖 **OpenHands is fixing the failing CI on this dependabot version bump.**\n\n"
+            "🤖 **OpenHands is fixing the failing CI on this "
+            f"{'pin bump' if pin_bump else 'dependabot version bump'}.**\n\n"
             f"Head commit: `{head_sha}`\n"
             f"View the conversation: {conv_url}"
         ),
@@ -1038,6 +1466,7 @@ def _process_repo(
     api_key: str,
     openhands_url: str,
     state: dict,
+    self_login: str = "",
 ) -> str | None:
     print(f"=== {repo} ===")
     try:
@@ -1050,9 +1479,13 @@ def _process_repo(
     fixes: dict = repo_state.setdefault("fixes", {})
     merges: dict = repo_state.setdefault("merges", {})
 
-    open_prs = _list_open_prs(github_token, repo)
-    latest_open_prs = {pr["number"]: pr for pr in open_prs}
-    print(f"Found {len(open_prs)} open PR(s) in {repo}")
+    open_prs = _list_open_prs(github_token, repo) if HANDLE_DEPENDABOT else []
+    pin_bumps = _list_pin_bump_prs(github_token, repo) if PIN_BUMP_BRANCH else []
+    latest_open_prs = {pr["number"]: pr for pr in [*open_prs, *pin_bumps]}
+    if HANDLE_DEPENDABOT:
+        print(f"Found {len(open_prs)} open PR(s) in {repo}")
+    if PIN_BUMP_BRANCH:
+        print(f"Found {len(pin_bumps)} open pin-bump PR(s) from {PIN_BUMP_BRANCH}")
 
     last_conversation_id = None
     active_count = sum(1 for v in fixes.values() if v.get("status") == "active")
@@ -1116,6 +1549,17 @@ def _process_repo(
             last_conversation_id = conv_id
             active_count += 1
 
+    for pr in pin_bumps:
+        conv_id, merged = _process_pin_bump(
+            repo, pr, github_token, self_login, agent_url, api_key, openhands_url,
+            fixes, merges, active_count, merged_count,
+        )
+        if conv_id:
+            last_conversation_id = conv_id
+            active_count += 1
+        if merged:
+            merged_count += 1
+
     for rec in list(fixes.values()):
         if rec.get("status") != "active":
             continue
@@ -1132,7 +1576,7 @@ def main() -> str | None:
     api_key = _get_env_key()
 
     github_token = _resolve_github_token()
-    _verify_token(github_token)
+    self_login = _verify_token(github_token)
 
     try:
         openhands_url = get_secret("OPENHANDS_URL").rstrip("/") or DEFAULT_OPENHANDS_URL
@@ -1143,7 +1587,7 @@ def main() -> str | None:
     for entry in REPOS:
         repo = entry["repo"]
         try:
-            conv_id = _process_repo(repo, github_token, agent_url, api_key, openhands_url, state)
+            conv_id = _process_repo(repo, github_token, agent_url, api_key, openhands_url, state, self_login)
             if conv_id:
                 last_conversation_id = conv_id
         except Exception as exc:
