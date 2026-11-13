@@ -1,0 +1,42 @@
+{
+  "repos": [
+    "OpenHands/automation",
+    "OpenHands/OpenHands"
+  ],
+  "handle_dependabot": false,
+  "pin_bump_branch": "bump-pins",
+  "pin_bump_author": "openhands-release-bot[bot]",
+  "pin_bump_dry_run": true,
+  "pin_bump_files": {
+    "OpenHands/automation": [
+      "pyproject.toml",
+      "uv.lock"
+    ],
+    "OpenHands/OpenHands": [
+      "config/defaults.json",
+      "package.json",
+      "package-lock.json",
+      ".agents/skills/local-stack-runtime/references/guide.md",
+      "scripts/dev-safe.mjs",
+      "scripts/check-sdk-version-sync.mjs",
+      "__tests__/scripts/dev-safe.test.ts"
+    ]
+  },
+  "pin_bump_checks": {
+    "OpenHands/OpenHands": [
+      "Check SDK version consistency"
+    ]
+  },
+  "hold_label": "release: hold",
+  "maintainers": [
+    "neubig",
+    "VascoSch92",
+    "simonrosenberg",
+    "juanmichelini",
+    "malhotra5",
+    "enyst"
+  ],
+  "max_merges_per_run": 3,
+  "minimal_fix_max_files": 10,
+  "minimal_fix_max_changed_lines": 100
+}
