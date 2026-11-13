@@ -127,7 +127,8 @@ class ConfigTests(unittest.TestCase):
                         "repos": ["OpenHands/foo"],
                         "auto_merge_dependabot": True,
                         "maintainers": ["neubig", "enyst"],
-                        "max_merges_per_run": 2,
+                        "minimal_fix_max_files": 7,
+                        "minimal_fix_max_changed_lines": 42,
                     }
                 )
                 module = load_module(self.tmp / path.name)
@@ -136,7 +137,18 @@ class ConfigTests(unittest.TestCase):
                     [entry["repo"] for entry in module.REPOS], ["OpenHands/foo"]
                 )
                 self.assertEqual(module.MAINTAINERS, ["neubig", "enyst"])
-                self.assertEqual(module.MAX_MERGES_PER_RUN, 2)
+                self.assertEqual(module.MINIMAL_FIX_MAX_FILES, 7)
+                self.assertEqual(module.MINIMAL_FIX_MAX_CHANGED_LINES, 42)
+
+    def test_ignores_removed_max_merges_key(self):
+        # The merge cap was removed, but a configuration written while it
+        # existed (like the deployed automation's) must still load.
+        for path in MODULES:
+            with self.subTest(module=str(path.relative_to(ROOT))):
+                self.write_config({"auto_merge_dependabot": True, "max_merges_per_run": 3})
+                module = load_module(self.tmp / path.name)
+                self.assertTrue(module.AUTO_MERGE_DEPENDABOT)
+                self.assertFalse(hasattr(module, "MAX_MERGES_PER_RUN"))
 
     def test_defaults_stay_conservative(self):
         # Loaded from a directory holding no config.json, so the defaults are
@@ -182,7 +194,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_rejects_wrong_types(self):
         for payload in [
-            {"max_merges_per_run": True},
+            {"minimal_fix_max_files": True},
             {"auto_merge_dependabot": 1},
             {"maintainers": "neubig"},
             {"minimal_fix_max_files": 0},
@@ -203,6 +215,8 @@ class DeployedAutomationConfigTests(unittest.TestCase):
         payload = json.loads(configs[0].read_text())
         self.assertTrue(payload["auto_merge_dependabot"])
         self.assertTrue(payload["maintainers"])
+        # No per-run merge cap: every mergeable PR is merged in one poll.
+        self.assertNotIn("max_merges_per_run", payload)
 
     def test_deployed_tarball_and_plugin_scripts_match(self):
         deployed = next(ROOT.glob("automations/fix-failing-version-bump-*/tarball/main.py"))

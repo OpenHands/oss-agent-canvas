@@ -1,6 +1,6 @@
 {
   "name": "fix-failing-version-bump",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Executable automation plugin for Fix Failing Version Bump: diagnoses and fixes failing CI on dependabot version-bump PRs, and can auto-approve and merge green version-only bumps or minimal companion fixes while handing larger changes to a maintainer for review.",
   "author": {
     "name": "OpenHands",
@@ -55,7 +55,8 @@
         },
         "max_merges_per_run": {
           "type": "integer",
-          "default": 3
+          "default": 3,
+          "description": "Deprecated and ignored: a poll now merges every mergeable PR, with no per-run cap. Accepted only so configurations written before the cap was removed still validate."
         },
         "minimal_fix_max_files": {
           "type": "integer",
