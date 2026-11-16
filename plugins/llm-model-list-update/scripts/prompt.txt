@@ -202,9 +202,11 @@ To match reliably, for each Tier 1 candidate model ID, search the OpenRouter mod
 4. If still no match, the model is NOT available on OpenRouter
 
 **Filtering rules:**
-- A model confirmed on OpenRouter is **definitely callable** — add it.
+- A model confirmed on OpenRouter is **definitely callable** — add it. A matching `model_cost` entry hosted by a third party satisfies the pricing requirement; do not additionally require a first-party LiteLLM prefix such as `dashscope/` or `qwencloud/`.
+- Keep availability confirmation separate from destination routing. Inspect the existing arrays and their routing semantics. For an OpenRouter-only model, use the confirmed OpenRouter ID in the existing OpenRouter array, following that array's prefix convention; do not invent a direct-provider route or assume the OpenHands proxy serves it. Add to direct-provider and OpenHands arrays only where their routing is supported. If the destination cannot be resolved, record the confirmed candidate and precise routing ambiguity as unresolved, not as unavailable or absent.
 - A model NOT on OpenRouter but with a provider API key available: check the provider's direct `/v1/models` endpoint (see Tier 2b below). If confirmed there, add it.
 - A model NOT on OpenRouter and NO provider API key available: **skip it** and note in the summary as "not confirmed available — skipped." Do NOT add models that can't be confirmed as callable. This prevents adding not-yet-public models like `claude-mythos-5`.
+- Before declaring a no-op, reconcile every Tier 1 candidate in the audit summary: original cost key, normalized model ID, availability match, destination array/route, and addition or explicit skip reason. In particular, an unlisted model in a supported series with pricing and an exact OpenRouter match must not disappear solely because its cost key uses another host. Distinguish genuinely missing credentials from unchecked lookups and failed API checks; a filesystem search alone does not establish registered-secret absence.
 
 #### Tier 2b — Provider API model-list endpoints (SECONDARY availability check)
 
