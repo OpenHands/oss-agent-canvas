@@ -20,7 +20,9 @@ Linear ──webhook──▶ /api/automation/v1/events/<org_id>/linear ──�
    (`issueMention`, `issueCommentMention`, `issueAssignedToYou`).
 3. The run reads the notification id from the payload, re-reads the notification
    from Linear's API (so the request text never comes from the webhook body),
-   starts a conversation over fresh clones of the candidate repos, and waits for
+   ignores it unless a workspace user made it in Linear (a mention synced in
+   from a GitHub issue, or one in a thread synced to GitHub or Slack, is
+   skipped, since the reply would be posted back there), starts a conversation over fresh clones of the candidate repos, and waits for
    it to finish.
 4. It replies in the comment thread and opens a draft PR for every branch that
    actually has commits on GitHub.

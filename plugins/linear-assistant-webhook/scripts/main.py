@@ -401,8 +401,13 @@ def _get_notification(key: str, notification_id: str) -> dict:
       id type createdAt
       ... on IssueNotification {
         issue { id identifier title url team { key } }
-        comment { id body user { id name } parent { id } }
+        comment {
+          id body user { id name } externalUser { id } botActor { type }
+          externalThread { isConnected } parent { id externalThread { isConnected } }
+        }
         actor { id name }
+        botActor { type }
+        externalUserActor { id }
       }
     } }"""
     return _linear(key, query, {"id": notification_id})["notification"]
@@ -459,7 +464,18 @@ def _task_from_notification(n: dict) -> dict | None:
     if LINEAR_TEAM_KEYS and (issue.get("team") or {}).get("key") not in LINEAR_TEAM_KEYS:
         return None
     comment = n.get("comment") or {}
-    if (comment.get("user") or {}).get("id") == LINEAR_BOT_USER_ID:
+    # Only a workspace user acting in Linear can make a request. A comment an
+    # integration synced in (e.g. from a GitHub issue) has no Linear author, and a
+    # reply in a synced thread is posted back to that service, so skip both.
+    if comment:
+        author_id = (comment.get("user") or {}).get("id")
+        if not author_id or author_id == LINEAR_BOT_USER_ID:
+            return None
+        if comment.get("externalUser") or comment.get("botActor"):
+            return None
+        if ((comment.get("parent") or comment).get("externalThread") or {}).get("isConnected"):
+            return None
+    elif not (n.get("actor") or {}).get("id") or n.get("botActor") or n.get("externalUserActor"):
         return None
     requester = (comment.get("user") or n.get("actor") or {}).get("name", "someone")
     return {
