@@ -74,6 +74,8 @@ import os
 import sys
 import time
 
+from safe_process_audit import collect_process_inventory
+
 # Detect execution mode based on AGENT_SERVER_URL presence
 agent_server_url = os.environ.get("AGENT_SERVER_URL", "").rstrip("/")
 IS_LOCAL_MODE = bool(agent_server_url)
@@ -376,7 +378,15 @@ This automation was triggered by a webhook event:
         print(f"  session URL: {session_url}")
 
     try:
-        print(f"  sending prompt: {USER_PROMPT[:80]}...")
+        process_inventory = collect_process_inventory(workspace)
+        USER_PROMPT += (
+            "\n\n## Safe process audit from the execution workspace\n"
+            + json.dumps(process_inventory, sort_keys=True)
+            + "\nThese are credential-argument flag occurrences, not proof that values "
+            "are present or valid. Partial/unavailable coverage is not a clean bill "
+            "of health. Do not repeat this inspection with raw process arguments."
+        )
+        print("  sending health-review prompt")
         conversation.send_message(USER_PROMPT)
         conversation.run()
 
