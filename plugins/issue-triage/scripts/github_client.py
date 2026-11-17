@@ -5,6 +5,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from functools import cached_property
 from pathlib import Path
 from urllib.error import HTTPError
@@ -69,6 +70,7 @@ def github_request(
     params: dict | None = None,
     body: dict | None = None,
     accept: str = "application/vnd.github+json",
+    deadline: float | None = None,
 ) -> tuple:
     url = f"https://api.github.com{path}"
     if params:
@@ -81,18 +83,27 @@ def github_request(
     }
     data = json.dumps(body).encode() if body is not None else None
     req = Request(url, data=data, headers=headers, method=method)
-    with urlopen(req, timeout=90) as r:
+    timeout = min(90, deadline - time.monotonic()) if deadline is not None else 90
+    if timeout <= 0:
+        raise TimeoutError("Triage verification deadline exceeded")
+    with urlopen(req, timeout=timeout) as r:
         raw = r.read()
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError("Triage verification deadline exceeded")
         return (json.loads(raw) if raw.strip() else {}), dict(r.headers)
 
 
-def github_paginate(token: str, path: str, params: dict | None = None) -> list:
+def github_paginate(
+    token: str, path: str, params: dict | None = None, deadline: float | None = None
+) -> list:
     results = []
     base_params = dict(params or {})
     base_params.setdefault("per_page", 100)
     for page in range(1, 101):
         base_params["page"] = page
-        data, _ = github_request(token, "GET", path, params=base_params)
+        data, _ = github_request(
+            token, "GET", path, params=base_params, deadline=deadline
+        )
         if not isinstance(data, list):
             raise TypeError("Expected a paginated GitHub list")
         results.extend(data)
@@ -126,6 +137,7 @@ class GitHubRepository:
         self.conversation = conversation
         self.conversation_id = str(conversation.id) if conversation else None
         self.dispatcher = dispatcher
+        self.deadline = dispatcher.deadline if dispatcher else None
         self.workspace = Path(os.environ["WORKSPACE_BASE"])
         self.project = self.workspace
         self.evidence = self.workspace / "evidence"
@@ -147,7 +159,11 @@ class GitHubRepository:
 
     def gh(self, method, path, body=None):
         return github_request(
-            self.token, method, f"/repos/{self.repository}" + path, body=body
+            self.token,
+            method,
+            f"/repos/{self.repository}" + path,
+            body=body,
+            deadline=self.deadline,
         )[0]
 
     def shell(self, args, cwd=None, timeout=300):
@@ -222,6 +238,7 @@ class GitHubRepository:
             self.token,
             f"/repos/{self.repository}" + split.path,
             params=dict(parse_qsl(split.query)),
+            deadline=self.deadline,
         )
 
 
@@ -236,12 +253,12 @@ def run_repositories(automation_type, conversation=None, dispatcher=None):
     repositories = config.get("repos") or [config["repository"]]
     failures = []
     for repository in repositories:
-        options = dict(
-            github_token_secret=token_name,
-            repository=repository,
-            conversation=conversation,
-            config=config,
-        )
+        options = {
+            "github_token_secret": token_name,
+            "repository": repository,
+            "conversation": conversation,
+            "config": config,
+        }
         if dispatcher is not None:
             options["dispatcher"] = dispatcher
         automation = automation_type(**options)

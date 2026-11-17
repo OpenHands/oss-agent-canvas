@@ -27,6 +27,67 @@ def author_body(body):
     return (body[:start] + body[end + len(TRIAGE_BODY_END) :]).rstrip()
 
 
+def verified_outcome(original, current, comments, marker, discussion=()):
+    body = current.get("body") or ""
+    labels = {label["name"] for label in current.get("labels", [])}
+    priorities = {label for label in labels if label.startswith("priority:")}
+    unrelated = {
+        label["name"]
+        for label in original.get("labels", [])
+        if not label["name"].startswith("priority:")
+        and label["name"] != "ready-for-dev"
+    }
+    if (
+        len(priorities) != 1
+        or not priorities <= {"priority:low", "priority:medium", "priority:high"}
+        or not unrelated <= labels
+        or author_body(body) != author_body(original.get("body"))
+        or any(
+            not any(
+                final.get("id") == initial["id"]
+                and final.get("body") == initial.get("body")
+                for final in comments
+            )
+            for initial in discussion
+        )
+    ):
+        return None
+    if "ready-for-dev" in labels:
+        start = body.find(TRIAGE_BODY_START)
+        end = body.find(TRIAGE_BODY_END)
+        section = body[start:end]
+        if (
+            body.count(TRIAGE_BODY_START) == body.count(TRIAGE_BODY_END) == 1
+            and body.rstrip().endswith(TRIAGE_BODY_END)
+            and marker in section
+            and "## OpenHands AI triage" in section
+            and "**The following comments and acceptance criteria were added by the OpenHands AI agent.**"
+            in section
+            and "### Acceptance Criteria" in section
+            and "- [ ] " in section
+        ):
+            return "READY"
+        return None
+    decisions = [
+        comment.get("body") or ""
+        for comment in comments
+        if marker in (comment.get("body") or "")
+    ]
+    if (
+        TRIAGE_BODY_START not in body
+        and TRIAGE_BODY_END not in body
+        and len(decisions) == 1
+        and decisions[0].startswith(
+            "---\n**The following comments were added by the OpenHands AI agent.**"
+        )
+        and "### Decision needed" in decisions[0]
+        and "### Acceptance Criteria" not in decisions[0]
+        and decisions[0].rstrip().endswith(marker)
+    ):
+        return "DECISION NEEDED"
+    return None
+
+
 class IssueTriage(GitHubRepository):
     name = "github-issue-triage"
 
@@ -72,7 +133,17 @@ class IssueTriage(GitHubRepository):
             "not satisfy. If a criterion needs something only the author can provide, such "
             "as a screenshot or video, choose DECISION NEEDED and ask for it; never "
             "fabricate it.\n\n"
-            "Choose exactly one of the following outcomes.\n\n"
+            "Choose READY or DECISION NEEDED only after the required GitHub changes "
+            "are applied and confirmed by fresh reads. Analysis or a local payload alone "
+            "is not completion. If any required write or final verification fails, choose "
+            "BLOCKED instead: report the failed operation, HTTP status when available, "
+            "confirmed partial changes, and remaining work. Never describe blocked work "
+            "as READY or triage completed. On an authorization denial for a required write, "
+            "stop writing; do "
+            "not retry unchanged credentials, make probe writes, use another credential, "
+            "or broaden permissions. Denied deletion of old automated comments is optional "
+            "cleanup, not a blocked required write. Never post a success marker as a "
+            "fallback comment for an unapplied body or label update.\n\n"
             "READY: Fetch the current issue body immediately before updating it. Preserve "
             "all text outside the exact managed markers below. Remove an existing complete "
             "managed section, if present, and append exactly one replacement at the end of "
@@ -94,9 +165,13 @@ class IssueTriage(GitHubRepository):
             "Use repository-required heading names and include only applicable sections. "
             "Then apply the priority and `ready-for-dev` labels.\n\n"
             "DECISION NEEDED: Leave the human-owned issue body unchanged, removing only a "
-            "previous complete managed section if one exists. Delete prior automated "
-            "triage comments when allowed, remove `ready-for-dev`, and post one concise "
-            "replacement comment below the human discussion. Begin it with exactly:\n"
+            "previous complete managed section if one exists. Remove `ready-for-dev` "
+            "and apply the priority. If exactly one valid decision comment already ends "
+            "with this delivery marker, reuse it without posting a duplicate. Otherwise "
+            "post one concise replacement comment below the human discussion; if an "
+            "invalid or duplicate current-delivery comment cannot be corrected, report "
+            "BLOCKED. Delete older automated triage comments only when allowed; skip an "
+            "authorization-denied optional cleanup without retrying it. Begin with exactly:\n"
             "---\n"
             "**The following comments were added by the OpenHands AI agent.**\n\n"
             "Follow with `### Decision needed` and only the minimum focused questions. Do "
@@ -185,9 +260,7 @@ class IssueTriage(GitHubRepository):
             ).encode()
         ).hexdigest()
         marker = f"<!-- triage-source:{digest} -->"
-        if marker in (issue.get("body") or "") or any(
-            marker in (comment.get("body") or "") for comment in comments
-        ):
+        if verified_outcome(issue, issue, comments, marker, discussion):
             return
         result = self.dispatcher.deliver(
             subject=f"{repository_id}:issue:{issue['number']}",
@@ -196,6 +269,16 @@ class IssueTriage(GitHubRepository):
                 issue, discussion, automated_comments, issues, marker, readiness_check
             ),
         )
+        self.dispatcher.remaining()
+        current = self.gh("GET", f"/issues/{issue['number']}")
+        final_comments = self.gh_pages(f"/issues/{issue['number']}/comments")
+        self.dispatcher.remaining()
+        outcome = verified_outcome(issue, current, final_comments, marker, discussion)
+        if outcome is None:
+            raise RuntimeError(
+                f"Triage not verified for {self.repository} issue #{issue['number']}; "
+                f"inspect conversation {result['conversation_id']} for blocked or partial work"
+            )
         print(
             json.dumps(
                 {
@@ -203,6 +286,7 @@ class IssueTriage(GitHubRepository):
                     "issue": issue["number"],
                     "disposition": result["disposition"],
                     "conversation_id": result["conversation_id"],
+                    "outcome": outcome,
                 }
             ),
             flush=True,
@@ -237,15 +321,21 @@ class IssueTriage(GitHubRepository):
             issues = [issue for issue in issues if issue["number"] == number]
         issues = [issue for issue in issues if self.dependencies_complete(issue)]
         repository_id = self.gh("GET", "")["id"]
+        failures = []
         for issue in sorted(issues, key=lambda item: item["number"]):
             try:
                 self._submit(repository_id, issue, issues)
             except Exception as exc:  # noqa: BLE001 - one issue must not block the scan
+                failures.append(issue["number"])
                 print(
-                    f"Failed to submit {self.repository} issue "
+                    f"Failed to verify {self.repository} issue "
                     f"#{issue.get('number', '?')}: {exc}",
                     flush=True,
                 )
+        if failures:
+            raise RuntimeError(
+                f"Unverified triage issues in {self.repository}: {failures}"
+            )
 
 
 if __name__ == "__main__":
