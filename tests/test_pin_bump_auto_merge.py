@@ -142,7 +142,6 @@ def configure(module, github, repo=REPO, **settings):
     module.PIN_BUMP_DRY_RUN = False
     module.HOLD_LABEL = "release: hold"
     module.MAINTAINERS = ["neubig"]
-    module.MAX_MERGES_PER_RUN = 3
     module.MINIMAL_FIX_MAX_FILES = 10
     module.MINIMAL_FIX_MAX_CHANGED_LINES = 100
     for name, value in settings.items():
@@ -166,12 +165,12 @@ class PinBumpCase(unittest.TestCase):
                 github = github_factory()
                 yield configure(load_module(path), github, **settings), github
 
-    def poll(self, module, github, fixes=None, merges=None, active=0, merged=0, repo=REPO):
+    def poll(self, module, github, fixes=None, merges=None, active=0, repo=REPO):
         fixes = {} if fixes is None else fixes
         merges = {} if merges is None else merges
         result = module._process_pin_bump(
             repo, github.pr, "token", SELF, "http://agent", "key", "http://canvas",
-            fixes, merges, active, merged,
+            fixes, merges, active,
         )
         return result, fixes, merges
 
@@ -464,13 +463,10 @@ class FlowTests(PinBumpCase):
             self.assertEqual(github.kinds(), ["comment"])
             self.assertIn("start a fix conversation for the failing gating checks (unit-tests)", github.comments()[0])
 
-    def test_fix_and_merge_respect_the_per_run_limits(self):
+    def test_a_fix_waits_while_two_are_already_in_flight(self):
         for module, github in self.modules(lambda: FakeGitHub(check_runs=[run("unit-tests", "failure")])):
             result, fixes, _ = self.poll(module, github, active=2)
             self.assertEqual((result, github.writes, fixes), ((None, False), [], {}))
-        for module, github in self.modules():
-            result, _, merges = self.poll(module, github, merged=3)
-            self.assertEqual((result, github.writes, merges), ((None, False), [], {}))
 
     def test_a_refused_merge_is_left_to_a_maintainer(self):
         for module, github in self.modules(lambda: FakeGitHub(refuse_merge=True)):

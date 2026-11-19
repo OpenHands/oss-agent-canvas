@@ -12,6 +12,7 @@ is a version-only bump or a minimal companion fix, and otherwise a maintainer
 is asked to review it, mirroring the code-review automation's handoff. Green
 PRs whose CI was failing get here naturally: the pushed fix advances the head
 SHA, the next poll sees the new key, and the green head is classified then.
+There is no cap on how many green PRs a single poll merges.
 
 The script is deterministic: PR discovery, dependabot authorship, CI-status
 checks, merge-eligibility classification, dedup, and conversation lifecycle
@@ -65,7 +66,6 @@ DEFAULT_OPENHANDS_URL = "https://oss-agent-canvas.ngrok.dev"
 # larger is handed to a maintainer for review instead.
 DEFAULT_AUTO_MERGE_DEPENDABOT = False
 DEFAULT_MAINTAINERS: list[str] = []
-DEFAULT_MAX_MERGES_PER_RUN = 3
 DEFAULT_MINIMAL_FIX_MAX_FILES = 10
 DEFAULT_MINIMAL_FIX_MAX_CHANGED_LINES = 100
 
@@ -88,7 +88,6 @@ DEFAULT_HOLD_LABEL = "release: hold"
 REPOS = DEFAULT_REPOS
 AUTO_MERGE_DEPENDABOT = DEFAULT_AUTO_MERGE_DEPENDABOT
 MAINTAINERS: list[str] = list(DEFAULT_MAINTAINERS)
-MAX_MERGES_PER_RUN = DEFAULT_MAX_MERGES_PER_RUN
 MINIMAL_FIX_MAX_FILES = DEFAULT_MINIMAL_FIX_MAX_FILES
 MINIMAL_FIX_MAX_CHANGED_LINES = DEFAULT_MINIMAL_FIX_MAX_CHANGED_LINES
 HANDLE_DEPENDABOT = DEFAULT_HANDLE_DEPENDABOT
@@ -108,7 +107,6 @@ _CONFIG_TYPES: dict[str, type] = {
     "repos": list,
     "maintainers": list,
     "auto_merge_dependabot": bool,
-    "max_merges_per_run": int,
     "minimal_fix_max_files": int,
     "minimal_fix_max_changed_lines": int,
     "openhands_url": str,
@@ -145,7 +143,7 @@ def load_config(directory: Path | None = None) -> dict:
             continue
         value = raw[key]
         # bool is an int in Python, so an unguarded int check would accept
-        # `"max_merges_per_run": true` and then silently clamp to it.
+        # `"minimal_fix_max_files": true` and then silently clamp to it.
         if not isinstance(value, expected) or (
             expected is not bool and isinstance(value, bool)
         ):
@@ -156,7 +154,7 @@ def load_config(directory: Path | None = None) -> dict:
         config[key] = value
     if "repos" in config and not config["repos"]:
         raise SystemExit(f'{CONFIG_FILENAME}: repos must be a non-empty list of "owner/repo" entries')
-    for key in ("max_merges_per_run", "minimal_fix_max_files", "minimal_fix_max_changed_lines"):
+    for key in ("minimal_fix_max_files", "minimal_fix_max_changed_lines"):
         if key in config and config[key] < 1:
             raise SystemExit(f"{CONFIG_FILENAME}: {key} must be at least 1")
     for key in ("pin_bump_files", "pin_bump_checks"):
@@ -169,7 +167,7 @@ def load_config(directory: Path | None = None) -> dict:
 def apply_config(directory: Path | None = None) -> None:
     """Load config.json beside this script into the module constants."""
     global REPOS, AUTO_MERGE_DEPENDABOT, MAINTAINERS
-    global MAX_MERGES_PER_RUN, MINIMAL_FIX_MAX_FILES, MINIMAL_FIX_MAX_CHANGED_LINES
+    global MINIMAL_FIX_MAX_FILES, MINIMAL_FIX_MAX_CHANGED_LINES
     global HANDLE_DEPENDABOT, PIN_BUMP_BRANCH, PIN_BUMP_AUTHOR, PIN_BUMP_FILES
     global PIN_BUMP_CHECKS, PIN_BUMP_DRY_RUN, HOLD_LABEL
 
@@ -185,7 +183,6 @@ def apply_config(directory: Path | None = None) -> None:
         REPOS = [{"repo": repo} for repo in config["repos"]]
     AUTO_MERGE_DEPENDABOT = config.get("auto_merge_dependabot", AUTO_MERGE_DEPENDABOT)
     MAINTAINERS = config.get("maintainers", MAINTAINERS)
-    MAX_MERGES_PER_RUN = config.get("max_merges_per_run", MAX_MERGES_PER_RUN)
     MINIMAL_FIX_MAX_FILES = config.get("minimal_fix_max_files", MINIMAL_FIX_MAX_FILES)
     MINIMAL_FIX_MAX_CHANGED_LINES = config.get(
         "minimal_fix_max_changed_lines", MINIMAL_FIX_MAX_CHANGED_LINES
@@ -1168,7 +1165,6 @@ def _process_pin_bump(
     fixes: dict,
     merges: dict,
     active_count: int,
-    merged_count: int,
 ) -> tuple[str | None, bool]:
     """One poll of a pin-bump PR. Returns (fix conversation started, merged)."""
     number = pr["number"]
@@ -1200,9 +1196,6 @@ def _process_pin_bump(
         return None, False
 
     if gate == "clear":
-        if merged_count >= MAX_MERGES_PER_RUN:
-            print(f"  PR #{number} mergeable but {merged_count} merged this run (max {MAX_MERGES_PER_RUN}); deferring")
-            return None, False
         return None, _maybe_merge_green_pin_bump(github_token, repo, pr, head_sha, self_login, fixes, merges)
 
     if fix_attempted:
@@ -1489,7 +1482,6 @@ def _process_repo(
 
     last_conversation_id = None
     active_count = sum(1 for v in fixes.values() if v.get("status") == "active")
-    merged_count = 0
 
     for pr in open_prs:
         number = pr["number"]
@@ -1528,12 +1520,9 @@ def _process_repo(
             # A green head: merge it if it is a version-only bump or a minimal
             # companion fix, otherwise hand it to a maintainer. PRs whose CI
             # was fixed by this automation arrive here on a later poll, once
-            # the pushed fix has advanced the head SHA.
-            if merged_count >= MAX_MERGES_PER_RUN:
-                print(f"  PR #{number} mergeable but {merged_count} merged this run (max {MAX_MERGES_PER_RUN}); deferring")
-                continue
-            if _maybe_merge_green_dependabot(github_token, repo, fresh_pr, head_sha, fixes, merges):
-                merged_count += 1
+            # the pushed fix has advanced the head SHA. Every mergeable PR in
+            # a poll is merged; there is no per-run cap.
+            _maybe_merge_green_dependabot(github_token, repo, fresh_pr, head_sha, fixes, merges)
             continue
         if ci == "clear":
             continue
@@ -1550,15 +1539,13 @@ def _process_repo(
             active_count += 1
 
     for pr in pin_bumps:
-        conv_id, merged = _process_pin_bump(
+        conv_id, _ = _process_pin_bump(
             repo, pr, github_token, self_login, agent_url, api_key, openhands_url,
-            fixes, merges, active_count, merged_count,
+            fixes, merges, active_count,
         )
         if conv_id:
             last_conversation_id = conv_id
             active_count += 1
-        if merged:
-            merged_count += 1
 
     for rec in list(fixes.values()):
         if rec.get("status") != "active":

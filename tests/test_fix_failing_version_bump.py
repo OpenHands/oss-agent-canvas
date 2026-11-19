@@ -127,7 +127,8 @@ class ConfigTests(unittest.TestCase):
                         "repos": ["OpenHands/foo"],
                         "auto_merge_dependabot": True,
                         "maintainers": ["neubig", "enyst"],
-                        "max_merges_per_run": 2,
+                        "minimal_fix_max_files": 7,
+                        "minimal_fix_max_changed_lines": 42,
                     }
                 )
                 module = load_module(self.tmp / path.name)
@@ -136,7 +137,18 @@ class ConfigTests(unittest.TestCase):
                     [entry["repo"] for entry in module.REPOS], ["OpenHands/foo"]
                 )
                 self.assertEqual(module.MAINTAINERS, ["neubig", "enyst"])
-                self.assertEqual(module.MAX_MERGES_PER_RUN, 2)
+                self.assertEqual(module.MINIMAL_FIX_MAX_FILES, 7)
+                self.assertEqual(module.MINIMAL_FIX_MAX_CHANGED_LINES, 42)
+
+    def test_ignores_removed_max_merges_key(self):
+        # The merge cap was removed, but a configuration written while it
+        # existed (like the deployed automation's) must still load.
+        for path in MODULES:
+            with self.subTest(module=str(path.relative_to(ROOT))):
+                self.write_config({"auto_merge_dependabot": True, "max_merges_per_run": 3})
+                module = load_module(self.tmp / path.name)
+                self.assertTrue(module.AUTO_MERGE_DEPENDABOT)
+                self.assertFalse(hasattr(module, "MAX_MERGES_PER_RUN"))
 
     def test_defaults_stay_conservative(self):
         # Loaded from a directory holding no config.json, so the defaults are
@@ -185,7 +197,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_rejects_wrong_types(self):
         for payload in [
-            {"max_merges_per_run": True},
+            {"minimal_fix_max_files": True},
             {"auto_merge_dependabot": 1},
             {"maintainers": "neubig"},
             {"minimal_fix_max_files": 0},
@@ -235,6 +247,8 @@ class DeployedAutomationConfigTests(unittest.TestCase):
         payload = json.loads(configs[0].read_text())
         self.assertTrue(payload["auto_merge_dependabot"])
         self.assertTrue(payload["maintainers"])
+        # No per-run merge cap: every mergeable PR is merged in one poll.
+        self.assertNotIn("max_merges_per_run", payload)
         # The dependabot deployment keeps doing dependabot only.
         module = load_module(configs[0].with_name("main.py"))
         self.assertTrue(module.HANDLE_DEPENDABOT)
@@ -245,6 +259,8 @@ class DeployedAutomationConfigTests(unittest.TestCase):
             ROOT.glob("automations/fix-failing-version-bump-bump-pins-*/tarball/config.json")
         )
         self.assertEqual(len(configs), 1)
+        payload = json.loads(configs[0].read_text())
+        self.assertNotIn("max_merges_per_run", payload)
         module = load_module(configs[0].with_name("main.py"))
         self.assertFalse(module.HANDLE_DEPENDABOT)
         self.assertEqual(module.PIN_BUMP_BRANCH, "bump-pins")
@@ -272,6 +288,42 @@ class DeployedAutomationConfigTests(unittest.TestCase):
             "pin_bump_checks", "pin_bump_dry_run", "hold_label",
         ):
             self.assertIn(key, declared)
+
+
+class MergeCapTests(unittest.TestCase):
+    """A single poll must merge every green dependabot PR, not just a few."""
+
+    def test_merges_all_green_prs_in_one_repo(self):
+        for path in MODULES:
+            with self.subTest(module=str(path.relative_to(ROOT))):
+                module = load_module(path)
+                module.AUTO_MERGE_DEPENDABOT = True
+                # The pin-bump deployment's copy ships with dependabot off.
+                module.HANDLE_DEPENDABOT = True
+                module.PIN_BUMP_BRANCH = ""
+                prs = [
+                    {
+                        "number": n,
+                        "head": {"sha": f"sha{n}", "ref": f"dependabot/{n}"},
+                        "user": {"login": "dependabot[bot]"},
+                    }
+                    for n in range(1, 8)
+                ]
+                merged = []
+                module._verify_repo = lambda *a, **k: None
+                module._list_open_prs = lambda *a, **k: prs
+                module._get_pr = lambda token, repo, number: prs[number - 1]
+                module._ci_status = lambda *a, **k: "clear"
+                module._maybe_merge_green_dependabot = (
+                    lambda token, repo, pr, head_sha, fixes, merges: merged.append(
+                        pr["number"]
+                    )
+                )
+                state = {"version": 1, "repos": {}}
+                module._process_repo(
+                    "owner/repo", "token", "http://agent", "key", "http://oh", state
+                )
+                self.assertEqual(merged, [1, 2, 3, 4, 5, 6, 7])
 
 
 class MaintainerHandoffTests(unittest.TestCase):

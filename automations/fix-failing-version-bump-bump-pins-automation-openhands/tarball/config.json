@@ -36,7 +36,6 @@
     "malhotra5",
     "enyst"
   ],
-  "max_merges_per_run": 3,
   "minimal_fix_max_files": 10,
   "minimal_fix_max_changed_lines": 100
 }
