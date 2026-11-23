@@ -252,7 +252,9 @@ class PullRequestReviewer(GitHubRepository):
         sha = pr["head"]["sha"]
         token = self.token_name
         workspace = (
-            "The workspace contains an empty Git repository. Before fetching, run "
+            "On first use, the workspace contains an empty Git repository. On reuse, "
+            "inspect its head and tracked cleanliness before setup; never discard dirty "
+            "files to prepare a review. Before fetching, run "
             f"`GH_TOKEN=${{{token}}} gh auth setup-git` so Git uses the "
             "profile-scoped credential without storing it in the remote URL. Set "
             f"the plain HTTPS origin to `https://github.com/{self.repository}.git`, "
@@ -318,8 +320,9 @@ class PullRequestReviewer(GitHubRepository):
         return (
             prompt + "\n\nAcceptance reporting:\n"
             "- Inspect the current GitHub Actions results for the exact head and run "
-            "the repository's appropriate focused tests in the workspace. Do not "
-            "modify tracked files.\n"
+            "the repository's appropriate focused tests in the verified head tree or an "
+            "independent temporary head copy as required by WORKSPACE INTEGRITY. "
+            "Do not modify the reviewed tree's tracked files.\n"
             "- Before publishing anything, read the PR's existing reviews and "
             "comments on GitHub. If this account has already published a review on "
             f"`{sha}` and no one else has commented since that review, do NOT "
