@@ -51,13 +51,13 @@ flowchart TD
         events --> clusters
     end
     subgraph preparation["Workflow 1 — discover and prioritize"]
-        triage["Form and prioritize topics — OpenHands / Luna"]
+        triage["Form and prioritize topics — OpenHands / Luna 6"]
         triage -->|Matching work| recurrence["Record recurrence evidence"]
         triage --> issues["GitHub topic issues with readiness and priority"]
     end
     subgraph repairs["Workflow 2 — repair and validate"]
-        repair["Repair and compare — parallel OpenHands / Sol 6.1"]
-        review["Independently review and rerun checks — OpenHands / Sol 6.1"]
+        repair["Repair and compare — parallel OpenHands / Sol 6.2"]
+        review["Independently review and rerun checks — OpenHands / Sol 6.2"]
         context["Shared topic + raw evidence"]
         issues -->|Claim ready topics by priority and age| repair
         repair -->|PRs + validation results| review
@@ -131,7 +131,7 @@ profiles. GitHub permissions must match the configured scope.
 | `max_repair_attempts` | 2 total repair attempts per topic, including the initial attempt |
 | `repair_concurrency` | Defaults to the topic limit |
 | `validation_sample_size` | 5 inputs per comparison group when available |
-| Agent profiles | Configurable; built-in defaults are Luna / Sol 6.1 / Sol 6.1 |
+| Agent profiles | Configurable; built-in defaults are Luna 6 / Sol 6.2 / Sol 6.2 |
 | `repair_scope` | `any_authorized` (default): any relevant authorized destination; `customer_stack`: home + configured repositories only |
 | Resource guards | Configurable cost, duration and conversation limits; parallel spend is not strictly capped globally |
 

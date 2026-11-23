@@ -13,7 +13,7 @@
   "credentials_file": "/private/automation-improvement/credentials.json",
   "state_dir": "/private/automation-improvement/state",
   "triage_model": "openai/gpt-6-luna",
-  "repair_model": "openai/gpt-6.1-sol",
+  "repair_model": "openai/gpt-6.2-sol",
   "repair_agent_profile": null,
   "max_inference_cost_usd": 100,
   "max_run_seconds": 10800,
@@ -37,7 +37,7 @@
   "repair_concurrency": 10,
   "repositories": {},
   "review_agent_profile": null,
-  "review_model": "openai/gpt-6.1-sol",
+  "review_model": "openai/gpt-6.2-sol",
   "review_agent": {
     "effort": "high",
     "max_iterations": 80,
