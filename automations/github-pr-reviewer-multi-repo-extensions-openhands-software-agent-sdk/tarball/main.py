@@ -14,10 +14,12 @@ workspace, and removes it once the review has finished. Catalog workers may
 instead reuse its prompt builder with their own workspace instructions.
 """
 
+import hashlib
 import io
 import json
 import os
 import re
+import shlex
 import shutil
 import sys
 import tarfile
@@ -764,6 +766,7 @@ def _build_review_prompt(
     workspace_instructions: str | None = None,
     github_token_secret: str = "GITHUB_PERSONAL_ACCESS_TOKEN",
     trigger_description: str | None = None,
+    reviewer_login: str = "",
 ) -> str:
     number = pr.get("number", "?")
     title = pr.get("title", "(no title)")
@@ -791,6 +794,41 @@ def _build_review_prompt(
     workspace = workspace_instructions or (
         "The workspace is already the repository root at the exact Head SHA above. "
         "Do not clone, fetch, check out, or delete the repository."
+    )
+
+    attempt = hashlib.sha256(
+        json.dumps([repo, number, head_sha, trigger], ensure_ascii=False).encode()
+    ).hexdigest()[:24]
+    directory = f"/tmp/openhands-review-{attempt}"
+    helper = Path(__file__).with_name("review_publication.py").read_text()
+    command = shlex.join([
+        "python3", f"{directory}/publish.py", "--repo", repo, "--number", str(number),
+        "--head", head_sha, "--reviewer", reviewer_login, "--secret", github_token_secret,
+        "--receipt", f"{directory}/attempt.json", f"{directory}/payload.json",
+    ])
+    publication = (
+        "\n\nPublication safety (applies to technical reviews AND scope-stop reviews):\n"
+        "Use only the supplied helper to submit the native review; do not hand-build a POST, "
+        "use body_file, shell body substitution, gh pr review, or a separate result channel. "
+        "Temporary files below are allowed; do not modify tracked repository files. "
+        "Install the helper verbatim with this command:\n```sh\n"
+        f"mkdir -p {directory} && chmod 700 {directory} && "
+        f"cat > {directory}/publish.py <<'OPENHANDS_REVIEW_PUBLISHER'\n"
+        f"{helper}OPENHANDS_REVIEW_PUBLISHER\n```\n"
+        f"Write a complete JSON object to `{directory}/payload.json` using the file editor "
+        "or Python json.dump: commit_id, event, body, and optional comments. The body must "
+        "include the actual assessment, disclosure and final verdict, not a placeholder. "
+        "Do not put the body into shell command substitution. Missing/invalid files fail closed. "
+        "Then run exactly:\n```sh\n"
+        f"{command}\n```\n"
+        "The helper validates before POST, rechecks the current head/account/prior reviews, "
+        "and checks the exact returned body. It handles only a bounded explicitly rejected "
+        "inline/self-approval fallback. Do not retry outside it. Never delete, reset, or "
+        "change its attempt record to allow resubmission. On REVIEW_PUBLICATION_STOPPED, "
+        "report publication as failed or uncertain and return the draft in the final response "
+        "for human intervention; do not claim success or publish another review, edit, "
+        "dismissal, or comment. An accepted empty/mismatched review is terminal, not a "
+        "reason to post a replacement. After GITHUB_REVIEW_POSTED, stop immediately."
     )
 
     return (
@@ -831,7 +869,7 @@ def _build_review_prompt(
         "use the repository guidance above (its scope categories and ownership boundaries) to decide "
         "whether this change belongs in this repository and has the product/architecture direction "
         "it needs. If it does, continue the technical review unchanged. If it does not, or needs a "
-        "product/architecture decision, stop here and publish exactly one review with "
+        "product/architecture decision, stop here and use the supplied helper to publish one review with "
         f"`POST /repos/{repo}/pulls/{number}/reviews`, using `commit_id` equal to the Head SHA above "
         "and `event: COMMENT`. Briefly say whether the change should move repositories, close, or "
         "receive a maintainer decision; when it belongs elsewhere, name the likely owning repository "
@@ -847,7 +885,7 @@ def _build_review_prompt(
         "credential, configuration, or external state stayed unchanged. Do not add speculative or "
         "out-of-scope notes: every blocking or non-blocking observation must identify demonstrated "
         "behavior on the current head and explain why it matters to the merge decision.\n"
-        f"7. Publish one review with `POST /repos/{repo}/pulls/{number}/reviews`, using "
+        f"7. Use the supplied publication helper for one `POST /repos/{repo}/pulls/{number}/reviews`, using "
         "`commit_id` equal to the Head SHA above. Use `event: APPROVE` when there are "
         "no material findings; otherwise use `event: COMMENT`. Never use "
         "`REQUEST_CHANGES`.\n"
@@ -859,9 +897,8 @@ def _build_review_prompt(
         "array with `path`, `line`, `side: RIGHT`, and `body`.\n"
         "   Only create inline comments for actionable findings; do not open praise or nitpick threads.\n"
         "8. If a finding cannot be attached to a changed line, put it in the review body instead. "
-        "If the API rejects the inline positions, retry with every finding in the body and no `comments` array. "
-        "If GitHub forbids the configured bot from approving its own PR, retry the clean review with "
-        "`event: COMMENT` and keep the approved verdict.\n"
+        "The supplied helper owns any fallback after an explicit rejection: it can move all inline "
+        "findings into the body or use COMMENT for a self-approval. Do not retry publication yourself.\n"
         "9. Begin the review body with this disclosure: "
         "`_This review was posted by an AI agent (OpenHands)._`\n"
         "10. End the review body with a verdict on its own line: either `✅ APPROVED` "
@@ -869,9 +906,9 @@ def _build_review_prompt(
         "11. If there are no material issues, still publish a review saying so, with the "
         "disclosure and the verdict.\n"
         f"\nReview instructions:\n{tone}{extra}{guide_section}\n\n"
-        "After GitHub accepts the review, output exactly `GITHUB_REVIEW_POSTED`. "
-        "If publishing still fails after the fallback in step 8, output the complete review text "
-        "so it can be posted as a comment instead."
+        "Only after the helper reports `GITHUB_REVIEW_POSTED`, output exactly that marker. "
+        "Otherwise report failure/uncertainty with the draft for human intervention, not another GitHub write."
+        f"{publication}"
     )
 
 
