@@ -4,7 +4,7 @@ import json
 import re
 from collections import Counter
 
-from backlog import BRIEF_FIELDS, safe_brief
+from backlog import BRIEF_FIELDS, issue_guides, safe_brief
 from common import encode, redact, timestamp, topic_id, write_json
 from attribution import automation_ids, candidates, conversation_ids, unit
 from triage_agent import rank
@@ -382,8 +382,10 @@ def validate(result, records, references, limit):
             ):
                 raise ValueError("Topic needs a bounded title and explanation")
         if extra_fields:
-            if not isinstance(topic["brief"], dict) or set(topic["brief"]) != set(
-                BRIEF_FIELDS
+            if (
+                not isinstance(topic["brief"], dict)
+                or not set(BRIEF_FIELDS) <= topic["brief"].keys()
+                or topic["brief"].keys() - set(BRIEF_FIELDS) - {"submission", "labels"}
             ):
                 raise ValueError("Topic needs all four public brief fields")
             safe_brief(topic)
@@ -443,6 +445,9 @@ def triage(args, records, prs, completed_topics=()):
         records, prs, completed_topics, getattr(args, "retry_topic_ids", [])
     )
     context["repair_policy"] = getattr(args, "repair_policy", None)
+    if getattr(args, "publish_backlog", False):
+        source = args.repositories.get(args.repository)
+        context["issue_guide_files"] = issue_guides(source)
     references["repair_policy"] = context["repair_policy"]
     references["isolated_validation"] = getattr(args, "isolated_validation", False)
     references["publish_backlog"] = getattr(args, "publish_backlog", False)
@@ -455,7 +460,15 @@ def triage(args, records, prs, completed_topics=()):
     ] = args.limit
     if references["publish_backlog"]:
         fields = schema["properties"]["topics"]["items"]
-        fields["properties"]["brief"] = object_schema(dict.fromkeys(BRIEF_FIELDS, TEXT))
+        brief = object_schema(dict.fromkeys(BRIEF_FIELDS, TEXT))
+        brief["properties"].update(
+            submission={
+                "type": "array",
+                "items": object_schema({"heading": TEXT, "text": TEXT}),
+            },
+            labels={"type": "array", "items": TEXT},
+        )
+        fields["properties"]["brief"] = brief
         fields["required"].append("brief")
     result, measurement, issue = rank(args, context, prepared_records, schema)
     ranked = validate(result, records, references, args.limit)

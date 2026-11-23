@@ -12,7 +12,8 @@ See [the high-level diagrams](HOW_IT_WORKS.md) for both workflows.
    evidence with ambiguous attribution.
 2. Use the native triage agent, Luna by default, to group findings by mechanism
    across automations and repositories and assign P0–P3.
-3. Publish an actionable topic in the configured home repository with
+3. Read the destination repository’s issue guide and applicable template. Include
+   required submission details and existing template labels. Publish an actionable topic in the configured home repository with
    `automation-improvement`, `improvement-topic`, `improvement-ready` and one
    `priority:P0` through `priority:P3` label. The topic marker carries its stable
    identity. The weekly summary provides context.

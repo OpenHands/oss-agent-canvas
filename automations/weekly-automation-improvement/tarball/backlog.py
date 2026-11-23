@@ -49,9 +49,27 @@ def evidence_root(state_dir, repository, topic_id):
     return Path(state_dir) / "issue-evidence" / repository.casefold() / topic_id
 
 
+def issue_guides(source):
+    if not source or not source.get("revision"):
+        return []
+    files = command(
+        ["git", "ls-tree", "-r", "--name-only", source["revision"]],
+        source["checkout"],
+    )
+    guides = {"agents.md", "contributing.md", "readme.md", "issue_template.md"}
+    return [
+        path
+        for path in files.splitlines()
+        if path.casefold().startswith(
+            (".github/issue_template/", "docs/issue_template/")
+        )
+        or path.casefold().removeprefix(".github/").removeprefix("docs/") in guides
+    ]
+
+
 def ensure_labels(repository):
     existing = {
-        row["name"].casefold()
+        row["name"].casefold(): row["name"]
         for row in github_pages(f"repos/{repository}/labels?per_page=100", command)
     }
     for name, color in {IMPROVEMENT_LABEL: "5319E7", **LABELS}.items():
@@ -59,11 +77,38 @@ def ensure_labels(repository):
             command(
                 ["gh", "label", "create", name, "--repo", repository, "--color", color]
             )
+            existing[name.casefold()] = name
+    return existing
 
 
 def safe_brief(topic):
     brief = topic["brief"]
-    for value in [topic["title"], *(brief[field] for field in BRIEF_FIELDS)]:
+    sections = brief.get("submission", [])
+    labels = brief.get("labels", [])
+    if (
+        not isinstance(sections, list)
+        or len(sections) > 10
+        or any(
+            not isinstance(section, dict)
+            or set(section) != {"heading", "text"}
+            or not isinstance(section["heading"], str)
+            or len(section["heading"]) > 100
+            or "\n" in section["heading"]
+            for section in sections
+        )
+        or not isinstance(labels, list)
+        or len(labels) > 8
+        or any(
+            not isinstance(name, str) or not name.strip() or len(name) > 50
+            for name in labels
+        )
+    ):
+        raise ValueError("Invalid repository issue submission details")
+    for value in [
+        topic["title"],
+        *(brief[field] for field in BRIEF_FIELDS),
+        *(section[field] for section in sections for field in ("heading", "text")),
+    ]:
         if (
             not isinstance(value, str)
             or not 1 <= len(value.strip()) <= 2000
@@ -149,7 +194,11 @@ def publish(config, context, topic, existing, output, *, preview=False):
         brief["problem"],
         block("backlog-observation", brief["example"]),
         brief["prevention"],
-        brief["validation"],
+        brief["validation"]
+        + "".join(
+            f"\n\n### {section['heading']}\n\n{section['text']}"
+            for section in brief.get("submission", [])
+        ),
         block(
             "backlog-status", "Ready for investigation. No repair has been validated."
         ),
@@ -172,7 +221,17 @@ def publish(config, context, topic, existing, output, *, preview=False):
     )
     if public_issue_errors(body):
         raise ValueError("Backlog issue needs all public brief sections")
-    ensure_labels(repository)
+    labels = [IMPROVEMENT_LABEL, TOPIC, READY, PRIORITIES[topic["priority"]]]
+    known_labels = ensure_labels(repository)
+    reserved = {label.casefold() for label in LABELS} | {IMPROVEMENT_LABEL}
+    for name in brief.get("labels", []):
+        key = name.casefold()
+        if key not in known_labels or key in reserved:
+            raise ValueError(
+                "Repository issue guide requested an unavailable or reserved label"
+            )
+        if known_labels[key] not in labels:
+            labels.append(known_labels[key])
     issue = TopicIssue.ensure_brief(
         repository,
         output,
@@ -180,6 +239,6 @@ def publish(config, context, topic, existing, output, *, preview=False):
         body,
         topic["title"],
         preview,
-        labels=[IMPROVEMENT_LABEL, TOPIC, READY, PRIORITIES[topic["priority"]]],
+        labels=labels,
     )
     return issue.value["html_url"]

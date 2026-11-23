@@ -27,10 +27,14 @@ def test_topic_publish_labels_privacy_and_identity(tmp_path, monkeypatch):
             "example": "A review completed with an empty message.",
             "prevention": "Verify the saved comment before reporting success.",
             "validation": "Exercise one empty and one populated submission.",
+            "submission": [
+                {"heading": "Steps to reproduce", "text": "Submit an empty comment."}
+            ],
+            "labels": ["Bug"],
         },
     }
     rows, writes = [], []
-    monkeypatch.setattr(backlog, "ensure_labels", lambda repository: None)
+    monkeypatch.setattr(backlog, "ensure_labels", lambda repository: {"bug": "bug"})
     monkeypatch.setattr(
         topic_issue,
         "github_pages",
@@ -60,7 +64,9 @@ def test_topic_publish_labels_privacy_and_identity(tmp_path, monkeypatch):
         backlog.TOPIC,
         backlog.READY,
         "priority:P1",
+        "bug",
     ]
+    assert "### Steps to reproduce\n\nSubmit an empty comment." in row["body"]
     item = {"kind": "issue", "body": row["body"], "url": row["html_url"]}
     assert backlog.identity(item, backlog.namespace(config, tmp_path)) == topic["id"]
     assert matching(topic | {"id": "b" * 20}, [item]) == [item["url"]]
