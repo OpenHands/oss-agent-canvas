@@ -3,8 +3,7 @@
     "OpenHands/extensions",
     "OpenHands/OpenHands",
     "OpenHands/software-agent-sdk",
-    "OpenHands/automation",
-    "OpenHands/enterprise"
+    "OpenHands/automation"
   ],
   "auto_merge_dependabot": true,
   "maintainers": [

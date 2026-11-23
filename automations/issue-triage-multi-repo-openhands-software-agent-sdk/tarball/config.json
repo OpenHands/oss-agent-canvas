@@ -3,10 +3,7 @@
     "OpenHands/extensions",
     "OpenHands/OpenHands",
     "OpenHands/software-agent-sdk",
-    "OpenHands/automation",
-    "OpenHands/enterprise",
-    "OpenHands/saas-deploy",
-    "OpenHands/evaluation"
+    "OpenHands/automation"
   ],
   "github_token_secret": "GITHUB_TOKEN_ISSUE_TRIAGE"
 }

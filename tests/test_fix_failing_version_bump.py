@@ -169,7 +169,6 @@ class ConfigTests(unittest.TestCase):
                         "OpenHands/OpenHands",
                         "OpenHands/software-agent-sdk",
                         "OpenHands/automation",
-                        "OpenHands/enterprise",
                     ],
                 )
 

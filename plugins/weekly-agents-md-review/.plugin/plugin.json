@@ -1,7 +1,7 @@
 {
   "name": "weekly-agents-md-review",
   "version": "0.1.0",
-  "description": "Executable automation plugin for Weekly AGENTS.md relevance review (multi-repo): extensions, OpenHands, software-agent-sdk, automation, enterprise.",
+  "description": "Executable automation plugin for Weekly AGENTS.md relevance review (multi-repo): extensions, OpenHands, software-agent-sdk, automation.",
   "author": {
     "name": "OpenHands",
     "email": "contact@all-hands.dev"
@@ -63,10 +63,6 @@
             },
             {
               "url": "https://github.com/OpenHands/automation",
-              "ref": "main"
-            },
-            {
-              "url": "https://github.com/OpenHands/enterprise",
               "ref": "main"
             }
           ]

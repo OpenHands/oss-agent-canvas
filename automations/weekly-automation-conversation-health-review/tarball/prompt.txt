@@ -21,7 +21,7 @@ Cover runs/conversations since `last_reviewed_through` (default 7 days ago if no
 ## Four lenses
 Ground every claim in a specific automation/run/conversation id. Prefer a few high-signal findings over an exhaustive list. Nothing worth reporting → write "No new findings".
 
-**Errors** — Cluster `error_detail` (normalized) per automation; report failure rate and flag any automation running hotter than its own baseline or peers. Split into: (a) known self-healing noise (e.g. `<urlopen error timed out>`/`Errno 110`) — only flag if volume clearly grew; (b) genuine bugs (tracebacks, `TypeError`-shaped messages, concurrency/lock errors, missing-config errors) — name the automation and quote the message; (c) silent failures — run `status=COMPLETED` but conversation `execution_status` is `error`/`stuck` or has a `ConversationErrorEvent` — a real success/failure blind spot. Skip anything with an unchanged fingerprint from a prior run beyond a one-line "still present" mention.
+**Errors** — Cluster `error_detail` (normalized) per automation; report failure rate and flag any automation running hotter than its own baseline or peers. Split into: (a) known self-healing noise (e.g. `<urlopen error timed out>`/`Errno 110`) — only flag if volume clearly grew; (b) genuine bugs (tracebacks, `TypeError`-shaped messages, concurrency/lock errors, missing-config errors) — name the automation and summarize the error without quoting raw logs; (c) silent failures — run `status=COMPLETED` but conversation `execution_status` is `error`/`stuck` or has a `ConversationErrorEvent` — a real success/failure blind spot. Skip anything with an unchanged fingerprint from a prior run beyond a one-line "still present" mention.
 
 **Resources** — Roll up cost/tokens per automation for the window; flag any automation or single run far outside its own or peers' norm (runaway loop, unbounded context, checkout bloat). Check `du -sh` on `dev_conversations/` and `workspaces/automation-runs/` (never pruned) for disproportionate growth. Flag `timeout` values mismatched with actual run durations.
 
@@ -30,7 +30,13 @@ Ground every claim in a specific automation/run/conversation id. Prefer a few hi
 **Skills** — Tabulate `activated_knowledge_skills`/`invoked_skills` frequency; flag over-broad/frequent activation (context bloat) and tasks that plausibly needed a skill that never activated. Note any oversized skill content relative to task need (ties to Resources).
 
 ## Report
-Post exactly one Slack message to channel `C0BGK8NRYUX` via `https://slack.com/api/chat.postMessage` using `$SLACK_BOT_TOKEN`:
+The destination is public: #automations-debug in the OpenHands community workspace.
+Report aggregate operational findings and remediation recommendations only. Never
+copy raw logs, conversation content, process arguments, personal data, or credential
+values. Describe suspected exposure without reproducing it. Omit exploitable details
+and ask for private maintainer follow-up when needed; do not send a separate message.
+
+Post exactly one Slack message to channel `C0BLWB8PQ3B` via `https://slack.com/api/chat.postMessage` using `$SLACK_BOT_TOKEN_OPENHANDS_AI`:
 
 `*Automation & conversation health review — <window start> to <window end>*`
 

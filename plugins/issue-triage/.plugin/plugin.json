@@ -53,10 +53,7 @@
             "OpenHands/extensions",
             "OpenHands/OpenHands",
             "OpenHands/software-agent-sdk",
-            "OpenHands/automation",
-            "OpenHands/enterprise",
-            "OpenHands/saas-deploy",
-            "OpenHands/evaluation"
+            "OpenHands/automation"
           ]
         },
         "github_token_secret": {
@@ -76,7 +73,7 @@
       "type": "event",
       "source": "github-events",
       "on": "*",
-      "filter": "contains(['OpenHands/extensions', 'OpenHands/OpenHands', 'OpenHands/software-agent-sdk', 'OpenHands/automation', 'OpenHands/enterprise', 'OpenHands/saas-deploy', 'OpenHands/evaluation'], repository.full_name) && contains(keys(@), 'issue') && !contains(keys(@), 'comment') && (contains(['opened','reopened'], action) || (action == 'unlabeled' && label.name == 'ready-for-dev' && sender.login != 'github-actions[bot]'))",
+      "filter": "contains(['OpenHands/extensions', 'OpenHands/OpenHands', 'OpenHands/software-agent-sdk', 'OpenHands/automation'], repository.full_name) && contains(keys(@), 'issue') && !contains(keys(@), 'comment') && (contains(['opened','reopened'], action) || (action == 'unlabeled' && label.name == 'ready-for-dev' && sender.login != 'github-actions[bot]'))",
       "destination": "dispatch_run",
       "wake_agent": true
     }

@@ -67,12 +67,12 @@
         },
         "alert_channel": {
           "type": "string",
-          "default": "C0BGK8NRYUX",
+          "default": "C0BLWB8PQ3B",
           "description": "Slack channel id for alerts and the daily heartbeat."
         },
         "slack_token_secret": {
           "type": "string",
-          "default": "SLACK_BOT_TOKEN",
+          "default": "SLACK_BOT_TOKEN_OPENHANDS_AI",
           "description": "Registered secret name holding the Slack bot token for alert_channel."
         },
         "canvas_url": {

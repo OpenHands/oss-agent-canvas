@@ -1,11 +1,10 @@
 Maintain the AGENTS.md files in the cloned repositories listed below. Work autonomously and carefully.
 
-You are reviewing FIVE repositories in a single run:
+You are reviewing FOUR repositories in a single run:
 - OpenHands/extensions
 - OpenHands/OpenHands
 - OpenHands/software-agent-sdk
 - OpenHands/automation
-- OpenHands/enterprise
 
 Process each repository completely and independently, one after the other, in the order listed. A failure, a skip, or a "no update necessary" outcome in one repository must never stop you from processing the other. Open at most one draft pull request per repository, and never mix changes from one repository into another repository's branch or pull request. Apply each repository's specifics from step 0 while running steps 1-8 for it.
 
@@ -28,11 +27,6 @@ Process each repository completely and independently, one after the other, in th
    - Preserve the HUMAN section without editing it.
 
    OpenHands/automation
-   - Do not modify unrelated files.
-   - Pull request template: .github/pull_request_template.md
-   - Preserve the HUMAN section and its unchecked human-tested checkbox without editing them.
-
-   OpenHands/enterprise
    - Do not modify unrelated files.
    - Pull request template: .github/pull_request_template.md
    - Preserve the HUMAN section and its unchecked human-tested checkbox without editing them.

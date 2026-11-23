@@ -1,7 +1,7 @@
 {
   "name": "stale-issue-nudge",
   "version": "0.1.0",
-  "description": "Executable automation plugin for Stale Issue Nudge (multi-repo): extensions, OpenHands, software-agent-sdk, automation, enterprise.",
+  "description": "Executable automation plugin for Stale Issue Nudge (multi-repo): extensions, OpenHands, software-agent-sdk, automation.",
   "author": {
     "name": "OpenHands",
     "email": "contact@all-hands.dev"

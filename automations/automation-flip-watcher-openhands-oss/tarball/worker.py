@@ -43,8 +43,8 @@ DEFAULT_CONVERSATIONS_DIR = (
     "/var/lib/agent-canvas/.openhands/agent-canvas/dev_conversations"
 )
 DEFAULT_CANVAS_URL = "https://oss-agent-canvas.ngrok.dev"
-DEFAULT_ALERT_CHANNEL = "C0BGK8NRYUX"
-DEFAULT_SLACK_SECRET = "SLACK_BOT_TOKEN"
+DEFAULT_ALERT_CHANNEL = "C0BLWB8PQ3B"
+DEFAULT_SLACK_SECRET = "SLACK_BOT_TOKEN_OPENHANDS_AI"
 WATCHER_NAME = "automation flip watcher (oss automations)"
 
 # Run statuses that count as outcomes; anything else (PENDING, RUNNING,
@@ -698,18 +698,11 @@ def format_alert(action, config):
         lines = []
     last_run = action.get("last_run")
     if last_run:
-        if last_run.get("error_detail"):
-            lines.append(f"• last error: `{one_line(last_run['error_detail'])}`")
         detail = []
         if last_run.get("started_at"):
             detail.append(f"last run {iso(last_run['started_at'])}")
         if last_run.get("status"):
             detail.append(f"status {last_run['status']}")
-        link = conversation_link(
-            last_run.get("conversation_id", ""), config["canvas_url"]
-        )
-        if link:
-            detail.append(f"<{link}|conversation>")
         if detail:
             lines.append("• " + " — ".join(detail))
     lines.append("Reply to this message to trigger an investigation.")
@@ -789,6 +782,11 @@ def main():
 
     state = load_state()
     records = state.setdefault("automations", {})
+    # Slack thread timestamps belong to one channel, including legacy state.
+    if state.get("alert_channel") != config["alert_channel"]:
+        for record in records.values():
+            record.pop("thread_ts", None)
+        state["alert_channel"] = config["alert_channel"]
     actions = []
     rows = []
 

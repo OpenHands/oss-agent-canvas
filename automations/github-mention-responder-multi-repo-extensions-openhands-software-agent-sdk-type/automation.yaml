@@ -4,7 +4,7 @@ entrypoint: python3 main.py
 keep_alive: null
 model: null
 name: 'GitHub Mention Responder (multi-repo): extensions, OpenHands, software-agent-sdk,
-  automation, enterprise'
+  automation'
 preset_metadata: null
 prompt: null
 setup_script_path: null
@@ -16,7 +16,7 @@ timeout: 1800
 trigger:
   destination: dispatch_run
   filter: contains(['OpenHands/extensions', 'OpenHands/OpenHands', 'OpenHands/software-agent-sdk',
-    'OpenHands/automation', 'OpenHands/enterprise', 'OpenHands/saas-deploy', 'OpenHands/evaluation'],
+    'OpenHands/automation'],
     repository.full_name) && contains(['VascoSch92', 'neubig'], sender.login) && ((action
     == 'created' && contains(keys(@), 'comment') && icontains(comment.body || '',
     '@all-hands-bot')) || (action == 'opened' && contains(keys(@), 'issue') && !contains(keys(@),
