@@ -1,8 +1,8 @@
 enabled: true
-entrypoint: .venv/bin/python triage_workflow.py
+entrypoint: .venv/bin/python weekly.py
 keep_alive: false
 model: null
-name: Automation Improvement — Discover and Prioritize
+name: Weekly Automation Improvement
 preset_metadata: null
 prompt: null
 setup_script_path: setup.sh

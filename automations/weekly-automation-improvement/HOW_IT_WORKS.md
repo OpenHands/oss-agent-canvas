@@ -18,9 +18,6 @@ flowchart LR
 
 ## Two workflows
 
-This PR contains workflow 1 and shared support. Workflow 2 is in the stacked repair
-PR; its thin weekly wrapper chains both workflows.
-
 1. **Discover and prioritize** — `triage_workflow.py` reads findings, updates the
    weekly summary and GitHub topic issues and records recurrence evidence.
 2. **Repair and validate** — `repair_workflow.py` queries eligible GitHub topic issues and
