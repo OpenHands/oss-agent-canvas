@@ -26,9 +26,11 @@ README covers setup, operation and validation history.
    publisher in the weekly path. One topic may require several related PRs.
 5. A separate native agent, default Sol 6.2, reviews current diffs, exact revisions, CI and actual
    execution records. It checks the complete fix across repositories, records a
-   verdict on the issues/PRs, and makes sufficiently evidenced PRs ready for review.
-   Failed, inconclusive, unsafe or dependency-blocked changes remain drafts.
-   Python also holds PRs draft when review is incomplete or revisions changed.
+   verdict on the issues/PRs, and checks the destination repository's submission
+   requirements and CI. The controller marks accepted PRs ready after all reported
+   CI checks on the exact reviewed head pass. It waits up to three minutes within
+   the run budget. Failed, pending or unavailable checks and stale reviews keep
+   the PR draft.
 
 Repair and review form a bounded feedback loop. The default
 `max_repair_attempts=2` allows an initial repair and one revision using the review
@@ -204,7 +206,9 @@ An eligible issue carries the automation topic identity, `automation-improvement
 `improvement-topic`, `improvement-ready` and exactly one `priority:P0` through
 `priority:P3`. Edit priority labels in GitHub to reorder future selections.
 Within each priority, oldest issues go first. Removing readiness, closing the
-issue or adding `improvement-blocked` prevents dispatch. Active claims and
+issue or adding `improvement-blocked` prevents dispatch. Repository labels
+such as `not ready for review` or `needs triage` also hold the issue. Add local
+conventions to `issue_hold_labels`. Active claims and
 open repair PRs also prevent dispatch. Repair previews show current selection
 without claiming issues, writing the ledger or running agents.
 

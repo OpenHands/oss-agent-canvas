@@ -119,6 +119,9 @@ def test_selection_honors_priority_across_repositories_and_exclusions(gh):
     gh.issue(second, 5, 0, extra=(backlog.BLOCKED,))
     gh.issue(second, 6, 0, state="closed")
     gh.issue(second, 7, 0, extra=(backlog.PRIORITIES[1],))
+    gh.issue(second, 11, 0, extra=("Not ready for review",))
+    gh.issue(second, 12, 0, extra=("Awaiting issue checklist",))
+    gh.config["issue_hold_labels"] = ["awaiting-issue-checklist"]
     covered, _, _ = gh.issue(second, 8, 0)
     gh.rows[f"repos/{home}/issues/99"] = {
         "state": "open",

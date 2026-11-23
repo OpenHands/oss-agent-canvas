@@ -24,13 +24,29 @@ PULL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/([1-9][0-9]*)")
 RUN = re.compile(r"(?m)^<!-- automation-improvement-run: [\w-]+ -->\n?")
 
 
-def priority(item):
+def normalize_label(name):
+    return re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
+
+
+def priority(item, config=None):
+    labels_to_hold = {
+        "needs-triage",
+        "not-ready",
+        "not-ready-for-review",
+        "not-ready-for-rev",
+        "needs-information",
+        *[
+            normalize_label(name)
+            for name in (config or {}).get("issue_hold_labels", [])
+        ],
+    }
     labels = set(item["labels"])
     values = [index for index, label in enumerate(PRIORITIES) if label in labels]
     if (
         item["state"] == "OPEN"
         and {IMPROVEMENT_LABEL, TOPIC, READY} <= labels
         and not {ACTIVE, BLOCKED} & labels
+        and not labels_to_hold.intersection(map(normalize_label, labels))
         and len(values) == 1
     ):
         return values[0]
@@ -92,7 +108,7 @@ def selection(config, context, state):
 
     ranked, excluded = [], []
     for item, identifier in candidates:
-        rank = priority(item)
+        rank = priority(item, config)
         fallback = {"id": identifier, "priority": rank, "issue_url": item["url"]}
         if rank is None:
             excluded.append({"topic": fallback, "status": "issue_ineligible"})
@@ -179,7 +195,7 @@ def claim(config, context, topic, root):
     item = work_item(issue.value, issue.repository)
     if (
         identity(item, namespace(config, context["state_dir"])) != topic["id"]
-        or priority(item) != topic["priority"]
+        or priority(item, config) != topic["priority"]
         or REFERENCE.findall(item["body"]) != [topic["input_reference"]]
     ):
         return False

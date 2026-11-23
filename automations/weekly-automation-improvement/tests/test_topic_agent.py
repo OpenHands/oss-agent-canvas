@@ -1160,3 +1160,51 @@ def test_review_feedback_character_limit_accepts_escaped_unicode(tmp_path, monke
     result = topic_agent.run({}, context(tmp_path), tmp_path / "topic", RunBudget({}))
     assert result["stop_reason"] == "accepted"
     assert result["status"] == "reviewed"
+
+
+@pytest.mark.parametrize(
+    "checks,head,expected",
+    [
+        (
+            [{"name": "tests", "status": "COMPLETED", "conclusion": "SUCCESS"}],
+            "reviewed",
+            [],
+        ),
+        (
+            [{"name": "tests", "status": "COMPLETED", "conclusion": "FAILURE"}],
+            "reviewed",
+            ["FAILURE"],
+        ),
+        ([{"name": "tests", "status": "IN_PROGRESS"}], "reviewed", ["pending tests"]),
+        ([], "reviewed", ["no CI checks"]),
+        (
+            [{"name": "tests", "status": "COMPLETED", "conclusion": "SKIPPED"}],
+            "reviewed",
+            ["no successful CI"],
+        ),
+        (
+            [{"name": "tests", "status": "COMPLETED", "conclusion": "SUCCESS"}],
+            "changed",
+            ["head changed"],
+        ),
+    ],
+)
+def test_ci_uses_reviewed_revision_and_requires_success(
+    tmp_path, monkeypatch, checks, head, expected
+):
+    url = "https://github.com/Example/source/pull/1"
+    monkeypatch.setattr(
+        topic_agent,
+        "command",
+        lambda _: json.dumps(
+            {"baseRefOid": "base", "headRefOid": head, "statusCheckRollup": checks}
+        ),
+    )
+    problems = topic_agent.verify_pr_ci(
+        [{"url": url, "base": "base", "head": "reviewed"}],
+        tmp_path,
+        RunBudget({}),
+        wait_seconds=0,
+    )
+    assert bool(problems) == bool(expected)
+    assert all(term in "\n".join(problems) for term in expected)
