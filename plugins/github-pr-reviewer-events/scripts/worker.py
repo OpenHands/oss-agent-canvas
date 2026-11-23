@@ -1198,7 +1198,13 @@ def run_scan(dispatcher):
     PullRequestReviewer.scan_intake = ReviewIntake()
     failure = None
     try:
-        run_repositories(PullRequestReviewer, dispatcher=dispatcher)
+        payload = PullRequestReviewer._event_payload()
+        repository = (((payload or {}).get("repository") or {}).get("full_name") or "")
+        # Docs is a webhook target, not part of the scheduled repository list.
+        event_repository = "OpenHands/docs" if repository.lower() == "openhands/docs" else None
+        run_repositories(
+            PullRequestReviewer, dispatcher=dispatcher, event_repository=event_repository
+        )
     except Exception as exc:  # noqa: BLE001 - reported after the drain
         failure = exc
     try:
