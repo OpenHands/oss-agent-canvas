@@ -119,7 +119,12 @@ def main(run):
             config["input"] = str(args.input.resolve())
         result = run(config, dry_run=args.dry_run, limit=args.limit, seed=args.seed)
         print(encode(redact(result)))
-        if result["status"] in ("partial_failure", "collection_incomplete"):
+        if result["status"] in (
+            "partial_failure",
+            "collection_incomplete",
+            "discovery_incomplete",
+            "triage_incomplete",
+        ):
             raise ValueError("Weekly run incomplete; inspect weekly-report.json")
     except Exception:
         callback("FAILED")

@@ -3,6 +3,7 @@ import json
 import re
 import uuid
 
+from backlog import event_markers
 from common import encode, redact, write_json
 from github_io import command, github_pages, repository_private
 from repair_policy import permits
@@ -11,6 +12,11 @@ from repair_policy import permits
 def matching(topic, existing):
     selected = set(topic.get("existing_work_urls", []))
     identities = {topic["id"]}
+    findings = (
+        event_markers(topic).splitlines()
+        if topic.get("representative_event_ids")
+        else []
+    )
     while True:
         before = (len(selected), len(identities))
         for item in existing:
@@ -20,7 +26,11 @@ def matching(topic, existing):
                     item.get("body", ""),
                 )
             )
-            if item["url"] in selected or markers.intersection(identities):
+            if (
+                item["url"] in selected
+                or markers.intersection(identities)
+                or any(marker in item["body"] for marker in findings)
+            ):
                 selected.add(item["url"])
                 identities.update(markers)
         if before == (len(selected), len(identities)):
@@ -91,7 +101,7 @@ def comment(topic, existing, records, issue, output, policy=None):
         body = (
             "Weekly triage identified new findings matching the problem tracked here. "
             "The problem may still be occurring; these findings are investigation leads, not proof of a regression or of an ineffective fix. "
-            "No new repair agent was dispatched for this topic.\n\n"
+            "Triage recorded this evidence without starting a repair.\n\n"
             + "\n".join(evidence)
             + (
                 f"\n\n[Current triage and private-data access instructions]({safe_brief}). "

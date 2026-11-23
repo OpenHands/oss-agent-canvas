@@ -1,37 +1,47 @@
-import stat
 from pathlib import Path
-
 
 import triage_workflow
 from common import read_json
 
 
-def test_triage_workflow_stops_at_private_ordered_handoff(prepared, monkeypatch):
+def test_triage_publishes_topics_without_repair_code(prepared, monkeypatch):
     import sys
 
-    config, queue = prepared
+    config, topics = prepared
     monkeypatch.setitem(sys.modules, "repair_workflow", None)
     monkeypatch.setitem(sys.modules, "parallel", None)
+    published = []
+
+    def publish(config, context, topic, existing, output):
+        published.append(topic)
+        assert existing is None
+        assert Path(context["inventory_path"]).is_file()
+        return f"https://github.com/Example/source/issues/{len(published)}"
+
+    monkeypatch.setattr(triage_workflow, "publish", publish)
+    monkeypatch.setattr(triage_workflow, "existing_work", lambda _: [])
     result = triage_workflow.run(config, seed=42)
-    assert result["status"] == "ready_for_repair"
-    path = Path(result["repair_request"])
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
-    request = read_json(path)
-    assert request["queue"] == queue
-    assert request["config"] == config
-    assert request["context"]["seed"] == 42
-    assert request["budget"]["reported_inference_cost_usd"] == 0.1
+    assert result["status"] == "published"
+    assert published == topics
+    assert result["budget"]["reported_inference_cost_usd"] == 0.1
     state = read_json(Path(config["state_dir"]) / "state.json")
     assert not state["topic_weeks"]
-    assert len(state["backlog"]) == 3
-    assert not (path.parent / "workers").exists()
-    assert not (path.parent / "weekly-report.json").exists()
+    assert not state["backlog"]
+    assert len(state["events"]) == 3
+    output = Path(result["output"])
+    assert not (output / "repair-request.json").exists()
+    assert not (output / "workers").exists()
+    assert triage_workflow.run(config)["status"] == "no_unhandled_findings"
+    assert len(published) == 3
 
 
-def test_triage_preview_does_not_publish_a_repair_handoff(prepared):
+def test_triage_preview_does_not_publish_topics(prepared, monkeypatch):
+    import pytest
+
     config, _ = prepared
+    monkeypatch.setattr(
+        triage_workflow, "publish", lambda *a, **k: pytest.fail("publish")
+    )
     result = triage_workflow.run(config, dry_run=True)
     assert result["status"] == "preview"
-    assert "repair_request" not in result
-    assert not (Path(result["output"]) / "repair-request.json").exists()
     assert not (Path(config["state_dir"]) / "state.json").exists()

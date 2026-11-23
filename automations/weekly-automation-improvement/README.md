@@ -1,35 +1,42 @@
-# Automation improvement — discover and prioritize
+# Automation improvement discovery
 
-Turn persisted Laminar findings into a prioritized topic queue and readable weekly
-issue. This is the first of two workflows. The stacked repair workflow consumes
-the private handoff and owns fixes, PRs and independent validation.
+The discovery workflow consolidates persisted Laminar findings into GitHub topic
+issues. The repair workflow reads GitHub for scheduling. Both use native OpenHands
+agents and share configuration, private evidence storage and a worker lock.
 
-See [the high-level diagrams](HOW_IT_WORKS.md) for the full system.
+See [the high-level diagrams](HOW_IT_WORKS.md) for both workflows.
 
-## Workflow
+## Discover and prioritize
 
-1. Read existing Flow-1 events/clusters directly from self-hosted Laminar. Do not
-   rerun Flow-1. Preserve ambiguous findings, raw-data references and backlog state.
-2. Prepare compact evidence and inspect existing issues/PRs.
-3. Run the existing native OpenHands triage agent (default Luna) to consolidate
-   mechanisms and rank topics P0–P3.
-4. Add idempotent recurrence comments to matching existing work and exclude it
-   before allocating repair slots. Preserve existing descriptions and private data.
-5. Save the ordered queue and evidence/configuration references in an owner-only
-   `repair-request.json`. Do not dispatch repair agents in this workflow.
+1. Read existing Flow-1 events and clusters from Laminar. Retain raw references and
+   evidence with ambiguous attribution.
+2. Use the native triage agent, Luna by default, to group findings by mechanism
+   across automations and repositories and assign P0–P3.
+3. Publish an actionable topic in the configured home repository with
+   `automation-improvement`, `improvement-topic`, `improvement-ready` and one
+   `priority:P0` through `priority:P3` label. The topic marker carries its stable
+   identity. The weekly summary provides context.
+4. Match the underlying mechanism to existing issues and PRs. Update a matching
+   topic issue's private evidence index and post an idempotent recurrence comment.
+   Preserve human priority and lifecycle labels. Matching human work and prior
+   repair PRs receive recurrence evidence without opening competing issues.
 
-Topic-specific repair issues are still created by repair agents in workflow two;
-triage creates the same weekly issue and recurrence comments as before.
+The workflow writes `triage-report.json` with the publication results and budget.
+Each topic issue points to a private, immutable evidence index on the authorized
+worker. Retain `state_dir` across runs and worker replacements. The index retains
+the original Signal records, inventory and previous evidence references. Public
+briefs explain the problem, example, prevention and validation plan before the
+opaque evidence reference.
 
 ## Configure and run
 
 Copy [weekly.example.json](weekly.example.json) outside Git. Configure the Laminar
-project/Signal, proxy and native automation endpoints, canonical repository
-locations, GitHub secret name, private state and owner-only credentials file.
-Existing runtime/setup requirements and agent-profile settings are unchanged.
-`repair_scope=any_authorized` remains the default; choose `customer_stack` to limit
-future repair destinations to the home repository and explicit repository entries.
-GitHub credentials/profile/MCP permissions must match the intended write scope.
+project and Signal, proxy and native automation endpoints, existing checkouts,
+GitHub secret name, private state and owner-only credentials file. The worker
+needs permission to create repository labels during first publication. The saved
+agent profiles and worker credentials must match the intended repair scope.
+`repair_scope=any_authorized` is the default. `customer_stack` limits repairs to
+the home repository and explicit repository entries.
 
 ```bash
 .venv/bin/python triage_workflow.py --config /private/config.json
@@ -37,15 +44,6 @@ GitHub credentials/profile/MCP permissions must match the intended write scope.
 .venv/bin/python triage_workflow.py --config /private/config.json --dry-run
 ```
 
-The normal result names the private `repair_request` path. `triage-report.json`
-contains the preparation outcome. A dry-run publishes no issues/comments, writes
-no dispatch ledger and produces no repair handoff. Failed discovery does not
-produce a repair handoff. Pending recurrence comments stay pending.
-
-The handoff retains queue order, source revisions, configuration, original evidence
-and the budget snapshot. Shared code covers Laminar/GitHub access, evidence indexes,
-privacy, scope, validation, locking and accounting. The second workflow uses the
-same state and lock; splitting execution does not grant a new budget.
-
-The weekly cron is unchanged. The stacked second PR restores `weekly.py` as the
-thin entrypoint that chains both workflows under one lock and budget.
+A dry run writes a private receipt and may spend triage inference. GitHub and the
+canonical event state remain unchanged. Discovery errors stop publication.
+Failed publications and recurrence comments remain pending for reconciliation.

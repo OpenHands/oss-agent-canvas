@@ -4,6 +4,7 @@ import json
 import re
 from collections import Counter
 
+from backlog import BRIEF_FIELDS, safe_brief
 from common import encode, redact, timestamp, topic_id, write_json
 from attribution import automation_ids, candidates, conversation_ids, unit
 from triage_agent import rank
@@ -343,15 +344,21 @@ def validate(result, records, references, limit):
     by_id = {record["event"]["id"]: record for record in records}
     events = references["events"]
     seen_events, seen_topics, plans = set(), set(), []
+    extra_fields = {"brief"} if references.get("publish_backlog") else set()
     for position, topic in enumerate(result["topics"]):
-        if not isinstance(topic, dict) or set(topic) != {
-            "key",
-            "title",
-            "priority",
-            "reason",
-            "representative_event_refs",
-            "existing_work_urls",
-        }:
+        if (
+            not isinstance(topic, dict)
+            or set(topic)
+            != {
+                "key",
+                "title",
+                "priority",
+                "reason",
+                "representative_event_refs",
+                "existing_work_urls",
+            }
+            | extra_fields
+        ):
             raise ValueError("Invalid topic fields")
         urls = topic["existing_work_urls"]
         if (
@@ -374,6 +381,12 @@ def validate(result, records, references, limit):
                 or not 1 <= len(topic[field].strip()) <= bound
             ):
                 raise ValueError("Topic needs a bounded title and explanation")
+        if extra_fields:
+            if not isinstance(topic["brief"], dict) or set(topic["brief"]) != set(
+                BRIEF_FIELDS
+            ):
+                raise ValueError("Topic needs all four public brief fields")
+            safe_brief(topic)
         refs = topic["representative_event_refs"]
         if (
             not isinstance(refs, list)
@@ -389,7 +402,7 @@ def validate(result, records, references, limit):
         chosen = [by_id[event_id] for event_id in selected]
         owners = sorted({a for record in chosen for a in automation_ids(record)})
         automation_id = owners[0] if len(owners) == 1 else None
-        identifier = topic_id("shared", topic["key"])
+        identifier = topic_id(references.get("topic_namespace", "shared"), topic["key"])
         if identifier in seen_topics:
             raise ValueError("Triage repeats a topic key")
         used_conversations, used_traces = set(), set()
@@ -432,12 +445,18 @@ def triage(args, records, prs, completed_topics=()):
     context["repair_policy"] = getattr(args, "repair_policy", None)
     references["repair_policy"] = context["repair_policy"]
     references["isolated_validation"] = getattr(args, "isolated_validation", False)
+    references["publish_backlog"] = getattr(args, "publish_backlog", False)
+    references["topic_namespace"] = getattr(args, "topic_namespace", "shared")
     write_json(args.output / "triage-input.json", context)
     write_json(args.output / "triage-references.json", references)
     schema = copy.deepcopy(TRIAGE)
     schema["properties"]["topics"]["items"]["properties"]["representative_event_refs"][
         "maxItems"
     ] = args.limit
+    if references["publish_backlog"]:
+        fields = schema["properties"]["topics"]["items"]
+        fields["properties"]["brief"] = object_schema(dict.fromkeys(BRIEF_FIELDS, TEXT))
+        fields["required"].append("brief")
     result, measurement, issue = rank(args, context, prepared_records, schema)
     ranked = validate(result, records, references, args.limit)
     plans, tracked = [], []
@@ -463,19 +482,15 @@ def triage(args, records, prs, completed_topics=()):
             update.update(status="recurrence_pending", error=redact(str(error))[:1000])
         tracked.append(update)
     queue = "\n".join(
-        f"- **P{topic['priority']}: {topic['title']}** — {topic['reason']}"
-        for topic in plans
+        f"- **P{topic['priority']}: {topic['title']}**" for topic in plans
     )
     issue.update_block(
         "triage-plan",
-        f"Ranked {len(plans)} new investigation topics; {len(tracked)} topics already have tracked work and will not receive repair agents. These are leads, not confirmed repairs.\n\n{queue}"
-        if plans
-        else f"No new repair topic selected; {len(tracked)} topics already have tracked work. "
-        + result["no_action_reason"],
+        f"Identified {len(plans)} new investigation topics and {len(tracked)} recurrences. GitHub topic issues hold readiness and priority.\n\n{queue}",
     )
     issue.record(
-        "Attempts and decisions — validated priority queue",
-        f"Validated {len(plans)} focused repair topics, ordered globally by priority. These are proposed investigations, not confirmed defects or proven repairs.",
+        "Attempts and decisions — validated topic plan",
+        f"Validated {len(plans)} new investigation topics. These are proposed investigations, not confirmed defects or proven repairs.",
         {
             "ranked-topics.json": plans,
             "tracked-topics.json": tracked,
@@ -490,6 +505,7 @@ def triage(args, records, prs, completed_topics=()):
         "triage_measurement": measurement,
         "triage_issue": issue.refresh(),
         "tracked_topics": tracked,
+        "existing_work": references["existing_work"],
     }
     write_json(args.output / "triage-result.json", aggregation)
     return plans, aggregation

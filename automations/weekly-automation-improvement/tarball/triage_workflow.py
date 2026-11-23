@@ -1,10 +1,10 @@
 import datetime as dt
 import re
-import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
+from backlog import IDENTITY, TOPIC, identity, namespace, publish
 from common import read_json, redact, replace_json, timestamp, write_json
 from events import collect_events
 from github_io import command, github_pages, IMPROVEMENT_LABEL, work_item
@@ -179,7 +179,6 @@ def arguments(config, output, limit, seed=None):
         signal_id=str(uuid.UUID(config["signal_id"])),
         app_url=config.get("app_url", "https://laminar.app.all-hands.dev"),
         model=config.get("triage_model", "openai/gpt-6-luna"),
-        retry_topic_ids=config.get("retry_topic_ids", []),
         population_limit=config.get("population_limit", 10000),
         max_response_bytes=8_000_000,
         max_sample_bytes=2_000_000,
@@ -192,21 +191,13 @@ def arguments(config, output, limit, seed=None):
     )
 
 
-def eligible_topics(queue, state, week, retry_ids):
-    eligible, skipped = [], []
-    for topic in queue:
-        slots = [
-            value
-            for key, value in state["topic_weeks"].items()
-            if key.startswith(week + "/") and value["topic"]["id"] == topic["id"]
-        ]
-        if slots and topic["id"] not in retry_ids:
-            skipped.append(
-                {"topic": topic, "status": "already_attempted", "prior_attempts": slots}
-            )
-        else:
-            eligible.append(topic)
-    return eligible, skipped
+def backlog_work(repository):
+    return [
+        work_item(row, repository)
+        for row in github_pages(
+            f"repos/{repository}/issues?state=all&labels={TOPIC}&per_page=100"
+        )
+    ]
 
 
 def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
@@ -223,10 +214,26 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
     state.setdefault("topic_weeks", {})
     github_auth(config)
     repositories = repository_catalog(config)
+    scope = namespace(config, state_dir)
     prs, discovery_errors = [], []
-    for repository in discovery_repositories(config, repositories, state):
+    isolated = config.get("isolated_validation", False)
+    names = (
+        repositories
+        if isolated
+        else discovery_repositories(config, repositories, state)
+    )
+    for repository in names:
         try:
-            prs.extend(existing_work(repository))
+            if isolated:
+                prs.extend(
+                    item for item in backlog_work(repository) if identity(item, scope)
+                )
+            else:
+                prs.extend(
+                    item
+                    for item in existing_work(repository)
+                    if not IDENTITY.search(item["body"]) or identity(item, scope)
+                )
         except Exception as error:
             discovery_errors.append(
                 {"repository": repository, "error": redact(str(error))[:1000]}
@@ -242,7 +249,7 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
     inventory_path = collection / "input.json"
     if not inventory_path.exists():
         write_json(inventory_path, inventory)
-    records = update_backlog(state, inventory, prs, config.get("retry_topic_ids", []))
+    records = update_backlog(state, inventory, prs)
     if not dry_run:
         save_state(state_path, state)
     previous = [
@@ -268,85 +275,79 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
         "repair_policy": repair_policy(config),
         "isolated_validation": config.get("isolated_validation", False),
     }
-    request = None
     if records and not discovery_errors:
         triage_args = arguments(config, output / "triage", limit, seed)
         triage_args.output.mkdir(mode=0o700)
         triage_args.budget = budget
         triage_args.repositories = repositories
+        triage_args.publish_backlog = True
+        triage_args.topic_namespace = scope if isolated else "shared"
         configure_triage(triage_args, config, state_dir, week, dry_run, inventory_path)
-        queue, aggregation = triage(triage_args, records, prs, previous)
+        plans, aggregation = triage(triage_args, records, prs, previous)
         tracked = aggregation.get("tracked_topics", [])
-        if not dry_run:
-            for update in tracked:
-                if update["status"] == "recurrence_recorded":
-                    topic = update["topic"]
-                    for identifier in topic["representative_event_ids"]:
-                        state["events"][identifier] = {
-                            "topic_id": topic["id"],
-                            "existing_work_urls": update["existing_work_urls"],
-                            "comments": update["comments"],
-                        }
-                        state["backlog"].pop(identifier, None)
-            save_state(state_path, state)
-        queue, skipped = eligible_topics(
-            queue, state, week, config.get("retry_topic_ids", [])
-        )
+        by_url = {item["url"]: item for item in aggregation.get("existing_work", prs)}
+        records_path = output / "signal-records.json"
+        write_json(records_path, records)
         context = {
-            "inventory_path": str(inventory_path),
-            "records": records,
-            "aggregation": aggregation,
-            "repositories": repositories,
-            "output": str(output),
-            "state_path": str(state_path),
             "state_dir": str(state_dir),
-            "week": week,
-            "limit": limit,
-            "seed": seed,
-            "previous": previous,
+            "inventory_path": str(inventory_path),
+            "records_path": str(records_path),
+            "triage_issue": aggregation.get("triage_issue"),
+            "triage_evidence_dir": str(
+                state_dir / "issue-evidence" / config["repository"] / "triage" / week
+            ),
         }
-        if dry_run:
-            summary.update(
-                status="preview",
-                topics=[{"topic": t, "status": "planned"} for t in queue]
-                + skipped
-                + tracked,
-            )
-        else:
-            summary.update(
-                status="ready_for_repair",
-                topics=[{"topic": t, "status": "planned"} for t in queue]
-                + skipped
-                + tracked,
-            )
-            request = {
-                "config": config,
-                "context": context,
-                "queue": queue,
-                "skipped": skipped,
-                "tracked": tracked,
-            }
-        if any(item["status"] == "recurrence_pending" for item in tracked):
-            summary["status"] = "triage_incomplete"
+        summary["status"] = "preview" if dry_run else "published"
+        for update in [{"topic": topic} for topic in plans] + tracked:
+            topic = update["topic"]
+            matches = [
+                by_url[url]
+                for url in update.get("existing_work_urls", [])
+                if identity(by_url[url], scope)
+            ]
+            if not dry_run and (not update.get("existing_work_urls") or matches):
+                try:
+                    if len(matches) > 1:
+                        raise ValueError("Multiple backlog issues match this topic")
+                    update["issue_url"] = publish(
+                        config,
+                        context,
+                        topic,
+                        matches[0] if matches else None,
+                        output / "topics" / topic["id"],
+                    )
+                    if update.get("status") != "recurrence_pending":
+                        update["status"] = (
+                            "topic_updated" if matches else "topic_created"
+                        )
+                except Exception as error:
+                    update.update(
+                        status="publication_pending", error=redact(str(error))[:1000]
+                    )
+            update.setdefault("status", "planned")
+            summary["topics"].append(update)
+            if update["status"] in ("recurrence_pending", "publication_pending"):
+                summary["status"] = "triage_incomplete"
+            elif not dry_run:
+                for identifier in topic["representative_event_ids"]:
+                    state["events"][identifier] = {
+                        "topic_id": topic["id"],
+                        "existing_work_urls": [
+                            *update.get("existing_work_urls", []),
+                            *([update["issue_url"]] if update.get("issue_url") else []),
+                        ],
+                        "comments": update.get("comments", []),
+                    }
+                    state["backlog"].pop(identifier, None)
+                save_state(state_path, state)
     if summary["collection_errors"] and summary["status"] in (
-        "completed",
+        "published",
         "no_unhandled_findings",
     ):
         summary["status"] = "collection_incomplete"
     if discovery_errors:
         summary["status"] = "discovery_incomplete"
     summary.update(pending_events=len(state["backlog"]), budget=budget.snapshot())
-    if request is not None:
-        summary["repair_request"] = str(output / "repair-request.json")
-        write_json(
-            Path(summary["repair_request"]),
-            request
-            | {
-                "summary": summary,
-                "budget": budget.snapshot(),
-                "saved_at": time.time(),
-            },
-        )
     write_json(output / "triage-report.json", redact(summary))
     return summary
 

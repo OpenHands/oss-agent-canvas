@@ -293,15 +293,6 @@ def test_invalid_top_level_config_fails_before_access(name, value, monkeypatch):
         weekly.run({name: value})
 
 
-def test_same_week_attempts_are_not_replaced_and_explicit_retry_is_respected():
-    topic = {"id": "one"}
-    ledger = {"topic_weeks": {"2026-W44/one": {"topic": topic, "status": "failed"}}}
-    queue, skipped = weekly.eligible_topics([topic], ledger, "2026-W44", [])
-    assert queue == [] and skipped[0]["status"] == "already_attempted"
-    assert weekly.eligible_topics([topic], ledger, "2026-W44", ["one"])[0] == [topic]
-    assert weekly.eligible_topics([topic], ledger, "2026-W45", [])[0] == [topic]
-
-
 def test_only_explicit_repositories_are_registered_and_missing_checkouts_are_context(
     tmp_path, monkeypatch
 ):
@@ -454,6 +445,7 @@ def test_isolated_validation_does_not_pass_old_outputs_to_triage(tmp_path, monke
     monkeypatch.setattr(weekly, "github_auth", lambda c: None)
     monkeypatch.setattr(weekly, "repository_catalog", lambda c: {"Example/source": {}})
     monkeypatch.setattr(weekly, "existing_work", lambda r: pytest.fail("Read old PRs"))
+    monkeypatch.setattr(weekly, "backlog_work", lambda r: [])
     calls = []
 
     def triage(args, rows, prs, previous):

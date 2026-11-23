@@ -21,15 +21,15 @@ This PR contains workflow 1 and shared support. Workflow 2 is in the stacked rep
 PR; its thin weekly wrapper chains both workflows.
 
 1. **Discover and prioritize** — `triage_workflow.py` reads findings, updates the
-   weekly issue and existing-work comments, then saves a prioritized topic queue.
-2. **Repair and validate** — `repair_workflow.py` consumes that private handoff,
+   weekly summary and GitHub topic issues and records recurrence evidence.
+2. **Repair and validate** — `repair_workflow.py` queries eligible GitHub topic issues and
    dispatches repairs and runs the existing independent-review/revision loop.
 
 `weekly.py` runs both in order under the existing lock and shared budget. Both
 workflows share one uploaded bundle and configuration; no extra scheduler, service
 or GitHub-trigger protocol is needed. They can also run separately on the same
-worker. The handoff retains evidence references, source revisions, configuration,
-queue order and budget accounting. Only the code boundary changed.
+worker. GitHub holds topic priority and readiness. Private indexes retain the original
+Signals, trace references and execution evidence.
 
 ## From findings to PRs
 
@@ -52,14 +52,14 @@ flowchart TD
     end
     subgraph preparation["Workflow 1 — discover and prioritize"]
         triage["Form and prioritize topics — OpenHands / Luna"]
-        triage -->|Already tracked| recurrence["Comment with new evidence; skip repair"]
-        triage --> queue["Private prioritized topic handoff"]
+        triage -->|Matching work| recurrence["Record recurrence evidence"]
+        triage --> issues["GitHub topic issues with readiness and priority"]
     end
     subgraph repairs["Workflow 2 — repair and validate"]
         repair["Repair and compare — parallel OpenHands / Sol 6.1"]
         review["Independently review and rerun checks — OpenHands / Sol 6.1"]
         context["Shared topic + raw evidence"]
-        queue -->|New topics, up to the topic limit| repair
+        issues -->|Claim ready topics by priority and age| repair
         repair -->|PRs + validation results| review
         context -.-> repair
         context -.-> review
@@ -82,7 +82,7 @@ tests or replays as needed.
 | **Laminar: analyze** | Flow-1 inspects each trace selected by the Signal's trigger, filters and coverage setting. | Structured findings with trace evidence |
 | **Laminar: cluster** | Laminar groups similar finding events asynchronously within each Signal. | Recurring-pattern clusters |
 | **1. Prepare** | Python reads events and available clusters, tracks the backlog and creates compact counts/examples. Unclustered events and ambiguous origins remain visible. | Evidence indexed by a weekly issue |
-| **2. Prioritize** | Luna merges duplicate mechanisms, ranks topics P0–P3 and comments with new evidence on existing issues/PRs. Tracked topics are excluded before allocating repair slots. | Prioritized new-topic queue |
+| **2. Prioritize** | Luna merges duplicate mechanisms, ranks topics P0–P3 and comments with new evidence on existing issues/PRs. Matching backlog issues keep their readiness and human priority. | GitHub topic backlog |
 | **3. Repair and compare** | Sol diagnoses each topic, chooses repositories, implements, tests and opens or revises linked draft PRs. Later attempts receive the review feedback. | Candidate fixes and before/after evidence |
 | **4. Review** | A separate Sol agent checks topic claims against raw evidence, exact revisions, execution records and CI; reruns focused checks where useful. | Ready or draft PRs |
 
@@ -96,10 +96,12 @@ allowing prompt-cache reuse. Each review uses a separate conversation. Acceptanc
 external blockers, the attempt limit or resource limits stop the loop. The same
 frozen comparison inputs are retained.
 
-**Triage finishes before repairs start.** Existing topics consume no repair slots;
-the next new topic receives the slot. The resulting new-topic queue can then run
-in parallel. A failed recurrence comment stays pending and never triggers a
-duplicate repair. If existing-work discovery fails, no repair agents start.
+**GitHub is the backlog.** Open topic issues with the ready label and one priority
+remain eligible across runs. Repair claims the oldest issues at the highest
+priority first, subject to the topic limit. Open repair PRs, active claims and
+blocked issues prevent dispatch. The worker lock and dispatch ledger coordinate
+claims and recovery. A completed or inconclusive attempt requires an explicit
+ready label to be considered again.
 
 **Choose the right repair layer.** Agents can improve prompts, skills/plugins,
 tools/MCP configuration, hooks, agent/LLM profiles, context settings, automation
@@ -125,7 +127,7 @@ profiles. GitHub permissions must match the configured scope.
 | --- | --- |
 | Schedule | Weekly, Monday 08:00 UTC |
 | Flow-1 coverage | Separate Laminar setting: sample or all matching traces |
-| `max_topics_per_run` | 10 new topics after excluding existing work; counts topics, not PRs |
+| `max_topics_per_run` | 10 eligible topics per run, regardless of the number of PRs |
 | `max_repair_attempts` | 2 total repair attempts per topic, including the initial attempt |
 | `repair_concurrency` | Defaults to the topic limit |
 | `validation_sample_size` | 5 inputs per comparison group when available |
@@ -137,10 +139,9 @@ profiles. GitHub permissions must match the configured scope.
 
 **Issues are living briefs.** Agents explain the problem, example, prevention and
 current evidence before the data references. They rewrite their current-run brief
-as conclusions change and archive prior versions privately. In production, triage
-comments on matching existing issues/PRs with new evidence and skips their repair;
-existing descriptions remain intact. Within one dispatched topic, bounded repair
-revisions still update that run's brief and PRs.
+as conclusions change and archive prior versions privately. Triage refreshes the indexed evidence on matching topic issues and comments on
+matching issues/PRs. Repair starts from the selected topic issue. Bounded repair
+revisions update the same current brief and PRs.
 
 **Raw evidence stays private.** Issues link to authorized access for inputs,
 Signals, prompts and logs. Public explanations use sanitized summaries; credential
@@ -148,8 +149,8 @@ checks supplement agent privacy review. Public upstream work must not name or
 link private customer repositories; authorized readers retrieve the full evidence
 through a private index.
 
-**QC can start fresh.** `isolated_validation=true` with fresh state excludes earlier
-prototype outputs. It still runs repair agents and creates actual draft PRs.
+**QC can start fresh.** `isolated_validation=true` with fresh state selects topic issues within that validation run’s namespace.
+Repair still runs native agents and can create actual draft PRs.
 
 For setup and operational details, see the [runbook](README.md),
 [example configuration](weekly.example.json) and

@@ -143,7 +143,15 @@ class TopicIssue:
 
     @classmethod
     def ensure_brief(
-        cls, repository, output, evidence_root, body, title, preview=False
+        cls,
+        repository,
+        output,
+        evidence_root,
+        body,
+        title,
+        preview=False,
+        *,
+        labels=None,
     ):
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", repository):
             raise ValueError("Invalid issue repository")
@@ -177,7 +185,7 @@ class TopicIssue:
                 {
                     "title": title,
                     "body": body,
-                    "labels": [IMPROVEMENT_LABEL],
+                    "labels": labels if labels is not None else [IMPROVEMENT_LABEL],
                 },
             )
             value = json.loads(
