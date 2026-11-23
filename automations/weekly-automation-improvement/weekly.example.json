@@ -32,6 +32,7 @@
     "max_run_seconds": 600,
     "max_output_tokens": 16384
   },
+  "issue_hold_labels": [],
   "max_topics_per_run": 10,
   "max_repair_attempts": 2,
   "repair_concurrency": 10,

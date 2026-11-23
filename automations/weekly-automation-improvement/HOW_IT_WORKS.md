@@ -20,8 +20,8 @@ flowchart LR
 
 1. **Discover and prioritize** — `triage_workflow.py` reads findings, updates the
    weekly summary and GitHub topic issues and records recurrence evidence.
-2. **Repair and validate** — `repair_workflow.py` queries eligible GitHub topic issues and
-   dispatches repairs and runs the existing independent-review/revision loop.
+2. **Repair and validate** — `repair_workflow.py` queries and claims eligible GitHub
+   topic issues, then runs repairs, independent reviews and bounded revisions.
 
 `weekly.py` runs both in order under the existing lock and shared budget. Both
 workflows share one uploaded bundle and configuration; no extra scheduler, service
@@ -66,8 +66,10 @@ flowchart TD
     events -->|Unclustered findings| triage
     repair -->|No coherent fix| unresolved["Issue records remaining problem"]
     review -->|Actionable feedback, attempts left| repair
-    review -->|Accepted| ready["Ready for human review"]
-    review -->|Blocked or attempt limit| draft["Draft with explicit limitations"]
+    review -->|Accepted| ci["Verify CI on reviewed PR heads"]
+    ci -->|Green| ready["Ready for human review"]
+    ci -->|Failed, pending or unavailable| draft["Draft with explicit limitations"]
+    review -->|Blocked or attempt limit| draft
 ```
 
 **Dotted arrows show evidence access.** Both repair and review agents can inspect

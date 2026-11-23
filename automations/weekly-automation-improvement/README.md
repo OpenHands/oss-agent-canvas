@@ -208,8 +208,8 @@ An eligible issue carries the automation topic identity, `automation-improvement
 Within each priority, oldest issues go first. Removing readiness, closing the
 issue or adding `improvement-blocked` prevents dispatch. Repository labels
 such as `not ready for review` or `needs triage` also hold the issue. Add local
-conventions to `issue_hold_labels`. Active claims and
-open repair PRs also prevent dispatch. Repair previews show current selection
+conventions to `issue_hold_labels`. Active claims and open repair PRs also
+prevent dispatch. Repair previews show current selection
 without claiming issues, writing the ledger or running agents.
 
 ## Configure and run
