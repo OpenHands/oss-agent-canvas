@@ -15,16 +15,16 @@ README covers setup, operation and validation history.
    prepares compact counts/examples by automation and cluster/signature. Clusters
    are leads, not confirmed root causes. Findings with missing or ambiguous owners
    remain selectable, with candidate origins and attribution warnings.
-2. A native OpenHands triage agent, default Luna, reads a structured weekly issue
+2. A native OpenHands triage agent, default Luna 6, reads a structured weekly issue
    indexing the preparation output, raw data, previous attempts and existing PRs.
    It merges duplicates, splits independent problems and assigns P0–P3 priority to actionable topics. A topic can span automations and repositories.
 3. Discovery publishes or refreshes topic issues. Repair reads GitHub, claims
    eligible issues in priority and age order, and dispatches agents in parallel.
-4. Each native repair agent, default Sol 6.1, owns its topic end to end: diagnosis,
+4. Each native repair agent, default Sol 6.2, owns its topic end to end: diagnosis,
    repository selection, edits, tests, commits, issues and PRs. It uses normal
    OpenHands tools and GitHub access. There is no patch-proposal protocol or separate
    publisher in the weekly path. One topic may require several related PRs.
-5. A separate native agent reviews current diffs, exact revisions, CI and actual
+5. A separate native agent, default Sol 6.2, reviews current diffs, exact revisions, CI and actual
    execution records. It checks the complete fix across repositories, records a
    verdict on the issues/PRs, and makes sufficiently evidenced PRs ready for review.
    Failed, inconclusive, unsafe or dependency-blocked changes remain drafts.

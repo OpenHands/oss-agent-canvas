@@ -655,7 +655,7 @@ def argument_parser():
     parser.add_argument("--analyzer", choices=("luna", "flow1"))
     parser.add_argument("--signal-id", default=os.environ.get("LMNR_SIGNAL_ID"))
     parser.add_argument("--model", default="openai/gpt-6-luna")
-    parser.add_argument("--coordinator", default="openai/gpt-6.1-sol")
+    parser.add_argument("--coordinator", default="openai/gpt-6.2-sol")
     parser.add_argument("--repair-agent-profile")
     parser.add_argument("--effort", choices=("none", "low", "medium"), default="low")
     parser.add_argument("--source-config", type=Path)

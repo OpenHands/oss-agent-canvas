@@ -490,7 +490,7 @@ def run_conversation(
         phase + "_agent_profile", config.get("repair_agent_profile")
     )
     model = config.get(
-        phase + "_model", config.get("repair_model", "openai/gpt-6.1-sol")
+        phase + "_model", config.get("repair_model", "openai/gpt-6.2-sol")
     )
     retained = session is not None
     session = session if retained else {}
