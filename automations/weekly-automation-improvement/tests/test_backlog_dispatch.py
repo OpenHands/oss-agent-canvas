@@ -277,3 +277,28 @@ def test_selected_issue_resolves_private_signal_records(gh, monkeypatch):
         issue_for(row["html_url"], gh.state_dir, identifier, output).evidence_root
         == selected.evidence_root
     )
+
+
+def test_chained_budget_exhaustion_keeps_ready_issue_for_standalone_repair(
+    gh, monkeypatch
+):
+    import weekly
+
+    gh.issue("Example/source", 1, 0)
+    gh.config["max_inference_cost_usd"] = 0.1
+
+    def prepare(config, state_dir, *, budget, **kwargs):
+        budget.record(0.1)
+        return {"status": "published", "output": str(state_dir / "triage")}
+
+    monkeypatch.setattr(weekly, "prepare", prepare)
+    monkeypatch.setattr(parallel, "launch", lambda *a: pytest.fail("budget reset"))
+    result = weekly.run(gh.config)
+    assert result["status"] == "budget_exhausted"
+    assert result["budget"]["reported_inference_cost_usd"] == 0.1
+    assert result["topics"][0]["status"] == "deferred_budget"
+    assert gh.writes == []
+    assert (
+        repair_workflow.run(gh.config, dry_run=True)["topics"][0]["status"]
+        == "selected"
+    )
