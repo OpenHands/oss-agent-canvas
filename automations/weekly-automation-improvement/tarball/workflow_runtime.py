@@ -61,7 +61,12 @@ def run(config, run_locked, *, dry_run=False, limit=3, seed=None):
         except BlockingIOError:
             return {"status": "skipped_overlap"}
         return run_locked(
-            config, state_dir, dry_run=dry_run, limit=limit, seed=seed, budget=budget
+            config | {"_workflow_lock_fd": lock},
+            state_dir,
+            dry_run=dry_run,
+            limit=limit,
+            seed=seed,
+            budget=budget,
         )
     finally:
         os.close(lock)

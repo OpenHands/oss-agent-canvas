@@ -169,7 +169,7 @@ def test_normal_prompt_delegates_full_workflow_without_patch_or_repo_restriction
     for text in (repair, review):
         assert "search open issues and PRs before creating duplicates" in text
         assert (
-            "Existing human-authored and previous-run issue descriptions must remain unchanged"
+            "Preserve human-authored content and earlier briefs on other issues."
             in text
         )
         assert "BOTH this topic's marker and this run's marker" in text

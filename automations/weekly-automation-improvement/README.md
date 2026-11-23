@@ -1,7 +1,6 @@
 # Weekly Automation Improvement
 
-A standalone prototype for OSS-14275: persisted Flow-1 findings become a prioritized
-queue of repair topics. Native OpenHands agents investigate and repair the underlying
+Persisted Flow-1 findings become prioritized GitHub topic issues. Native OpenHands agents investigate and repair the underlying
 problem, including SDK bugs, and open PRs with before/after evidence. An independent
 agent reviews the actual changes and execution records. Humans merge and deploy.
 
@@ -12,16 +11,15 @@ README covers setup, operation and validation history.
 ## Weekly path
 
 1. Laminar runs Flow-1 on matching finished automation traces according to its sampling
-   configuration. Python reads the persisted Signals, tracks a private backlog and
+   configuration. Python reads the persisted Signals, retains unprocessed findings privately and
    prepares compact counts/examples by automation and cluster/signature. Clusters
    are leads, not confirmed root causes. Findings with missing or ambiguous owners
    remain selectable, with candidate origins and attribution warnings.
 2. A native OpenHands triage agent, default Luna, reads a structured weekly issue
    indexing the preparation output, raw data, previous attempts and existing PRs.
-   It merges duplicates, splits independent problems and ranks one finite queue
-   globally by P0–P3 priority. A topic can span automations and repositories.
-3. Python validates references and dispatches the highest-priority topics once,
-   in parallel. A failed attempt does not cause a replacement topic to be selected.
+   It merges duplicates, splits independent problems and assigns P0–P3 priority to actionable topics. A topic can span automations and repositories.
+3. Discovery publishes or refreshes topic issues. Repair reads GitHub, claims
+   eligible issues in priority and age order, and dispatches agents in parallel.
 4. Each native repair agent, default Sol 6.1, owns its topic end to end: diagnosis,
    repository selection, edits, tests, commits, issues and PRs. It uses normal
    OpenHands tools and GitHub access. There is no patch-proposal protocol or separate
@@ -56,18 +54,16 @@ unresolved PRs draft. No replacement topics are dispatched to fill a quota.
 
 ## Issues and evidence
 
-Triage completes before repair dispatch. It checks open issues/PRs, including
-human-created work, and previous self-improvement work even if closed. For a
-matching problem, the triage agent posts an idempotent recurrence comment with new
-Signal/trace references and a private evidence catalog; it leaves descriptions
-unchanged and skips repair. These topics do not consume `max_topics_per_run`:
-the next eligible new topics fill the queue, then repairs run in parallel. Comment
-failures remain pending without launching duplicate repairs. Discovery failures
-prevent dispatch rather than treating unavailable history as absent work.
+Discovery inspects open issues and PRs and prior self-improvement work. It posts
+idempotent recurrence comments on matching work and refreshes private evidence
+for matching backlog issues. A matching ready topic stays eligible. Existing
+human work receives evidence without being added to the backlog. New topics
+start in the configured home repository. A topic can span several automations
+and repair repositories.
 
-Repair agents also check for existing work as a safeguard against changes after
-triage. For a newly selected problem, create a focused issue and cross-reference
-related work. Keep one main issue per affected repo.
+Repair starts from the selected issue. Agents maintain its current brief, check
+for newly opened work before making changes, and create related issues only
+where needed in another repository.
 Repository issues link related work when visibility permits; private relationships
 remain in the private evidence index. Each PR links its local
 issue and describes dependencies and any required merge/release order. One issue
@@ -79,15 +75,14 @@ decisions**. The opening sections explain expected versus observed behavior,
 impact, a sanitized concrete example, the proposed prevention and current results
 without requiring private-data access. Agents rewrite these sections after
 diagnosis, validation and review, correcting stale claims instead of appending
-competing summaries. Agents update a new issue's body or their own current-run
-brief comment on a reused issue; descriptions from humans or earlier runs remain
-unchanged. New issues include the `automation-improvement` label, stable topic
+competing summaries. Agents update the automation-owned topic brief in place and preserve human
+text and historical evidence. In other repositories they may maintain one owned
+brief comment on a matching existing issue. New issues include the `automation-improvement` label, stable topic
 marker and run marker; reused issues carry those markers in the brief comment.
 Discovery checks body or comment ownership. Both distributed issue-triage
 workers skip these managed issues before reading comments or dispatching work.
 
-Public issues contain safe summaries, source/trace references and private evidence
-catalogs. Original inputs, prompts, Signal payloads, SDK events/completions and logs
+Public issues contain safe summaries and opaque private evidence references. Original inputs, prompts, Signal payloads, SDK events/completions and logs
 remain in owner-only worker files. Immutable content-addressed catalogs are indexed
 under `state_dir/issue-evidence/<owner>/<repository>/<topic>/`.
 `evidence_location` tells authorized readers how to reach the worker. Public GitHub
@@ -190,36 +185,28 @@ adapter or run the legacy publisher.
 
 ## Run the two workflows
 
-The extraction passes 347 pipeline tests; the first workflow passes 85 tests
-without repair code installed. Seven deterministic comparisons against the prior
-combined workflow match queue decisions, state, statuses and cost accounting
-(normal, preview, collection gap, pending recurrence, discovery failure, exhausted
-budget and unknown cost). These checks exercise the real orchestration with
-external agent/network boundaries stubbed; they do not generate new repair PRs.
-
-The workflows share one tarball and configuration. `weekly.py` keeps the existing
-weekly execution: preparation and triage, followed by repair and validation under
-one lock and budget. To run the stages separately on the same worker:
+The workflows use one bundle, one config and one worker state directory. They
+can run independently:
 
 ```bash
 .venv/bin/python triage_workflow.py --config /private/config.json --input /private/inventory.json
-.venv/bin/python repair_workflow.py --request /private/state/runs/RUN_ID/repair-request.json
+.venv/bin/python repair_workflow.py --config /private/config.json --dry-run
+.venv/bin/python repair_workflow.py --config /private/config.json
 ```
 
-The first command creates/updates the same weekly topic issue and recurrence
-comments, writes `triage-report.json` and returns the private `repair_request` path.
-It does not dispatch repairs. The second reads that frozen ordered queue and its
-existing evidence/configuration, applies the same topic/concurrency limits and
-runs the existing repair, independent review and bounded revision logic. It writes
-`weekly-report.json`. Already tracked topics remain excluded before repair slots
-are allocated; per-topic repair issues are still created by the repair agents.
+Triage writes `triage-report.json`. Repair discovers open topics from GitHub and
+writes `repair-report.json`, including selection, outcomes and cost. Repair can
+start days later with its own configured cost and duration limits. `weekly.py`
+chains both phases under one lock and carries triage spend and elapsed time
+into repair. Its aggregate receipt is `weekly-report.json`.
 
-The handoff is owner-only and includes the original budget snapshot. Running the
-second workflow separately retains triage spend, unknown costs and elapsed time,
-including time between stages. Both entrypoints use `weekly.lock` and the same
-ledger; a repeated completed handoff returns its report without dispatching again.
-A dry-run creates no repair handoff and preserves the existing no-write preview.
-No live deployment, Signal coverage, agent instructions or acceptance rules change.
+An eligible issue carries the automation topic identity, `automation-improvement`,
+`improvement-topic`, `improvement-ready` and exactly one `priority:P0` through
+`priority:P3`. Edit priority labels in GitHub to reorder future selections.
+Within each priority, oldest issues go first. Removing readiness, closing the
+issue or adding `improvement-blocked` prevents dispatch. Active claims and
+open repair PRs also prevent dispatch. Repair previews show current selection
+without claiming issues, writing the ledger or running agents.
 
 ## Configure and run
 
@@ -229,7 +216,8 @@ private state directory, native automation API and GitHub secret name. Register
 relevant checkouts under `repositories`. Upstream contributions are allowed by
 default when authorized; set `repair_scope=customer_stack` for customer-only repairs.
 The agent must report missing prerequisites rather than clone an extra repository.
-Ensure `automation-improvement` exists in repositories where repairs will be opened.
+The home repository credential needs issue and label write access. Ensure
+`automation-improvement` is available in repositories where repairs will be opened.
 
 Configuration repairs must use the actual settings of the cited runs and their
 source of truth. Retain effective baseline/candidate settings privately. A profile
@@ -245,7 +233,7 @@ Top-level settings:
   repairs to the home repository and explicit `repositories` entries.
 
 - `max_topics_per_run`: default **10**, maximum topic investigations selected once
-  from the ranked queue. Revisions do not consume another topic slot; the limit
+  from eligible GitHub issues. Revisions do not consume another topic slot; the limit
   counts topics, not successful repairs or PRs.
 - `max_repair_attempts`: default **2**, total repair attempts per topic, including
   the initial attempt. **1** disables feedback revisions. Each attempted repair is
@@ -266,18 +254,15 @@ Top-level settings:
   10800 seconds). Parallel workers inherit the remaining allowance at dispatch;
   costs are reconciled when they finish. Already-running siblings can exceed the
   aggregate dollar threshold. This is not a strict shared billing cap.
-- `retry_topic_ids`: explicit reconsideration of failed topics without tracked
-  issues/PRs, including an attempt already dispatched this week. It does not
-  bypass existing-work exclusion. Prior conclusions remain visible.
-- `isolated_validation`: default **false**. Quality-control runs set it true with
-  a fresh private state directory: previous prototype issues/PRs and conclusions
-  are excluded from triage context, and repair agents create fresh outputs without
-  reading or citing prior validation work. This does not change production reuse.
+- `isolated_validation`: default **false**. Set true with fresh private state
+  for quality-control runs. This scopes discovery and dispatch to topics created
+  by that validation configuration. Reuse that state directory to verify
+  recurrence and repeat-run behavior.
 
 Migrate `max_prs_per_run` to `max_topics_per_run`; the old setting fails explicitly.
 Legacy publisher/revision/existing-PR-comparison settings no longer control the
-weekly path. Triage sees prior unsuccessful approaches; tracked work receives
-recurrence comments instead of another repair agent. Bounded revisions within
+weekly path. Triage sees prior unsuccessful approaches and adds recurrence
+evidence to existing work. Bounded revisions within
 one current run remain controlled by `max_repair_attempts`.
 
 The existing GitHub worker credential needs issue/PR and push access in affected
@@ -308,13 +293,25 @@ count or total collected Signals. The YAML schedules Mondays at 08:00 UTC.
 
 ## State and recovery
 
-The single-worker weekly lock prevents overlapping invocations. Python records
-selected topic ownership before dispatch and records remote URLs as native events
-arrive. Completed reports can contain arrays of issue/PR resources across repos.
-Discovery checks actual GitHub objects and topic markers, including links captured
-outside the starting catalog. Interrupted work stays visible for reconciliation;
-there is no automatic rerun/filler loop. Lower-priority deferred findings remain
-pending. Retain the worker state directory when replacing its VM.
+Run both workflows on the same worker with the same `state_dir`. The worker lock
+coordinates selection and dispatch and is retained by running repair processes.
+The controller adds `improvement-in-progress`, removes `improvement-ready` and
+records the assignment before launching the repair. GitHub labels display
+ownership. They do not coordinate independent workers.
+
+At the end of an attempt the controller records the outcome and clears the
+claim. An interrupted coordinator can leave `improvement-in-progress` in place.
+Inspect `state.json`, the worker's `process.json` and `topic-report.json`, native
+conversation status and linked GitHub work before clearing a stale claim.
+Reconcile any open repair PR first. To deliberately retry an eligible issue,
+remove any stale in-progress or blocked label and add `improvement-ready`.
+Prior attempts remain in the private receipts and linked evidence catalogs.
+Triage recurrence does not requeue failed or inconclusive repairs.
+
+Keep `state_dir` and its private indexes across worker replacements. Missing or
+unreadable evidence prevents dispatch for the affected issue. Retaining the
+GitHub issue and its opaque index reference lets an authorized worker retrieve
+the original findings and traces without a triage handoff.
 
 The first attempt's execution files remain at the worker root; later attempts
 live under `attempts/002/`, `attempts/003/`, and so on. Each attempt has an immutable

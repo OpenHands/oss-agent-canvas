@@ -59,12 +59,13 @@ def worker(request_path):
 
 
 def launch(config, context, topic, budget, root):
-    root.mkdir(parents=True, mode=0o700)
+    root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    lock = config.get("_workflow_lock_fd")
     path = root / "request.json"
     write_json(
         path,
         {
-            "config": config,
+            "config": {k: v for k, v in config.items() if k != "_workflow_lock_fd"},
             "context": context,
             "topic": topic,
             "budget": {
@@ -76,7 +77,9 @@ def launch(config, context, topic, budget, root):
     with (root / "worker.log").open("x") as log:
         (root / "worker.log").chmod(0o600)
         process = subprocess.Popen(
-            [sys.executable, str(Path(__file__).resolve()), str(path)],
+            [sys.executable, str(Path(__file__).resolve()), str(path)]
+            + ([str(lock)] if lock is not None else []),
+            pass_fds=(lock,) if lock is not None else (),
             stdout=log,
             stderr=subprocess.STDOUT,
             start_new_session=True,
@@ -95,6 +98,7 @@ def launch(config, context, topic, budget, root):
 
 
 def execute(config, context, queue, state, budget):
+    from backlog_dispatch import claim, finish
     from triage_workflow import save_state
 
     output, state_path = Path(context["output"]), Path(context["state_path"])
@@ -111,8 +115,12 @@ def execute(config, context, queue, state, budget):
     ]
     stopped = None
 
-    def record(topic, outcome, root):
-        key = context["week"] + "/" + topic["id"]
+    def ledger_key(topic):
+        run_id = output.name if topic.get("issue_url") else context["week"]
+        return run_id + "/" + topic["id"]
+
+    def record(topic, outcome, root, *, claimed=True):
+        key = ledger_key(topic)
         resources = outcome.get("resources", [])
         state["topic_weeks"][key] = {
             "topic": topic,
@@ -130,10 +138,21 @@ def execute(config, context, queue, state, budget):
         ]
         if prs:
             for identifier in topic["representative_event_ids"]:
-                state["events"][identifier] = {"topic_id": topic["id"], "pr_urls": prs}
+                state["events"].setdefault(identifier, {}).update(
+                    topic_id=topic["id"], pr_urls=prs
+                )
                 state["backlog"].pop(identifier, None)
         replace_json(root / "topic-report.json", outcome)
         save_state(state_path, state)
+        if claimed and topic.get("issue_url"):
+            try:
+                finish(context, topic, outcome, root)
+            except Exception as error:
+                outcome["claim_release_error"] = redact(str(error))[:1000]
+                outcome["status"] = "review_incomplete"
+                state["topic_weeks"][key]["status"] = outcome["status"]
+                replace_json(root / "topic-report.json", outcome)
+                save_state(state_path, state)
         outcomes.append(outcome)
 
     try:
@@ -146,7 +165,27 @@ def execute(config, context, queue, state, budget):
                     break
                 topic = pending.pop(0)
                 root = output / "workers" / topic["id"]
-                key = context["week"] + "/" + topic["id"]
+                claimed = False
+                if topic.get("issue_url"):
+                    try:
+                        claimed = claim(config, context, topic, root)
+                    except Exception as error:
+                        root.mkdir(parents=True, mode=0o700, exist_ok=True)
+                        record(
+                            topic,
+                            {
+                                "topic": topic,
+                                "status": "review_incomplete",
+                                "error": redact(str(error))[:2000],
+                            },
+                            root,
+                            claimed=False,
+                        )
+                        continue
+                    if not claimed:
+                        outcomes.append({"topic": topic, "status": "issue_changed"})
+                        continue
+                key = ledger_key(topic)
                 state["topic_weeks"][key] = {
                     "topic": topic,
                     "status": "dispatched",
@@ -165,6 +204,7 @@ def execute(config, context, queue, state, budget):
                             "error": redact(str(error))[:2000],
                         },
                         root,
+                        claimed=claimed,
                     )
                     continue
                 active.append(job)
@@ -172,6 +212,7 @@ def execute(config, context, queue, state, budget):
                     {
                         "topic_id": topic["id"],
                         "priority": topic["priority"],
+                        "issue_url": topic.get("issue_url"),
                         "pid": job["process"].pid,
                     }
                 )
@@ -277,4 +318,6 @@ def execute(config, context, queue, state, budget):
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 2:
+        os.set_inheritable(int(sys.argv[2]), False)
     worker(Path(sys.argv[1]))

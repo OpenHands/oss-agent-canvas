@@ -1,21 +1,31 @@
-import argparse
+import datetime as dt
 import json
+import uuid
 from pathlib import Path
 
 from attribution import automation_ids as origin_automations
-from budget import RunBudget
+from backlog_dispatch import issue_for, selection
 from cohorts import collect as collect_cohort, topic_records
 from common import read_json, redact, write_json
 from events import hydrate_events
 from laminar import Laminar
 from repair_policy import resolve as repair_policy
 from sources import github_auth, native_request
-from triage_workflow import arguments, eligible_topics
-from workflow_runtime import callback, run as run_workflow
+from triage_workflow import arguments, repository_catalog, week_key
+from workflow_runtime import main, run as run_workflow
 
 
 def prepare_topic(config, context, topic, root):
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    if topic.get("issue_url"):
+        issue = issue_for(topic["issue_url"], context["state_dir"], topic["id"], root)
+        source = json.loads(issue.read_artifact(topic["input_reference"]))
+        context = context | {
+            "inventory_path": source["inventory_path"],
+            "records": read_json(Path(source["records_path"]), 32_000_000),
+            "aggregation": {"triage_issue": source["triage_issue"]},
+            "triage_evidence_dir": source["triage_evidence_dir"],
+        }
     inventory = read_json(Path(context["inventory_path"]), 32_000_000)
     by_id = {record["event"]["id"]: record for record in context["records"]}
     selected = [by_id[identifier] for identifier in topic["representative_event_ids"]]
@@ -76,7 +86,9 @@ def prepare_topic(config, context, topic, root):
             {a for r in context["records"] for a in origin_automations(r)}
         ),
         "triage_issue": context["aggregation"]["triage_issue"],
-        "triage_evidence_dir": str(
+        "topic_issue_url": topic.get("issue_url"),
+        "triage_evidence_dir": context.get("triage_evidence_dir")
+        or str(
             Path(context["state_dir"])
             / "issue-evidence"
             / config["repository"]
@@ -97,68 +109,64 @@ def prepare_topic(config, context, topic, root):
     }
 
 
-def run_locked(request_path, budget):
+def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
     from parallel import execute
 
-    request = read_json(request_path, 64_000_000)
-    config, context = request["config"], request["context"]
-    output = Path(context["output"])
-    report = output / "weekly-report.json"
-    if report.exists():
-        return read_json(report, 32_000_000)
-    state = read_json(Path(context["state_path"]), 32_000_000)
-    queue, skipped = eligible_topics(
-        request["queue"], state, context["week"], config.get("retry_topic_ids", [])
+    github_auth(config)
+    now = dt.datetime.now(dt.UTC)
+    output = (
+        state_dir
+        / "runs"
+        / (now.strftime("%Y%m%dT%H%M%SZ") + "-repair-" + uuid.uuid4().hex[:8])
     )
-    execution, state = execute(config, context, queue, state, budget)
-    summary = request["summary"]
-    tracked = request["tracked"]
-    summary.update(
-        status=execution["status"],
-        topics=execution["outcomes"] + request["skipped"] + skipped + tracked,
-        execution={k: v for k, v in execution.items() if k != "outcomes"},
-    )
-    if any(item["status"] == "recurrence_pending" for item in tracked):
-        summary["status"] = "triage_incomplete"
-    if summary["collection_errors"] and summary["status"] in (
-        "completed",
-        "no_unhandled_findings",
-    ):
-        summary["status"] = "collection_incomplete"
-    summary.update(pending_events=len(state["backlog"]), budget=budget.snapshot())
-    write_json(report, redact(summary))
+    output.mkdir(parents=True, mode=0o700)
+    state_path = state_dir / "state.json"
+    state = read_json(state_path, 32_000_000) if state_path.exists() else {}
+    for key in ("events", "backlog", "topic_weeks"):
+        state.setdefault(key, {})
+    context = {
+        "output": str(output),
+        "state_path": str(state_path),
+        "state_dir": str(state_dir),
+        "week": week_key(now),
+        "limit": limit,
+        "seed": seed,
+        "repositories": repository_catalog(config),
+        "repair_policy": repair_policy(config),
+        "previous": list(state["topic_weeks"].values()),
+    }
+    queue, excluded = selection(config, context, state)
+    if dry_run:
+        count = config.get("max_topics_per_run", 10)
+        execution = {
+            "status": "preview",
+            "started": [],
+            "outcomes": [
+                {
+                    "topic": topic,
+                    "status": "selected" if n < count else "deferred_topic_limit",
+                }
+                for n, topic in enumerate(queue)
+            ],
+        }
+    else:
+        execution, _ = execute(config, context, queue, state, budget)
+    summary = {
+        "status": execution["status"],
+        "output": str(output),
+        "topics": execution["outcomes"] + excluded,
+        "execution": {
+            key: value for key, value in execution.items() if key != "outcomes"
+        },
+        "budget": budget.snapshot(),
+    }
+    write_json(output / "repair-report.json", redact(summary))
     return summary
 
 
-def run(request_path):
-    request_path = Path(request_path).expanduser().resolve()
-    request = read_json(request_path, 64_000_000)
-
-    def execute(config, state_dir, *, budget, **kwargs):
-        github_auth(config)
-        return run_locked(
-            request_path, RunBudget.restore(request["budget"], request["saved_at"])
-        )
-
-    return run_workflow(request["config"], execute)
-
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--request", required=True, type=Path)
-    args = parser.parse_args()
-    from common import encode
-
-    try:
-        result = run(args.request)
-        print(encode(redact(result)))
-        if result["status"] in ("partial_failure", "collection_incomplete"):
-            raise ValueError("Weekly run incomplete; inspect weekly-report.json")
-    except Exception:
-        callback("FAILED")
-        raise
-    callback("COMPLETED")
+def run(config, *, dry_run=False, limit=3, seed=None):
+    return run_workflow(config, run_locked, dry_run=dry_run, limit=limit, seed=seed)
 
 
 if __name__ == "__main__":
-    main()
+    main(run)
