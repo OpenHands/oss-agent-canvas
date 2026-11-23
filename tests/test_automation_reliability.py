@@ -40,6 +40,7 @@ class ReviewerReliabilityTests(unittest.TestCase):
             with self.subTest(path=path):
                 store = {}
                 created = []
+                steps = []
                 initial = uuid5(NAMESPACE_URL, 'automation:repo:pr:1')
                 key = f'agent-conversation-{initial}'
                 store[key] = {'conversation_id': str(initial), 'delivery': 'sha1', 'head': 'sha1'}
@@ -52,6 +53,12 @@ class ReviewerReliabilityTests(unittest.TestCase):
 
                     def update_secrets(self, secrets):
                         pass
+
+                    def send_message(self, prompt):
+                        steps.append(('message', prompt))
+
+                    def run(self, *, blocking):
+                        steps.append(('run', blocking))
 
                     def close(self):
                         pass
@@ -76,7 +83,7 @@ class ReviewerReliabilityTests(unittest.TestCase):
                     return id == initial
 
                 namespace = {
-                    'uuid5': uuid5, 'UUID': UUID, 'NAMESPACE_URL': NAMESPACE_URL,
+                    'uuid5': uuid5, 'UUID': UUID, 'NAMESPACE_URL': NAMESPACE_URL, 'Path': Path,
                     '_CONVERSATION_KEY_PREFIX': 'agent-conversation-',
                     '_kv_request': lambda key, method, value=None: (
                         store.get(key) if method == 'GET' else store.__setitem__(key, value)
@@ -94,15 +101,70 @@ class ReviewerReliabilityTests(unittest.TestCase):
                 dispatcher = types.SimpleNamespace(automation_id='automation', _workspace=object(),
                     agent_url='http://agent', api_key='key', profile_id=UUID(int=1), _secrets={})
                 dispatcher._deliver_once = types.MethodType(load_function(path, '_deliver_once', namespace), dispatcher)
-                result = deliver(dispatcher, 'repo:pr:1', 'sha1', 'review', head='sha1')
+                path_kwargs = {}
+                if 'github-pr-reviewer-events' in path.parts:
+                    destination = Path('/workspace/staging/publish.py')
+                    path_kwargs['publisher_path'] = destination
+                    dispatcher._upload_publisher = lambda id, dest: steps.append(('upload', id, dest))
+                result = deliver(dispatcher, 'repo:pr:1', 'sha1', 'review', head='sha1', **path_kwargs)
                 replacement = uuid5(NAMESPACE_URL, f'{initial}:replacement')
                 self.assertEqual(result['conversation_id'], str(replacement))
                 self.assertEqual(result['disposition'], 'created')
                 self.assertEqual(store[key]['conversation_id'], str(replacement))
                 self.assertFalse(hasattr(created[0], "max_iterations"))
-                again = deliver(dispatcher, 'repo:pr:1', 'sha1', 'review', head='sha1')
+                if path_kwargs:
+                    self.assertFalse(hasattr(created[0], 'initial_message'))
+                    self.assertEqual(steps, [
+                        ('upload', replacement, destination), ('message', 'review'), ('run', False)
+                    ])
+                again = deliver(dispatcher, 'repo:pr:1', 'sha1', 'review', head='sha1', **path_kwargs)
                 self.assertEqual(again['disposition'], 'in_progress')
                 self.assertEqual(len(created), 1)
+                self.assertEqual(len(steps), 3 if path_kwargs else 0)
+
+    def test_event_review_upload_failure_leaves_turn_unsent(self):
+        path = ROOT / 'plugins/github-pr-reviewer-events/scripts/agent_conversation.py'
+        steps = []
+
+        def refuse_upload(id, destination):
+            steps.append('upload')
+            raise RuntimeError('upload rejected')
+
+        class HTTPStatusError(Exception):
+            response = types.SimpleNamespace(status_code=404)
+
+        def not_found(*args, **kwargs):
+            raise HTTPStatusError()
+
+        conversation = types.SimpleNamespace(
+            send_message=lambda prompt: steps.append('message'),
+            run=lambda **kwargs: steps.append('run'),
+            close=lambda: steps.append('close'),
+            state=types.SimpleNamespace(execution_status='idle'),
+            update_secrets=lambda secrets: steps.append('secrets'),
+        )
+        remote = types.SimpleNamespace(
+            attach=not_found,
+            create=lambda *args, **kwargs: conversation,
+        )
+        deliver = load_function(path, '_deliver_once', {
+            'UUID': UUID, 'Path': Path, 'RemoteConversation': remote,
+            'httpx': types.SimpleNamespace(HTTPStatusError=HTTPStatusError),
+            'LocalWorkspace': lambda **kwargs: kwargs,
+            'StartConversationRequest': lambda **kwargs: kwargs,
+            'automation_conversation_kwargs': lambda **kwargs: {},
+            'ConversationExecutionStatus': types.SimpleNamespace(RUNNING='running'),
+        })
+        dispatcher = types.SimpleNamespace(
+            _workspace=object(), profile_id=UUID(int=1), _secrets={},
+            _upload_publisher=refuse_upload,
+        )
+        for attach in (not_found, lambda *args, **kwargs: conversation):
+            remote.attach = attach
+            steps.clear()
+            with self.assertRaisesRegex(RuntimeError, 'upload rejected'):
+                deliver(dispatcher, UUID(int=2), 'review', None, False, False, Path('/workspace/publish.py'))
+            self.assertEqual(steps, ['upload', 'close'])
 
     def test_410_during_secret_update_rotates_runtime(self):
         path = ROOT / 'plugins/github-pr-reviewer/scripts/agent_conversation.py'

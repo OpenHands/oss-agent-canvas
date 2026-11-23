@@ -2,6 +2,8 @@
 
 import json
 import os
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -9,12 +11,8 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 import httpx
 from openhands.sdk import RemoteConversation
 from openhands.sdk.automation import automation_conversation_kwargs
-from openhands.sdk.conversation.request import (
-    SendMessageRequest,
-    StartConversationRequest,
-)
+from openhands.sdk.conversation.request import StartConversationRequest
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.llm.message import TextContent
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
 _CONVERSATION_KEY_PREFIX = "agent-conversation-"
@@ -94,6 +92,25 @@ class AgentConversationDispatcher:
         assert self._workspace is not None
         return self._workspace.__exit__(*args)
 
+    def _upload_publisher(self, conversation_id: UUID, destination: Path) -> None:
+        with RemoteWorkspace(
+            host=self.agent_url,
+            api_key=self.api_key,
+            working_dir="/workspace",
+            runtime_conversation_id=conversation_id,
+        ) as runtime:
+            result = runtime.file_upload(
+                Path(__file__).with_name("review_publisher.py"), destination
+            )
+            if not result.success:
+                raise RuntimeError("Could not stage the review publisher in the conversation")
+            with TemporaryDirectory() as temp:
+                stage = Path(temp) / "review.json"
+                stage.write_text("{}\n", encoding="utf-8")
+                result = runtime.file_upload(stage, destination.with_suffix(".json"))
+            if not result.success:
+                raise RuntimeError("Could not prepare the review body file in the conversation")
+
     def _deliver_once(
         self,
         conversation_id: UUID,
@@ -101,6 +118,7 @@ class AgentConversationDispatcher:
         metadata: dict[str, str | int] | None,
         same_delivery: bool,
         same_head: bool,
+        publisher_path: Path,
     ) -> str:
         try:
             conversation = RemoteConversation.attach(
@@ -117,9 +135,6 @@ class AgentConversationDispatcher:
                     conversation_id=conversation_id,
                     agent_profile_id=self.profile_id,
                     secrets=self._secrets,
-                    initial_message=SendMessageRequest(
-                        content=[TextContent(text=prompt)], run=True
-                    ),
                     **automation_conversation_kwargs(metadata=metadata),
                 ),
                 visualizer=None,
@@ -127,7 +142,12 @@ class AgentConversationDispatcher:
             disposition = "created"
 
         try:
-            if disposition == "resumed":
+            if disposition == "created":
+                # An initial_message can start the agent before its helper is available.
+                self._upload_publisher(conversation_id, publisher_path)
+                conversation.send_message(prompt)
+                conversation.run(blocking=False)
+            else:
                 running = (
                     conversation.state.execution_status
                     == ConversationExecutionStatus.RUNNING
@@ -146,6 +166,7 @@ class AgentConversationDispatcher:
                         conversation.state.execution_status
                         == ConversationExecutionStatus.ERROR
                     ):
+                        self._upload_publisher(conversation_id, publisher_path)
                         conversation.update_secrets(self._secrets)
                         conversation.send_message(prompt)
                         conversation.run(blocking=False)
@@ -153,6 +174,7 @@ class AgentConversationDispatcher:
                     else:
                         disposition = "deduplicated"
                 else:
+                    self._upload_publisher(conversation_id, publisher_path)
                     conversation.update_secrets(self._secrets)
                     conversation.send_message(prompt)
                     conversation.run(blocking=False)
@@ -167,6 +189,8 @@ class AgentConversationDispatcher:
         prompt: str,
         head: str = "",
         metadata: dict[str, str | int] | None = None,
+        *,
+        publisher_path: Path,
     ) -> dict[str, str]:
         """Deliver one revision of `subject`, deduping a repeated head.
 
@@ -197,7 +221,7 @@ class AgentConversationDispatcher:
                 same_delivery = same_head = False
             try:
                 disposition = self._deliver_once(
-                    conversation_id, prompt, metadata, same_delivery, same_head
+                    conversation_id, prompt, metadata, same_delivery, same_head, publisher_path
                 )
                 break
             except httpx.HTTPStatusError as exc:

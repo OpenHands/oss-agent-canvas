@@ -1,10 +1,13 @@
 """Select requested PR heads and delegate each review to a sandboxed agent."""
 
+import hashlib
 import json
 import os
 import re
+import shlex
 import sys
 from functools import cached_property
+from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import quote
 
@@ -247,7 +250,7 @@ class PullRequestReviewer(GitHubRepository):
             return pr if (author or "").lower() == self.trigger_reviewer else None
         return None
 
-    def _prompt(self, pr, trigger, label=None, delivery_key=None):
+    def _prompt(self, pr, trigger, label=None, delivery_key=None, *, publisher_path):
         number = pr["number"]
         sha = pr["head"]["sha"]
         token = self.token_name
@@ -271,6 +274,17 @@ class PullRequestReviewer(GitHubRepository):
                 f"latest review request for `{self.trigger_reviewer}` "
                 f"event {trigger.get('id', '?')} at {trigger.get('created_at', '?')}"
             )
+        publish_command = f'GH_TOKEN="${{{token}}}" ' + shlex.join(
+            ["python3", str(publisher_path), self.repository, str(number), sha]
+        )
+        publication = (
+            f"Stage the complete native review as one JSON object in `{publisher_path.with_suffix('.json')}` "
+            f"with `body`, `event`, `commit_id` equal to `{sha}`, and optional `comments`. "
+            "Write the JSON file completely before publishing; do not read its contents into a shell argument. "
+            "The body is the assessment, disclosure "
+            f"and verdict together, not a path. Submit it only with `{publish_command}`. "
+            "Do not use direct GitHub review writes (REST, GraphQL, `gh pr review`, or otherwise)."
+        )
         prompt = workflow._build_review_prompt(
             self.repository,
             pr,
@@ -279,6 +293,7 @@ class PullRequestReviewer(GitHubRepository):
             workspace_instructions=workspace,
             github_token_secret=token,
             trigger_description=trigger_description,
+            guarded_publication=publication,
         )
         if label:
             moved_head_instruction = (
@@ -338,7 +353,7 @@ class PullRequestReviewer(GitHubRepository):
             f"- {trigger_completion} after completing any configured "
             "human-review handoff. Never paste JSON artifacts or full command logs "
             "into comments.\n"
-            "- Once GitHub accepts the native review, stop immediately. Do not "
+            "- Once the publisher verifies the native review, stop immediately. Do not "
             "continue inspecting the repository, run more commands, or publish a "
             f"second result.{self_review_note}"
         )
@@ -1141,10 +1156,17 @@ class PullRequestReviewer(GitHubRepository):
         }
         if pr.get("html_url"):
             metadata["github.pr_url"] = pr["html_url"]
+        subject = f"{repository_id}:pr:{pr['number']}"
+        delivery = delivery_key or f"{trigger['id']}:{sha}"
+        slot = hashlib.sha256(f"{subject}:{delivery}".encode()).hexdigest()[:24]
+        publisher_path = Path(f"/workspace/.openhands-review/{slot}/publish.py")
         result = self.dispatcher.deliver(
-            subject=f"{repository_id}:pr:{pr['number']}",
-            delivery=delivery_key or f"{trigger['id']}:{sha}",
-            prompt=self._prompt(pr, trigger, trigger_label, delivery_key),
+            subject=subject,
+            delivery=delivery,
+            prompt=self._prompt(
+                pr, trigger, trigger_label, delivery_key, publisher_path=publisher_path
+            ),
+            publisher_path=publisher_path,
             head=sha,
             metadata=metadata,
         )
