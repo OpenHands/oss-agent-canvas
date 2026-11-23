@@ -1,5 +1,6 @@
 import json
 import re
+from collections import Counter
 from pathlib import Path
 
 from backlog import (
@@ -107,9 +108,13 @@ def selection(config, context, state):
                 candidates.append((item, identifier))
 
     ranked, excluded = [], []
+    identities = Counter(identifier for _, identifier in candidates)
     for item, identifier in candidates:
         rank = priority(item, config)
         fallback = {"id": identifier, "priority": rank, "issue_url": item["url"]}
+        if identities[identifier] > 1:
+            excluded.append({"topic": fallback, "status": "duplicate_topic_identity"})
+            continue
         if rank is None:
             excluded.append({"topic": fallback, "status": "issue_ineligible"})
             continue
@@ -169,14 +174,7 @@ def selection(config, context, state):
                     "error": redact(str(error))[:1000],
                 }
             )
-    ordered, seen = [], set()
-    for _, _, _, topic in sorted(ranked):
-        if topic["id"] in seen:
-            excluded.append({"topic": topic, "status": "duplicate_topic_identity"})
-        else:
-            ordered.append(topic)
-            seen.add(topic["id"])
-    return ordered, excluded
+    return [topic for _, _, _, topic in sorted(ranked)], excluded
 
 
 def label(issue, method, name):
@@ -224,8 +222,16 @@ def finish(context, topic, outcome, root):
         "review_incomplete": "The repair or independent review did not complete.",
     }.get(outcome["status"], "The repair run ended.")
     decision = (outcome.get("review_decision") or {}).get("decision")
-    if decision == "accepted" and outcome["status"] == "reviewed":
+    if outcome.get("ci_errors"):
+        status = (
+            "The independent review found sufficient repair evidence. "
+            "The publication checks could not confirm readiness on the reviewed PR heads. "
+            "See the linked PR checks and private attempt receipt."
+        )
+    elif decision == "accepted" and outcome["status"] == "reviewed":
         status += " See linked PRs for the verified scope and evidence."
+    elif decision == "accepted":
+        status += " The repair still has unresolved publication checks."
     elif decision:
         status += f" Review decision: `{decision}`."
     issue.update_block(

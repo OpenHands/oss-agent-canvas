@@ -984,6 +984,7 @@ def finish(config, context, output, budget, repair):
                 resource["url"] + ": " + error
                 for error in public_issue_errors(resource["body"])
             )
+    ci_errors = []
     if (
         context.get("topic_issue_url")
         and decision
@@ -993,7 +994,8 @@ def finish(config, context, output, budget, repair):
         open_prs = [
             r for r in permitted if r["kind"] == "pull" and r["state"] == "open"
         ]
-        problems.extend(ready_after_ci(open_prs, output, budget))
+        ci_errors = ready_after_ci(open_prs, output, budget)
+        problems.extend(ci_errors)
     if resources["errors"] or catalog_errors or problems or stale:
         status = "review_incomplete"
     elif prs and review and review["status"] == "finished":
@@ -1020,6 +1022,7 @@ def finish(config, context, output, budget, repair):
         "resources": resources["resources"],
         "errors": resources["errors"] + catalog_errors,
         "link_errors": problems,
+        "ci_errors": ci_errors,
         "stale_prs": stale,
     }
     replace_json(output / "topic-report.json", result)
