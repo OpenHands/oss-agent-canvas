@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKERS = [
@@ -30,6 +31,35 @@ def managed(text="Additional requirement."):
 
 
 class BodyChangeTests(unittest.TestCase):
+    def test_rendered_prompt_contains_executable_checker(self):
+        prompts = []
+        for worker in WORKERS:
+            tree = ast.parse(worker.read_text())
+            nodes = [
+                node for node in tree.body
+                if isinstance(node, ast.Assign) and any(
+                    isinstance(target, ast.Name) and target.id.startswith("TRIAGE_")
+                    for target in node.targets
+                ) or isinstance(node, ast.FunctionDef) and node.name == "author_body"
+            ]
+            nodes.append(next(
+                node for node in ast.walk(tree)
+                if isinstance(node, ast.FunctionDef) and node.name == "_prompt"
+            ))
+            namespace = {"json": json}
+            exec(compile(ast.Module(body=nodes, type_ignores=[]), str(worker), "exec"), namespace)
+            prompt = namespace["_prompt"](
+                SimpleNamespace(token_name="TEST_TOKEN", repository="example/repository"),
+                {"number": 1, "body": HUMAN}, [], [], [], "test-marker", None,
+            )
+            rendered = prompt.split("```python\n", 1)[1].split("```", 1)[0]
+            self.assertEqual(rendered, checker(worker))
+            compile(rendered, "triage_body_check.py", "exec")
+            self.assertIn("python3 triage_body_check.py 'READY'", prompt)
+            self.assertIn("not prove artifact freshness", prompt)
+            prompts.append(prompt)
+        self.assertEqual(*prompts)
+
     def check(self, before, intended, after, outcome="READY", expected=None):
         for worker in WORKERS:
             with self.subTest(worker=str(worker.relative_to(ROOT))):
