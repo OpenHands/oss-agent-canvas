@@ -73,6 +73,8 @@ import json
 import os
 import sys
 import time
+import urllib.request
+from datetime import datetime, timezone
 
 # Detect execution mode based on AGENT_SERVER_URL presence
 agent_server_url = os.environ.get("AGENT_SERVER_URL", "").rstrip("/")
@@ -162,6 +164,62 @@ def _normalize_mcp_config(raw_mcp_config):
     return raw_mcp_config
 
 
+SLACK_CHANNEL = "C0BLWB8PQ3B"  # #automations-debug, OpenHands workspace
+SLACK_TOKEN_SECRET = "SLACK_BOT_TOKEN_OPENHANDS_AI"
+
+
+def _api(url, token, payload=None):
+    headers = {"Authorization": f"Bearer {token}", "User-Agent": "oss-agents-md-review"}
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode()
+        headers["Content-Type"] = "application/json; charset=utf-8"
+    with urllib.request.urlopen(
+        urllib.request.Request(url, data=data, headers=headers), timeout=30
+    ) as response:
+        result = json.load(response)
+    if isinstance(result, dict) and result.get("ok") is False:
+        raise RuntimeError(result.get("error", "API request failed"))
+    return result
+
+
+def _open_agents_md_prs(repos, github_token):
+    """Open PRs by the token's user whose changes touch only AGENTS.md files."""
+    login = _api("https://api.github.com/user", github_token)["login"]
+    prs = []
+    for repo in repos:
+        pulls = _api(
+            f"https://api.github.com/repos/{repo}/pulls?state=open&per_page=100",
+            github_token,
+        )
+        for pr in pulls:
+            if pr["user"]["login"] != login:
+                continue
+            files = _api(f"{pr['url']}/files?per_page=100", github_token)
+            if files and all(
+                os.path.basename(f["filename"]) == "AGENTS.md" for f in files
+            ):
+                prs.append((repo, pr))
+    return prs
+
+
+def _post_slack_summary(repos, github_token, slack_token, run_started_at):
+    prs = _open_agents_md_prs(repos, github_token)
+    if prs:
+        lines = ["*Weekly AGENTS.md review*: draft PRs to review and merge"]
+        for repo, pr in prs:
+            new = " (new)" if pr["created_at"] >= run_started_at else ""
+            lines.append(f"• <{pr['html_url']}|{repo}#{pr['number']}> {pr['title']}{new}")
+    else:
+        lines = ["*Weekly AGENTS.md review*: no open AGENTS.md pull requests."]
+    _api(
+        "https://slack.com/api/chat.postMessage",
+        slack_token,
+        {"channel": SLACK_CHANNEL, "text": "\n".join(lines), "unfurl_links": False},
+    )
+    print(f"  posted {len(prs)} PR(s) to {SLACK_CHANNEL}")
+
+
 # Workspace base directory (for RemoteWorkspace working_dir).
 # Default is /workspace because preset scripts run inside containers where this path
 # is guaranteed to exist. For native local mode (outside containers), the dispatcher
@@ -226,6 +284,7 @@ with workspace_ctx as workspace:
     REPOS_CONFIG_FILE = os.path.join(SCRIPT_DIR, "repos_config.json")
     clone_result = None
     repo_dirs = []
+    repos_config = []
 
     if os.path.exists(REPOS_CONFIG_FILE):
         print("\n=== CLONE REPOS ===")
@@ -303,8 +362,10 @@ This automation was triggered by a webhook event:
     # Get secrets via workspace
     print("\n=== GET_SECRETS ===")
     secrets = {}
+    slack_token = None
     try:
         secrets = workspace.get_secrets()
+        slack_token = secrets.get(SLACK_TOKEN_SECRET)
         ALLOWED_SECRETS = {"GITHUB_TOKEN"}
         secrets = {k: v for k, v in secrets.items() if k in ALLOWED_SECRETS}
         print(f"  scoped to: {list(secrets.keys()) or '(none)'}")
@@ -377,6 +438,7 @@ This automation was triggered by a webhook event:
         conversation.update_secrets({"AUTOMATION_SESSION_URL": session_url})
         print(f"  session URL: {session_url}")
 
+    run_started_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
         print(f"  sending prompt: {USER_PROMPT[:80]}...")
         conversation.send_message(USER_PROMPT)
@@ -393,6 +455,24 @@ This automation was triggered by a webhook event:
         conversation.close()
 
     print("  conversation completed successfully")
+
+    print("\n=== SLACK SUMMARY ===")
+    repos = [
+        "/".join(repo["url"].rstrip("/").split("/")[-2:]) for repo in repos_config
+    ]
+    if slack_token and secrets.get("GITHUB_TOKEN"):
+        try:
+            # get_secrets() returns LookupSecret references, not raw values.
+            _post_slack_summary(
+                repos,
+                secrets["GITHUB_TOKEN"].get_value().strip(),
+                slack_token.get_value().strip(),
+                run_started_at,
+            )
+        except Exception as e:
+            print(f"  slack summary failed: {e}")
+    else:
+        print(f"  skipped: {SLACK_TOKEN_SECRET} or GITHUB_TOKEN missing")
 
     print("\n=== RESULT ===")
     print("ALL_OK")
