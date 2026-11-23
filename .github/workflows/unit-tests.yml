@@ -16,6 +16,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
+      - name: Install improvement workflow test dependencies
+        run: python -m pip install 'pytest>=8,<9' 'pydantic>=2,<3'
       - name: Discover and run repository and automation tests
         env:
           SLACK_BOT_TOKEN: ci-test-placeholder
@@ -28,6 +30,10 @@ jobs:
           failed=0
           for directory in "${directories[@]}"; do
             echo "Running tests in ${directory}"
-            python -m unittest discover -s "$directory" -p 'test_*.py' -v || failed=1
+            if [[ "$directory" == "automations/weekly-automation-improvement/tests" ]]; then
+              python -m pytest "$directory" -q || failed=1
+            else
+              python -m unittest discover -s "$directory" -p 'test_*.py' -v || failed=1
+            fi
           done
           exit "$failed"

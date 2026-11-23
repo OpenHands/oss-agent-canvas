@@ -1,0 +1,18 @@
+enabled: true
+entrypoint: .venv/bin/python triage_workflow.py
+keep_alive: false
+model: null
+name: Automation Improvement — Discover and Prioritize
+preset_metadata: null
+prompt: null
+setup_script_path: setup.sh
+tarball_executables:
+- setup.sh
+tarball_source:
+  type: internal
+  url: null
+timeout: 12000
+trigger:
+  schedule: 0 8 * * 1
+  timezone: UTC
+  type: cron

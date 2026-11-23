@@ -148,6 +148,18 @@ class IssueTriage(GitHubRepository):
         )
 
     def _submit(self, repository_id, issue, issues):
+        labels = {
+            label if isinstance(label, str) else label.get("name")
+            for label in issue.get("labels", [])
+        }
+        body = (issue.get("body") or "").lstrip()
+        if "automation-improvement" in labels or body.startswith(
+            (
+                "<!-- automation-improvement-topic:",
+                "<!-- automation-improvement-triage:",
+            )
+        ):
+            return
         comments = self.gh_pages(f"/issues/{issue['number']}/comments")
         automated_comments = [
             comment
