@@ -6,7 +6,8 @@ agent reviews the actual changes and execution records. Humans merge and deploy.
 
 Start with [How the self-improving automation works](HOW_IT_WORKS.md) for the
 high-level workflow, agent responsibilities, evidence and main controls. This
-README covers setup, operation and validation history.
+README covers setup and operation. The [GitHub backlog validation report](BACKLOG_VALIDATION.md)
+records the live results, costs and review of the generated issues.
 
 ## Weekly path
 
