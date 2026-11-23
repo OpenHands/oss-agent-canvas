@@ -58,8 +58,12 @@ def issue_reference(context, url, output):
         f"repos/{repository}/issues/{number}/comments?per_page=100", command
     )
     permitted = url == (context.get("triage_issue") or {}).get("url")
+    central = url == context.get("topic_issue_url")
     comment_id = None
-    if not permitted:
+    if central:
+        if marker(context["topic"]) not in (value.get("body") or ""):
+            raise ValueError("The issue does not reference this topic")
+    elif not permitted:
         body, comment_id = current_brief(context, value, comments)
         if context.get("isolated_validation") and comment_id is not None:
             raise ValueError("Isolated validation requires a fresh issue")
@@ -74,7 +78,7 @@ def issue_reference(context, url, output):
         / repository
         / context["topic"]["id"]
     )
-    if url == context.get("topic_issue_url"):
+    if central:
         evidence_root = backlog_evidence_root(
             context["state_dir"], repository, context["topic"]["id"]
         )

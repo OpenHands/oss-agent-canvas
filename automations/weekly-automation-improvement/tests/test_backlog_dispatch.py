@@ -273,7 +273,7 @@ def test_selected_issue_resolves_private_signal_records(gh, monkeypatch):
     assert json.loads(Path(prepared["signal_records_path"]).read_text()) == records
     output = gh.state_dir / "reader"
     output.mkdir()
-    prepared["run_id"] = None
+    row["body"] = "<!-- automation-improvement-run: newer-run -->\n" + row["body"]
     selected = topic_agent.issue_reference(prepared, row["html_url"], output)
     assert json.loads(selected.read_artifact(new_ref)) == manifest
     assert (
