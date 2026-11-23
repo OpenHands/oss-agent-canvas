@@ -350,6 +350,13 @@ def verify_pr_ci(prs, output, budget, wait_seconds=180):
         for pr in prs:
             url = pr["url"]
             try:
+                match = RESOURCE.fullmatch(url)
+                if not match or match[2] != "pull":
+                    raise ValueError("Invalid repair PR URL")
+                repository, _, number = match.groups()
+                live = json.loads(
+                    command(["gh", "api", f"repos/{repository}/pulls/{number}"])
+                )
                 result = json.loads(
                     command(
                         [
@@ -358,20 +365,24 @@ def verify_pr_ci(prs, output, budget, wait_seconds=180):
                             "view",
                             url,
                             "--json",
-                            "headRefOid,baseRefOid,statusCheckRollup",
+                            "headRefOid,statusCheckRollup",
                         ]
                     )
                 )
+                result["baseRefOid"] = live["base"]["sha"]
+                current = (
+                    live["base"]["sha"],
+                    live["head"]["sha"],
+                    result.get("headRefOid"),
+                )
                 status.append({"url": url, **result})
             except Exception as error:
+                detail = getattr(error, "stderr", None) or str(error)
                 failures.append(
-                    url + ": unable to read CI status: " + redact(str(error))[:500]
+                    url + ": unable to read CI status: " + redact(detail)[:500]
                 )
                 continue
-            if (result.get("baseRefOid"), result.get("headRefOid")) != (
-                pr["base"],
-                pr["head"],
-            ):
+            if current != (pr["base"], pr["head"], pr["head"]):
                 failures.append(url + ": the reviewed base or head changed")
                 continue
             checks = result.get("statusCheckRollup") or []

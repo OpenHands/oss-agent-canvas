@@ -1193,13 +1193,15 @@ def test_ci_uses_reviewed_revision_and_requires_success(
     tmp_path, monkeypatch, checks, head, expected
 ):
     url = "https://github.com/Example/source/pull/1"
-    monkeypatch.setattr(
-        topic_agent,
-        "command",
-        lambda _: json.dumps(
-            {"baseRefOid": "base", "headRefOid": head, "statusCheckRollup": checks}
-        ),
-    )
+
+    def request(argv):
+        if argv[1] == "api":
+            assert argv[2] == "repos/Example/source/pulls/1"
+            return json.dumps({"base": {"sha": "base"}, "head": {"sha": "reviewed"}})
+        assert argv[-1] == "headRefOid,statusCheckRollup"
+        return json.dumps({"headRefOid": head, "statusCheckRollup": checks})
+
+    monkeypatch.setattr(topic_agent, "command", request)
     problems = topic_agent.verify_pr_ci(
         [{"url": url, "base": "base", "head": "reviewed"}],
         tmp_path,
