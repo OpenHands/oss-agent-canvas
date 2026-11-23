@@ -76,6 +76,8 @@ import time
 import urllib.request
 from datetime import datetime, timezone
 
+import github_candidates
+
 # Detect execution mode based on AGENT_SERVER_URL presence
 agent_server_url = os.environ.get("AGENT_SERVER_URL", "").rstrip("/")
 IS_LOCAL_MODE = bool(agent_server_url)
@@ -363,6 +365,8 @@ This automation was triggered by a webhook event:
         # Not a hard failure — user may not have secrets configured
         print(f"  get_secrets() failed (ok if no secrets): {e}")
 
+    github_token = _read_secret("GITHUB_TOKEN")
+
     # Resolve GitHub maintainers -> Slack user IDs so the prompt can mention
     # them with real Slack mentions instead of GitHub handles. Best-effort: a
     # failure here just means the prompt falls back to plain @handles.
@@ -371,7 +375,6 @@ This automation was triggered by a webhook event:
     try:
         import slack_directory
 
-        github_token = _read_secret("GITHUB_TOKEN")
         slack_token = _read_secret("SLACK_BOT_TOKEN_OPENHANDS_AI")
         maintainer_map = slack_directory.build_map(
             github_token,
@@ -480,6 +483,8 @@ This automation was triggered by a webhook event:
         print(f"  session URL: {session_url}")
 
     try:
+        print("\n=== CANDIDATE ISSUES ===")
+        USER_PROMPT = github_candidates.prepare_context(workspace, github_token, conversation) + USER_PROMPT
         print(f"  sending prompt: {USER_PROMPT[:80]}...")
         conversation.send_message(USER_PROMPT)
         conversation.run()
