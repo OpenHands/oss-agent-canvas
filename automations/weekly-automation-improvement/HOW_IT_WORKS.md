@@ -11,8 +11,9 @@ for a human merge decision.**
 ```mermaid
 flowchart LR
     runs["Past automation runs"] --> findings["Laminar findings and clusters"]
-    findings --> proposals["Weekly repair proposals"]
-    proposals --> human["Human decision"]
+    findings --> issues["GitHub topic issues"]
+    issues --> epic["Persistent GitHub epic"]
+    epic --> human["Human decision"]
 ```
 
 ## Two workflows

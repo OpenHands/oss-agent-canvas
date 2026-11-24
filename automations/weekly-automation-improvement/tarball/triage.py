@@ -8,6 +8,7 @@ from backlog import BRIEF_FIELDS, issue_guides, safe_brief
 from common import encode, redact, timestamp, topic_id, write_json
 from attribution import automation_ids, candidates, conversation_ids, unit
 from triage_agent import rank
+from epic import is_index
 from laminar import object_value
 from tracked_work import comment, matching
 from github_io import command, work_item, IMPROVEMENT_LABEL
@@ -323,6 +324,8 @@ def discover_work(urls, references):
         row = json.loads(command(["gh", "api", f"repos/{match[1]}/issues/{match[3]}"]))
         if row["html_url"].casefold() != url.casefold():
             raise ValueError("Existing work URL does not match GitHub")
+        if is_index(row.get("body") or ""):
+            raise ValueError("An issue index cannot track a repair topic")
         if row["state"] != "open" and IMPROVEMENT_LABEL not in {
             label["name"] for label in row.get("labels", [])
         }:

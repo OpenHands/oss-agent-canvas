@@ -16,11 +16,18 @@ See [the high-level diagrams](HOW_IT_WORKS.md) for both workflows.
    required submission details and existing template labels. Publish an actionable topic in the configured home repository with
    `automation-improvement`, `improvement-topic`, `improvement-ready` and one
    `priority:P0` through `priority:P3` label. The topic marker carries its stable
-   identity. The weekly summary provides context.
+   identity. The weekly summary links to the persistent epic.
 4. Match the underlying mechanism to existing issues and PRs. Update a matching
    topic issue's private evidence index and post an idempotent recurrence comment.
    Preserve human priority and lifecycle labels. Matching human work and prior
    repair PRs receive recurrence evidence without opening competing issues.
+
+The **Automation improvement epic** in the home repository is the entry point for
+open work. Discovery refreshes its links even when there are no new findings.
+The epic includes topic issues and related issues recorded by discovery or repair,
+including public issues in other repositories. Private and internal issues in
+other repositories keep their links in the worker records. The epics for isolated
+validation have their own scope.
 
 The workflow writes `triage-report.json` with the publication results and budget.
 Each topic issue points to a private, immutable evidence index on the authorized

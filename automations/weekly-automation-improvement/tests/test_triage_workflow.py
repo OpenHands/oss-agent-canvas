@@ -20,6 +20,13 @@ def test_triage_publishes_topics_without_repair_code(prepared, monkeypatch):
 
     monkeypatch.setattr(triage_workflow, "publish", publish)
     monkeypatch.setattr(triage_workflow, "existing_work", lambda _: [])
+    refreshes = []
+
+    def refresh(config, state_dir, state, output, weekly):
+        refreshes.append((len(state["events"]), weekly))
+        return {"status": "refreshed"}
+
+    monkeypatch.setattr(triage_workflow, "refresh_epic", refresh)
     result = triage_workflow.run(config, seed=42)
     assert result["status"] == "published"
     assert published == topics
@@ -33,6 +40,8 @@ def test_triage_publishes_topics_without_repair_code(prepared, monkeypatch):
     assert not (output / "workers").exists()
     assert triage_workflow.run(config)["status"] == "no_unhandled_findings"
     assert len(published) == 3
+    assert [count for count, _ in refreshes] == [3, 3]
+    assert refreshes[0][1] and refreshes[1][1] is None
 
 
 def test_triage_preview_does_not_publish_topics(prepared, monkeypatch):
@@ -41,6 +50,9 @@ def test_triage_preview_does_not_publish_topics(prepared, monkeypatch):
     config, _ = prepared
     monkeypatch.setattr(
         triage_workflow, "publish", lambda *a, **k: pytest.fail("publish")
+    )
+    monkeypatch.setattr(
+        triage_workflow, "refresh_epic", lambda *a: pytest.fail("refresh epic")
     )
     result = triage_workflow.run(config, dry_run=True)
     assert result["status"] == "preview"

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from backlog import IDENTITY, TOPIC, identity, namespace, publish
 from common import read_json, redact, replace_json, timestamp, write_json
+from epic import is_index, refresh as refresh_epic
 from events import collect_events
 from github_io import command, github_pages, IMPROVEMENT_LABEL, work_item
 from laminar import Laminar
@@ -145,9 +146,7 @@ def existing_work(repository):
     return [
         work_item(row, repository)
         for row in rows
-        if not (row.get("body") or "")
-        .lstrip()
-        .startswith("<!-- automation-improvement-triage:")
+        if not is_index(row.get("body") or "")
     ]
 
 
@@ -275,6 +274,7 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
         "repair_policy": repair_policy(config),
         "isolated_validation": config.get("isolated_validation", False),
     }
+    weekly = None
     if records and not discovery_errors:
         triage_args = arguments(config, output / "triage", limit, seed)
         triage_args.output.mkdir(mode=0o700)
@@ -284,6 +284,7 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
         triage_args.topic_namespace = scope if isolated else "shared"
         configure_triage(triage_args, config, state_dir, week, dry_run, inventory_path)
         plans, aggregation = triage(triage_args, records, prs, previous)
+        weekly = aggregation.get("triage_issue")
         tracked = aggregation.get("tracked_topics", [])
         by_url = {item["url"]: item for item in aggregation.get("existing_work", prs)}
         records_path = output / "signal-records.json"
@@ -347,6 +348,10 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
         summary["status"] = "collection_incomplete"
     if discovery_errors:
         summary["status"] = "discovery_incomplete"
+    elif not dry_run:
+        summary["epic"] = refresh_epic(
+            config, state_dir, state, output / "epic", weekly
+        )
     summary.update(pending_events=len(state["backlog"]), budget=budget.snapshot())
     write_json(output / "triage-report.json", redact(summary))
     return summary

@@ -30,6 +30,9 @@ def prepared(tmp_path, monkeypatch):
     monkeypatch.setattr(workflow_runtime, "load_environment", lambda _: None)
     monkeypatch.setattr(triage_workflow, "github_auth", lambda _: None)
     monkeypatch.setattr(triage_workflow, "repository_catalog", lambda _: {})
+    monkeypatch.setattr(
+        triage_workflow, "refresh_epic", lambda *args: {"status": "refreshed"}
+    )
     queue = [
         {"id": str(i), "priority": i, "representative_event_ids": [r["event"]["id"]]}
         for i, r in enumerate(rows)
