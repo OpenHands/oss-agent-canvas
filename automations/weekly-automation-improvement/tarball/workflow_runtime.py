@@ -27,6 +27,11 @@ def load_environment(config):
 def run(config, run_locked, *, dry_run=False, limit=3, seed=None):
     if type(config.get("isolated_validation", False)) is not bool:
         raise ValueError("isolated_validation must be a boolean")
+    hold_labels = config.get("issue_hold_labels", [])
+    if not isinstance(hold_labels, list) or any(
+        not isinstance(label, str) or not label.strip() for label in hold_labels
+    ):
+        raise ValueError("issue_hold_labels must be a list of GitHub label names")
     if "max_prs_per_run" in config:
         raise ValueError(
             "Replace max_prs_per_run with max_topics_per_run; one topic may produce several PRs"
@@ -61,7 +66,12 @@ def run(config, run_locked, *, dry_run=False, limit=3, seed=None):
         except BlockingIOError:
             return {"status": "skipped_overlap"}
         return run_locked(
-            config, state_dir, dry_run=dry_run, limit=limit, seed=seed, budget=budget
+            config | {"_workflow_lock_fd": lock},
+            state_dir,
+            dry_run=dry_run,
+            limit=limit,
+            seed=seed,
+            budget=budget,
         )
     finally:
         os.close(lock)

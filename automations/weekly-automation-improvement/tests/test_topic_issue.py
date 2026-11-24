@@ -79,6 +79,7 @@ class GitHub:
                 "html_url": f"https://github.com/{repository}/issues/{len(self.issues) + 1}",
                 "state": "open",
                 **payload,
+                "labels": [{"name": name} for name in payload.get("labels", [])],
             }
             self.issues.append(value)
         else:
