@@ -142,6 +142,12 @@ def test_factory_resolver_admission_and_ambiguous_start(path, tmp_path, monkeypa
     resolver.main()
     assert not conversations
     assigner["login"] = "dispatcher"
+    assert resolver._factory_assignment("token", repo, 42, "dispatcher")
+    dispatcher_status["body"] += "\n<!-- automation-improvement-route: assignment blocked -->"
+    assert not resolver._factory_assignment("token", repo, 42, "dispatcher")
+    dispatcher_status["body"] = (
+        resolver.FACTORY_STATUS + "\n<!-- automation-improvement-route: assignment assigning -->"
+    )
     resolver.main()
     assert len(conversations) == 1
     assert next(iter(state["active"].values()))["status"] == "starting"

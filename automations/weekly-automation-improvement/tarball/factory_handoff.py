@@ -382,7 +382,18 @@ class Dispatcher:
             actor = "@" + route["reviewer"]
         elif actor == "Resolver":
             actor = "@" + route["resolver_author"]
-        body = f"{STATUS}\n\n**Owner:** External Factory ({route['mode']}).\n\n{text}\n\n{extra}\n\n**Next actor:** {actor}."
+        route_name = (
+            "GitHub assignment" if route["mode"] == "assignment" else "Linear ticket"
+        )
+        marker = f"<!-- automation-improvement-route: {route['mode']} {status} -->"
+        sections = [
+            f"{STATUS}\n{marker}",
+            f"**Implementation owner:** @{route['resolver_author']} via {route_name}.",
+            text,
+            extra.strip(),
+            f"**Next actor:** {actor}.",
+        ]
+        body = "\n\n".join(section for section in sections if section)
         self.gh.write_comment(endpoint, self.actor, body)
         self.gh.sync_labels(endpoint, issue, status)
 

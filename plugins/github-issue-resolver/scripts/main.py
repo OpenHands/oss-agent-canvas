@@ -735,9 +735,16 @@ def _factory_assignment(token, repo, number, assigner):
     statuses = [comment["body"] for comment in comments
                 if (comment.get("user") or {}).get("login", "").casefold() == dispatcher
                 and (comment.get("body") or "").startswith(FACTORY_STATUS + "\n")]
-    if len(statuses) != 1 or "**Owner:** External Factory (assignment)." not in statuses[0].splitlines():
+    if len(statuses) != 1:
         return False
-    return any(line in statuses[0].splitlines() for line in (
+    lines = statuses[0].splitlines()
+    routes = [line for line in lines if line.startswith("<!-- automation-improvement-route:")]
+    if routes:
+        return len(routes) == 1 and routes[0] in {
+            "<!-- automation-improvement-route: assignment assigning -->",
+            "<!-- automation-improvement-route: assignment implementing -->",
+        }
+    return "**Owner:** External Factory (assignment)." in lines and any(line in lines for line in (
         "Assigning this issue to the configured resolver.",
         "The resolver is investigating and testing this issue.",
     ))
