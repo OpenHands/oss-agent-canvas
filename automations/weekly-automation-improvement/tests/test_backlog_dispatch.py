@@ -15,6 +15,7 @@ import topic_agent
 import topic_issue
 from budget import RunBudget
 from common import write_json
+from public_status import read_marker
 from test_weekly import inventory, record
 
 
@@ -195,6 +196,13 @@ def test_claim_finish_repeat_and_explicit_requeue(gh, monkeypatch, chained):
     def launch(cfg, context, topic, budget, root):
         labels = {value["name"] for value in row["labels"]}
         assert backlog.ACTIVE in labels and backlog.READY not in labels
+        status = read_marker(row["body"])
+        assert (status["status"], status["owner"], status["next_actor"]) == (
+            "investigating",
+            "native",
+            "executor",
+        )
+        assert "**Next action:** " + status["next_action"] in row["body"]
         assert budget.cost == pytest.approx(0.1 if chained else 0)
         ledger = json.loads((gh.state_dir / "state.json").read_text())
         assert (
@@ -232,6 +240,9 @@ def test_claim_finish_repeat_and_explicit_requeue(gh, monkeypatch, chained):
     assert refreshes == [[related]]
     assert result["epic"]["status"] == "refreshed"
     assert "investigation completed" in row["body"].lower()
+    status = read_marker(row["body"])
+    assert (status["status"], status["next_actor"]) == ("unrepaired", "maintainer")
+    assert "**Next action:** " + status["next_action"] in row["body"]
     assert "Human note to preserve." in row["body"]
     assert {"name": backlog.OUTCOME_LABELS["unrepaired"]} in row["labels"]
     assert runner(gh.config)["topics"][0]["status"] == "issue_ineligible"
@@ -312,7 +323,9 @@ def test_portable_source_cannot_dispatch_native_repair_without_external_label(
     assert gh.writes == []
 
 
-@pytest.mark.parametrize("change", ["head", "check", "human_draft", "closed", "merged"])
+@pytest.mark.parametrize(
+    "change", ["head", "base", "check", "human_draft", "closed", "merged"]
+)
 def test_next_run_reconciles_native_promotion(gh, monkeypatch, change):
     row, _, _ = gh.issue("Example/source", 1, 0)
     identifier = f"{1:020x}"
@@ -335,19 +348,21 @@ def test_next_run_reconciles_native_promotion(gh, monkeypatch, change):
         "kind": "pull",
         "state": "open",
         "draft": False,
-        "base": "reviewed-base",
-        "head": "reviewed-head",
+        "base": "a" * 40,
+        "head": "b" * 40,
         "promoted": True,
     }
     live = {
         "body": markers,
         "state": "open",
         "draft": False,
-        "base": {"sha": "reviewed-base"},
-        "head": {"sha": "changed-head"},
+        "base": {"sha": pr["base"]},
+        "head": {"sha": "c" * 40},
     }
     if change != "head":
         live["head"]["sha"] = pr["head"]
+    if change == "base":
+        live["base"]["sha"] = "d" * 40
     if change in ("closed", "merged"):
         live["state"] = "closed"
         live["merged"] = change == "merged"
@@ -393,15 +408,87 @@ def test_next_run_reconciles_native_promotion(gh, monkeypatch, change):
     )
     assert live["draft"] == (change not in ("closed", "merged"))
     assert reconciled["stale_prs"] == ([] if change == "merged" else [pr["url"]])
-    assert "head `reviewed-head`" in row["body"]
+    assert f"head `{pr['head']}`" in row["body"]
+    checks = f"{pr['url']}/checks?sha={live['head']['sha']}"
+    assert f"[Checks]({checks})" in row["body"]
+    status = read_marker(row["body"])
+    assert status["pull_requests"] == [
+        {
+            "url": pr["url"],
+            "base": live["base"]["sha"],
+            "head": live["head"]["sha"],
+            "reviewed_head": pr["head"],
+            "state": {"closed": "closed", "merged": "merged"}.get(change, "draft"),
+            "checks_url": checks,
+            **({"reported_base": pr["base"]} if change == "base" else {}),
+        }
+    ]
+    assert status["status"] == {
+        "head": "revision_changed",
+        "base": "revision_changed",
+        "merged": "merged",
+        "closed": "closed_unmerged",
+    }.get(change, "incomplete")
+    assert status["next_actor"] == "maintainer"
+    assert "**Next action:** " + status["next_action"] in row["body"]
     if change == "head":
-        assert "head `changed-head` require review" in row["body"]
+        assert f"previously reviewed head `{pr['head']}`" in row["body"]
     elif change in ("merged", "closed"):
         assert (" — merged" if change == "merged" else "closed without merging") in row[
             "body"
         ]
     assert {"name": backlog.OUTCOME_LABELS[outcome]} in row["labels"]
     assert repair_workflow.run(gh.config)["reconciled"] == []
+
+
+def test_native_status_links_only_verified_public_or_same_repository_work(gh):
+    row, _, issue = gh.issue("Example/source", 1, 0)
+    pr = {
+        "kind": "pull",
+        "state": "open",
+        "draft": False,
+        "base": "a" * 40,
+        "head": "b" * 40,
+    }
+    prs = [
+        pr
+        | {"url": f"https://github.com/{repository}/pull/2", "repository": repository}
+        | visibility
+        for repository, visibility in (
+            ("Example/source", {}),
+            ("Example/public", {"private": False}),
+            ("Example/private", {"private": True}),
+            ("Example/unknown", {}),
+        )
+    ]
+    prs.append(prs[0] | {"url": "https://github.com/Example/private/pull/7"})
+    prs.append(
+        prs[0] | {"url": "https://github.com/Example/source/pull/8", "head": None}
+    )
+    prs.append(
+        prs[0] | {"url": "https://github.com/Example/source/pull/9", "draft": None}
+    )
+    dispatch.publish_outcome(
+        issue,
+        {
+            "status": "reviewed",
+            "review_decision": {"decision": "accepted"},
+            "resources": prs,
+        },
+        set(),
+    )
+    body = row["body"]
+    status = read_marker(body)
+    assert status["status"] == "accepted"
+    assert [pr["url"] for pr in status["pull_requests"]] == [
+        pr["url"] for pr in prs[:2]
+    ]
+    assert all(pr["state"] == "ready" for pr in status["pull_requests"])
+    assert all(
+        f"[Checks]({pr['checks_url']})" in body for pr in status["pull_requests"]
+    )
+    assert all(f"[Checks]({pr['url']}/checks)" in body for pr in prs[-2:])
+    assert "Example/private" not in body and "Example/unknown" not in body
 
 
 def test_selected_issue_resolves_private_signal_records(gh, monkeypatch):

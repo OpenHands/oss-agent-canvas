@@ -7,6 +7,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+from public_status import read_marker
+
 from test_factory_handoff import GitHub, LinearFixture, ISSUE, PULL, REPO, SUMMARY, URL
 
 
@@ -149,13 +151,36 @@ with urllib.request.urlopen(os.environ["TEST_API"] + "/gh", data=data) as respon
                 "labels": sorted(label["name"] for label in gh.issue["labels"]),
             }
         )
+        if gh.comments:
+            body = gh.comments[0]["body"]
+            record = read_marker(body)
+            assert (
+                body.splitlines()[1]
+                == f"<!-- automation-improvement-route: {mode} {record['status']} -->"
+            )
+            assert record["owner"] == route["resolver_author"] != gh.actor
+            assert f"**Next action:** {record['next_action']}" in body
         return status
+
+    def reported_pull(stage, *, reviewed=False):
+        head = gh.pr["head"]["sha"]
+        url = f"https://github.com/{REPO}/pull/{gh.pr['number']}"
+        expected = {
+            "url": url,
+            "head": head,
+            "state": stage,
+            "checks_url": f"{url}/checks?sha={head}",
+        }
+        if reviewed:
+            expected["reviewed_head"] = head
+        assert read_marker(steps[-1]["comment"])["pull_requests"] == [expected]
 
     try:
         assert tick("--dry-run") == "eligible"
         gh.fail_once = ISSUE + ("/assignees" if mode == "assignment" else "/comments")
         assert tick(failure=True) == "readback_or_write_failed"
         assert tick() == "implementing"
+        assert "pull_requests" not in read_marker(steps[-1]["comment"])
         assert tick() == "implementing"
         branch = (
             "openhands/issue-42"
@@ -165,6 +190,9 @@ with urllib.request.urlopen(os.environ["TEST_API"] + "/gh", data=data) as respon
         gh.make_pr(branch=branch, body="Closes #42" if mode == "assignment" else URL)
         gh.check_state = "failure"
         assert tick() == "revision-needed"
+        assert f"/pull/13/checks?sha={'a' * 40}" in steps[-1]["comment"]
+        assert read_marker(steps[-1]["comment"])["next_actor"] == "maintainer"
+        reported_pull("draft")
         gh.pr["head"]["sha"] = "b" * 40
         gh.check_state = "success"
         gh.fail_once = PULL + "/requested_reviewers"
@@ -172,8 +200,17 @@ with urllib.request.urlopen(os.environ["TEST_API"] + "/gh", data=data) as respon
         assert tick() == "reviewing"
         gh.review("APPROVED", sha="a" * 40)
         assert tick() == "reviewing"
+        assert (
+            "earlier head" in steps[-1]["comment"] and "a" * 40 in steps[-1]["comment"]
+        )
+        assert read_marker(steps[-1]["comment"])["next_actor_login"] == "all-hands-bot"
+        reported_pull("draft")
+        gh.review("CHANGES_REQUESTED")
+        assert tick() == "revision-needed"
+        reported_pull("draft", reviewed=True)
         gh.review("APPROVED")
         assert tick() == "accepted"
+        reported_pull("draft", reviewed=True)
         assert "(draft)" in steps[-1]["comment"]
         gh.pr["draft"] = False
         assert tick() == "accepted"
@@ -181,7 +218,17 @@ with urllib.request.urlopen(os.environ["TEST_API"] + "/gh", data=data) as respon
             "(ready for review)" in steps[-1]["comment"]
             and "b" * 40 in steps[-1]["comment"]
         )
-        assert "inspect the behavior evidence" in steps[-1]["comment"]
+        assert "Inspect the behavior evidence" in steps[-1]["comment"]
+        reported_pull("ready", reviewed=True)
+        gh.pr["state"] = "closed"
+        assert tick() == "closed"
+        reported_pull("closed")
+        assert "(closed without merging)" in steps[-1]["comment"]
+        assert "(ready for review)" not in steps[-1]["comment"]
+        gh.pr["merged"] = True
+        assert tick() == "merged"
+        reported_pull("merged")
+        assert "(merged)" in steps[-1]["comment"]
         assert gh.issue["body"] == "Human issue body. Never rewrite this."
         assert len(gh.comments) == 1
         assert (

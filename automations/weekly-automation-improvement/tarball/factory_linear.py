@@ -77,7 +77,7 @@ class Linear:
                 raise ValueError("Linear blocker pagination did not advance")
             seen.add(cursor)
 
-    def ensure(self, route, issue_url):
+    def ensure(self, route, issue_url, *, before_create=None):
         source = f"openhands-factory:{route['team_key']}:{issue_url.casefold()}"
         identifier = str(
             uuid.UUID(bytes=hashlib.sha256(source.encode()).digest()[:16], version=4)
@@ -102,6 +102,8 @@ class Linear:
                 raise ValueError(
                     "The Linear team, trigger label or state did not resolve uniquely"
                 )
+            if before_create:
+                before_create()
             try:
                 result = self.gql(
                     "mutation FactoryCreate($input: IssueCreateInput!) { issueCreate(input: $input) { success } }",

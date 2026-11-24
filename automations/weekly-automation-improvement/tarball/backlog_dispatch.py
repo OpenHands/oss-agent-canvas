@@ -4,6 +4,7 @@ from collections import Counter
 from pathlib import Path
 from urllib.parse import quote
 
+import public_status
 from backlog import (
     ACTIVE,
     IDENTITY,
@@ -20,6 +21,7 @@ from backlog import (
     identity,
     namespace,
     on_hold,
+    status_text,
 )
 from common import read_json, redact, replace_json, write_json
 from github_io import IMPROVEMENT_LABEL, command, github_pages, work_item
@@ -278,8 +280,13 @@ def claim(config, context, topic, root, state):
     )
     issue.update_block(
         "backlog-status",
-        "**Owner:** Native repair workflow.\n\nRepair investigation in progress.\n\n"
-        "**Next action:** Native repair and independent review are running.",
+        status_text(
+            "investigating",
+            "native",
+            "Repair investigation in progress.",
+            "executor",
+            "Investigate the finding, validate the repair and hand any draft PR to independent review.",
+        ),
         verify=True,
     )
     validate_claim(
@@ -321,6 +328,36 @@ def finish(context, topic, outcome, root):
         journal.unlink(missing_ok=True)
 
 
+def pull_snapshot(pr, accepted):
+    if pr.get("state") == "open" and type(pr.get("draft")) is bool:
+        state = "draft" if pr["draft"] else "ready"
+    elif pr.get("state") == "closed" and type(pr.get("merged")) is bool:
+        state = "merged" if pr["merged"] else "closed"
+    else:
+        return None
+    current = {
+        field: pr.get("current_" + field, pr.get(field)) for field in ("head", "base")
+    }
+    if not isinstance(current["head"], str) or not public_status.SHA.fullmatch(
+        current["head"]
+    ):
+        return None
+    record = {"url": pr["url"], "state": state, "head": current["head"]}
+    if isinstance(current["base"], str) and public_status.SHA.fullmatch(
+        current["base"]
+    ):
+        record["base"] = current["base"]
+    for field in ("head", "base"):
+        stored = pr.get(field)
+        if not isinstance(stored, str) or not public_status.SHA.fullmatch(stored):
+            continue
+        if field == "head" and accepted:
+            record["reviewed_head"] = stored
+        elif stored != current[field]:
+            record["reported_" + field] = stored
+    return public_status.pull_record(record)
+
+
 def publish_outcome(issue, outcome, labels):
     decision = (outcome.get("review_decision") or {}).get("decision")
     result = {
@@ -333,70 +370,117 @@ def publish_outcome(issue, outcome, labels):
         "failed": "failed",
         "review_incomplete": "incomplete",
     }.get(outcome["status"], result)
-    status, next_action = {
+    summary, next_action = {
         "accepted": (
             "Independent review accepted the scoped repair.",
-            "A maintainer can review the linked changes and decide whether to merge.",
+            "Review the changes and their checks, then decide whether to merge.",
         ),
         "blocked": (
             "Independent review found an external prerequisite.",
-            "A maintainer should resolve the prerequisite before requesting another attempt.",
+            "Resolve the prerequisite identified in the review before requesting another attempt.",
         ),
         "revision-needed": (
             "Independent review requested changes.",
-            "A maintainer should reconcile the draft PRs before requesting another attempt.",
+            "Reconcile the requested changes on the draft PRs before requesting another attempt.",
         ),
         "unrepaired": (
             "Investigation completed without a repair.",
-            "A maintainer should decide whether to pursue another investigation.",
+            "Decide whether to close this investigation or requeue it with improvement-ready.",
         ),
         "incomplete": (
             "The repair, review or publication checks did not complete.",
-            "A maintainer should reconcile the linked work and private attempt receipt before retrying.",
+            "Inspect any linked PRs and checks. Ask the repair operator for a public summary of the missing evidence before retrying.",
         ),
         "failed": (
             "The repair attempt failed.",
-            "A maintainer should inspect the private attempt receipt and reconcile open work before retrying.",
+            "Ask the repair operator to summarize the failed step on this issue. Reconcile any open PR before retrying.",
         ),
     }[result]
-    revisions = []
     pulls = [r for r in outcome.get("resources", []) if r["kind"] == "pull"]
+    status, next_actor = result, "maintainer"
     if result == "accepted" and pulls and all(pr.get("merged") for pr in pulls):
-        next_action = "The reviewed changes have merged. A maintainer can close the topic after confirming the result."
+        status = "merged"
+        summary = "The reviewed changes have merged."
+        next_action = "Confirm the result against the issue's acceptance criteria and close the topic."
+    elif outcome.get("resource_recovery_pending"):
+        status, next_actor = "reconciling", "dispatcher"
+        summary = "The native claim remains active while the workflow recovers the previous attempt."
+        next_action = "Reconcile the existing PRs and attempt receipt on the next native repair run."
+    elif (
+        result == "incomplete"
+        and pulls
+        and all(pr.get("state") == "closed" for pr in pulls)
+        and any(pr.get("merged") is False for pr in pulls)
+    ):
+        status = "closed_unmerged"
+        summary = "A repair PR closed without merging."
+        next_action = (
+            "Decide whether this topic needs a replacement repair or can be closed."
+        )
+    elif result == "incomplete" and any(
+        pr.get("current_head") or pr.get("current_base") for pr in pulls
+    ):
+        status = "revision_changed"
+        summary = "The repair revision changed after review."
+        next_action = "Arrange independent review and verify required checks on the current revisions before promotion."
+    elif result == "incomplete" and (
+        outcome.get("stale_prs") or outcome.get("ci_errors")
+    ):
+        summary = "The workflow could not confirm the reviewed PRs are ready to merge."
+        next_action = "Inspect the current PR revisions and checks, resolve any blocker and arrange a fresh review."
+    revisions, pull_requests = [], []
     for pr in pulls:
-        if (
-            (
-                not pr.get("private", True)
-                or pr["repository"].casefold() == issue.repository.casefold()
+        url = pr.get("url")
+        match = public_status.PULL.fullmatch(url) if isinstance(url, str) else None
+        if not (
+            match
+            and isinstance(pr.get("repository"), str)
+            and match[1].casefold() == pr["repository"].casefold()
+            and (
+                pr.get("private") is False
+                or match[1].casefold() == issue.repository.casefold()
             )
-            and pr.get("base")
-            and pr.get("head")
         ):
-            state = "draft" if pr.get("draft") else "open for review on GitHub"
-            if pr.get("state") == "closed":
-                state = "merged" if pr.get("merged") else "closed without merging"
-            details = (
-                f"- {pr['url']} — {state}, base `{pr['base']}`, head `{pr['head']}`"
-            )
+            continue
+        number = url.rsplit("/", 1)[1]
+        details = f"- [{match[1]}#{number}]({url})"
+        snapshot = pull_snapshot(
+            pr, result == "accepted" or (decision == "accepted" and "promoted" in pr)
+        )
+        checks = url + "/checks"
+        if snapshot:
+            pull_requests.append(snapshot)
+            checks = snapshot["checks_url"]
+            state = {
+                "ready": "open for review on GitHub",
+                "closed": "closed without merging",
+            }.get(snapshot["state"], snapshot["state"])
+            details += f" — {state}, head `{snapshot['head']}`"
+            if "base" in snapshot:
+                details += f", base `{snapshot['base']}`"
+            if "reported_base" in snapshot:
+                details += f", previously reported base `{snapshot['reported_base']}`"
             if (
-                pr.get("state") == "open"
-                and pr.get("current_head")
-                and pr.get("current_base")
+                "reviewed_head" in snapshot
+                and snapshot["reviewed_head"] != snapshot["head"]
             ):
-                details += f". Current base `{pr['current_base']}`, head `{pr['current_head']}` require review."
-            revisions.append(details)
+                details += f", previously reviewed head `{snapshot['reviewed_head']}`"
+            elif "reported_head" in snapshot:
+                details += f", previously reported head `{snapshot['reported_head']}`"
+        revisions.append(f"{details}. [Checks]({checks})")
     desired = OUTCOME_LABELS[result]
     ensure_labels(issue.repository)
     issue.update_block(
         "backlog-status",
-        "\n\n".join(
-            [
-                "**Owner:** Native repair workflow.",
-                status,
-                "**Next action:** " + next_action,
-            ]
-            + (["\n".join(revisions)] if revisions else [])
-        ),
+        status_text(
+            status,
+            "native",
+            summary,
+            next_actor,
+            next_action,
+            pull_requests=pull_requests,
+        )
+        + ("\n\n" + "\n".join(revisions) if revisions else ""),
         verify=True,
     )
     if desired not in labels:

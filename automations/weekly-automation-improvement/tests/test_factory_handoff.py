@@ -8,8 +8,9 @@ from pathlib import Path
 import pytest
 
 import factory_handoff as handoff
-from backlog import ACTIVE, BLOCKED, EXTERNAL, FACTORY, OUTCOME_LABELS, READY
+from backlog import ACTIVE, BLOCKED, EXTERNAL, FACTORY, OUTCOME_LABELS, READY, TOPIC
 from factory_linear import Linear
+from public_status import STATUS_START, STATUS_END, read_marker
 
 REPO = "Example/project"
 NUMBER = 42
@@ -19,7 +20,7 @@ URL = f"https://github.com/{REPO}/issues/{NUMBER}"
 SUMMARY = Path(handoff.__file__)
 
 
-class GitHub:
+class GitHub(handoff.GitHub):
     def __init__(self):
         self.actor = "factory-dispatcher"
         self.issue = {
@@ -54,7 +55,9 @@ class GitHub:
             return {"visibility": "public", "default_branch": "main"}
         if endpoint == ISSUE and method == "GET":
             return copy.deepcopy(self.issue)
-        if endpoint == ISSUE + "/assignees" and method == "POST":
+        if endpoint == ISSUE and method == "PATCH":
+            self.issue["body"] = fields[0][5:]
+        elif endpoint == ISSUE + "/assignees" and method == "POST":
             assignee = {"login": fields[0].split("=")[1]}
             self.issue["assignees"].append(assignee)
             self.timeline.append(
@@ -65,17 +68,31 @@ class GitHub:
                 }
             )
         elif endpoint == ISSUE + "/labels" and method == "POST":
+            if "labels[]=" + BLOCKED in fields:
+                self.timeline.append(
+                    {
+                        "event": "labeled",
+                        "label": {"name": BLOCKED},
+                        "actor": {"login": self.actor},
+                    }
+                )
             self.issue["labels"].extend(
                 {"name": field.split("=")[1]} for field in fields
             )
         elif endpoint.startswith(ISSUE + "/labels/") and method == "DELETE":
             self.issue["labels"].remove({"name": endpoint.split("/")[-1]})
         elif endpoint == ISSUE + "/comments" and method == "POST":
+            number = max((row["id"] for row in self.comments), default=0) + 1
             self.comments.append(
-                {"id": 1, "user": {"login": self.actor}, "body": fields[0][5:]}
+                {"id": number, "user": {"login": self.actor}, "body": fields[0][5:]}
             )
-        elif endpoint == f"repos/{REPO}/issues/comments/1" and method == "PATCH":
-            self.comments[0]["body"] = fields[0][5:]
+        elif (
+            endpoint.startswith(f"repos/{REPO}/issues/comments/") and method == "PATCH"
+        ):
+            number = int(endpoint.rsplit("/", 1)[1])
+            next(row for row in self.comments if row["id"] == number)["body"] = fields[
+                0
+            ][5:]
         elif endpoint == PULL + "/requested_reviewers" and method == "POST":
             self.pr["requested_reviewers"] = [{"login": fields[0].split("=")[1]}]
         elif endpoint == PULL and method == "GET":
@@ -126,9 +143,6 @@ class GitHub:
                 "user": {"login": user},
             }
         )
-
-    write_comment = handoff.GitHub.write_comment
-    sync_labels = handoff.GitHub.sync_labels
 
 
 @pytest.fixture
@@ -333,7 +347,12 @@ def test_competing_pull_after_review_and_maintainer_holds(setup):
     )
     writes = len(gh.writes)
     assert tick() == "maintainer_hold"
-    assert len(gh.writes) == writes
+    assert [(endpoint, method) for endpoint, method, _ in gh.writes[writes:]] == [
+        (f"repos/{REPO}/issues/comments/1", "PATCH")
+    ]
+    assert read_marker(gh.comments[0]["body"])["status"] == "maintainer_hold"
+    writes = len(gh.writes)
+    assert tick() == "maintainer_hold" and len(gh.writes) == writes
 
 
 def test_existing_pull_or_customer_owner_never_dispatches(setup):
@@ -348,6 +367,7 @@ def test_existing_pull_or_customer_owner_never_dispatches(setup):
     gh.issue["labels"].append({"name": handoff.CUSTOMER})
     assert tick() == "ownership_conflict"
     assert "select one owner" in gh.comments[0]["body"]
+    assert read_marker(gh.comments[0]["body"])["status"] == "ownership_conflict"
 
 
 def test_comment_verdict_and_promotion_readback(setup):
@@ -440,6 +460,7 @@ def test_native_journal_and_conflicting_receipts_survive_label_removal(setup, tm
     gh.issue["labels"] = []
     assert tick(issue_url=URL) == "ownership_conflict"
     assert "select one owner" in gh.comments[0]["body"]
+    assert read_marker(gh.comments[0]["body"])["status"] == "ownership_conflict"
 
 
 def test_discovery_readiness_alone_never_authorizes_factory(setup):
@@ -471,4 +492,238 @@ def test_removing_factory_enrollment_surfaces_existing_attempt(setup):
     gh.issue["labels"].remove({"name": FACTORY})
     assert tick() == "enrollment_removed"
     assert "Reconcile the existing work" in gh.comments[0]["body"]
+    assert read_marker(gh.comments[0]["body"])["status"] == "enrollment_removed"
     assert sum(endpoint.endswith("/assignees") for endpoint, *_ in gh.writes) == 1
+
+
+def test_retry_repairs_managed_body_after_comment_is_confirmed(setup, monkeypatch):
+    gh, _, tick = setup
+    gh.issue["labels"].append({"name": TOPIC})
+    prefix = f"<!-- automation-improvement-backlog: {'a' * 20}/{'b' * 20} -->\nUser brief.\n{STATUS_START}\n"
+    suffix = f"\n{STATUS_END}\nA maintainer’s notes.\n"
+    gh.issue["body"] = prefix + "Queued for external execution." + suffix
+    human_comment = {
+        "id": 90,
+        "user": {"login": "maintainer"},
+        "body": "Please keep the reproduction.",
+    }
+    gh.comments.append(human_comment.copy())
+    assert tick() == "implementing"
+    gh.make_pr()
+    original_api = gh.api
+
+    def fail_patch(endpoint, method="GET", fields=()):
+        if endpoint == ISSUE and method == "PATCH":
+            raise OSError("body update interrupted")
+        return original_api(endpoint, method, fields)
+
+    monkeypatch.setattr(gh, "api", fail_patch)
+    assert tick() == "readback_or_write_failed"
+    assert read_marker(gh.comments[1]["body"])["status"] == "checks"
+    assert read_marker(gh.issue["body"])["status"] == "implementing"
+    writes = len(gh.writes)
+    monkeypatch.setattr(gh, "api", original_api)
+    assert tick() == "checks"
+    assert [(endpoint, method) for endpoint, method, _ in gh.writes[writes:]] == [
+        (ISSUE, "PATCH")
+    ]
+    assert gh.comments[0] == human_comment and len(gh.comments) == 2
+    assert gh.issue["body"].startswith(prefix) and gh.issue["body"].endswith(suffix)
+    assert f"{URL}#issuecomment-91" in gh.issue["body"]
+    assert read_marker(gh.issue["body"]) == read_marker(gh.comments[1]["body"])
+
+
+def test_comment_identity_must_survive_status_patch(setup, monkeypatch):
+    gh, _, tick = setup
+    assert tick() == "implementing"
+    gh.make_pr()
+    pages = gh.pages
+    reads = 0
+
+    def changed_identity(endpoint):
+        nonlocal reads
+        rows = pages(endpoint)
+        if endpoint == ISSUE + "/comments?per_page=100":
+            reads += 1
+            if reads == 2:
+                return [rows[0] | {"id": 99}]
+        return rows
+
+    monkeypatch.setattr(gh, "pages", changed_identity)
+    assert tick() == "readback_or_write_failed"
+    assert tick() == "checks"
+    assert len(gh.comments) == 1
+
+
+def test_configuration_change_only_reconciles_verified_original_claim(setup):
+    gh, config, tick = setup
+    assert tick() == "implementing"
+    settings = config["factory_handoff"]
+    settings["repositories"][REPO]["reviewer"] = "other-reviewer"
+    assert tick() == "configuration_changed"
+    assert read_marker(gh.comments[0]["body"])["next_actor"] == "maintainer"
+    settings["dispatcher_login"] = gh.actor = "replacement-dispatcher"
+    writes = len(gh.writes)
+    assert tick() == "configuration_changed"
+    gh.issue["labels"].remove({"name": FACTORY})
+    assert tick() == "enrollment_removed"
+    assert len(gh.writes) == writes
+
+
+def test_factory_transfer_before_comment_prevents_claim_publication(setup, monkeypatch):
+    gh, _, tick = setup
+    pages = gh.pages
+
+    def transfer(endpoint):
+        rows = pages(endpoint)
+        if endpoint == ISSUE + "/comments?per_page=100":
+            gh.issue["labels"].append({"name": handoff.CUSTOMER})
+        return rows
+
+    monkeypatch.setattr(gh, "pages", transfer)
+    assert tick() == "readback_or_write_failed"
+    assert gh.writes == []
+
+
+def test_factory_hold_after_comment_preserves_brief_and_queue(setup, monkeypatch):
+    gh, _, tick = setup
+    gh.issue["labels"].append({"name": TOPIC})
+    body = f"<!-- automation-improvement-backlog: {'a' * 20}/{'b' * 20} -->\n{STATUS_START}\nQueued\n{STATUS_END}"
+    gh.issue["body"] = body
+    api = gh.api
+
+    def hold(endpoint, method="GET", fields=()):
+        result = api(endpoint, method, fields)
+        if endpoint == ISSUE + "/comments" and method == "POST":
+            gh.issue["labels"].append({"name": BLOCKED})
+        return result
+
+    monkeypatch.setattr(gh, "api", hold)
+    assert tick() == "readback_or_write_failed"
+    assert gh.issue["body"] == body
+    assert [endpoint for endpoint, *_ in gh.writes] == [ISSUE + "/comments"]
+    assert tick() == "maintainer_hold"
+    assert READY in handoff.label_names(gh.issue) and not gh.issue["assignees"]
+    gh.issue["labels"].remove({"name": BLOCKED})
+    assert tick() == "implementing"
+    assert len(gh.comments) == 1
+
+
+def test_reapplied_maintainer_block_survives_factory_label_sync(setup, monkeypatch):
+    gh, _, tick = setup
+    assert tick() == "implementing"
+    assert tick(now=20) == "blocked"
+    assert handoff.latest_label(gh.timeline, BLOCKED)["actor"]["login"] == gh.actor
+    gh.make_pr()
+    api = gh.api
+    writes = len(gh.writes)
+
+    def change_hold_owner(endpoint, method="GET", fields=()):
+        result = api(endpoint, method, fields)
+        if endpoint == ISSUE + "/labels" and method == "POST":
+            gh.timeline.append(
+                {
+                    "event": "labeled",
+                    "label": {"name": BLOCKED},
+                    "actor": {"login": "maintainer"},
+                }
+            )
+        return result
+
+    monkeypatch.setattr(gh, "api", change_hold_owner)
+    assert tick() == "readback_or_write_failed"
+    assert BLOCKED in handoff.label_names(gh.issue)
+    assert all(method != "DELETE" for _, method, _ in gh.writes[writes:])
+    assert tick() == "maintainer_hold"
+
+
+@pytest.mark.parametrize("change", ["assignee", "enrollment", "closed", "competing_pr"])
+def test_factory_rechecks_before_assignment(setup, monkeypatch, change):
+    gh, _, tick = setup
+    sync = gh.sync_labels
+
+    def transfer(*args, **kwargs):
+        sync(*args, **kwargs)
+        if change == "assignee":
+            gh.issue["assignees"] = [{"login": "existing-owner"}]
+        elif change == "enrollment":
+            gh.timeline.append(gh.timeline[0] | {"id": 902})
+        elif change == "closed":
+            gh.issue["state"] = "closed"
+        else:
+            gh.make_pr()
+
+    monkeypatch.setattr(gh, "sync_labels", transfer)
+    assert tick() == "readback_or_write_failed"
+    assert not any(endpoint.endswith("/assignees") for endpoint, *_ in gh.writes)
+
+
+def test_linear_create_rechecks_factory_enrollment_after_selection(setup, monkeypatch):
+    gh, config, tick = setup
+    config["factory_handoff"]["repositories"][REPO]["mode"] = "linear"
+    linear = LinearFixture()
+    gql = linear.gql
+
+    def transfer(query, **kwargs):
+        result = gql(query, **kwargs)
+        if "query FactoryRoute" in query:
+            gh.timeline[-1]["actor"]["login"] = "untrusted"
+        return result
+
+    monkeypatch.setattr(linear, "gql", transfer)
+    assert tick(linear=linear) == "readback_or_write_failed"
+    assert not linear.writes
+    assert tick(linear=linear) == "untrusted_enrollment"
+    gh.timeline[-1]["actor"]["login"] = "maintainer"
+    monkeypatch.setattr(linear, "gql", gql)
+    assert tick(linear=linear) == "implementing"
+    assert len(linear.writes) == 1
+
+
+def test_review_request_rechecks_factory_ownership_before_reserving_it(
+    setup, monkeypatch
+):
+    gh, _, tick = setup
+    assert tick() == "implementing"
+    gh.make_pr()
+    gh.check_state = "green"
+    pages = gh.pages
+
+    def transfer(endpoint):
+        rows = pages(endpoint)
+        if endpoint == PULL + "/reviews?per_page=100":
+            gh.issue["labels"].append({"name": handoff.CUSTOMER})
+        return rows
+
+    monkeypatch.setattr(gh, "pages", transfer)
+    assert tick() == "readback_or_write_failed"
+    assert not any(
+        endpoint.endswith("/requested_reviewers") for endpoint, *_ in gh.writes
+    )
+    assert tick() == "ownership_conflict"
+    monkeypatch.setattr(gh, "pages", pages)
+    gh.issue["labels"].remove({"name": handoff.CUSTOMER})
+    assert tick() == "reviewing"
+    assert (
+        sum(endpoint.endswith("/requested_reviewers") for endpoint, *_ in gh.writes)
+        == 1
+    )
+
+
+def test_factory_notice_rechecks_hold_and_current_assignee(setup, monkeypatch):
+    gh, _, tick = setup
+    assert tick() == "implementing"
+    gh.issue["labels"].append({"name": BLOCKED})
+    pages = gh.pages
+    writes = list(gh.writes)
+
+    def transfer(endpoint):
+        rows = pages(endpoint)
+        if endpoint == ISSUE + "/comments?per_page=100":
+            gh.issue["assignees"] = [{"login": "new-owner"}]
+        return rows
+
+    monkeypatch.setattr(gh, "pages", transfer)
+    assert tick() == "readback_or_write_failed"
+    assert gh.writes == writes
+    assert tick() == "ownership_conflict"

@@ -26,6 +26,7 @@ from factory_handoff import (
     latest_label,
     login,
 )
+from public_status import make_status, markdown_text, validation_repository
 
 MARKER = "<!-- automation-improvement-customer: 1 -->"
 PULL = re.compile(rf"https://github\.com/({REPO.pattern})/pull/([1-9][0-9]*)")
@@ -38,13 +39,26 @@ def public_text(report, key):
         or not 1 <= len(value.strip()) <= 600
         or PRIVATE_TEXT.search(value)
         or redact(value) != value
-        or any(c in value for c in ("\n", "\r", "@"))
+        or "@" in value
+        or not value.isprintable()
     ):
         raise ValueError(f"Supply sanitized single-line public text for {key}")
     return value.strip()
 
 
-def verify_outcome(gh, report, repo, allowed):
+def validation_link(url, repo):
+    try:
+        target = validation_repository(url)
+    except ValueError as error:
+        raise ValueError(
+            "Supply a GitHub Actions run or a commit-pinned file for validation_url"
+        ) from error
+    if target.casefold() != repo.casefold():
+        raise ValueError("The validation_url must point to the issue repository")
+    return f"[Customer validation evidence]({url})"
+
+
+def verify_outcome(gh, report, repo, allowed, actor):
     if not isinstance(report, dict):
         raise ValueError("Supply a customer outcome object")
     outcome = report.get("outcome")
@@ -53,12 +67,18 @@ def verify_outcome(gh, report, repo, allowed):
     pulls = report.get("pull_requests", [])
     if not isinstance(pulls, list) or len(pulls) > 32:
         raise ValueError("Expected a bounded list of pull requests")
+    validation = markdown_text(public_text(report, "validation"))
+    if "validation_url" in report:
+        validation += " " + validation_link(report["validation_url"], repo)
     lines = [
-        "**Reported validation:** " + public_text(report, "validation"),
-        "**Limitations:** " + public_text(report, "limitations"),
-        "**Next action:** " + public_text(report, "next_action"),
+        "**Customer-reported validation:** " + validation,
+        "**Limitations:** " + markdown_text(public_text(report, "limitations")),
+        "**GitHub review and CI:** GitHub confirms PR state and revisions. See GitHub for review decisions and check results."
+        if pulls
+        else "**GitHub review and CI:** No pull request was supplied.",
     ]
     observed = {}
+    visible_pulls = []
     drift = False
     for item in pulls:
         if not isinstance(item, dict) or not isinstance(item.get("url"), str):
@@ -109,18 +129,43 @@ def verify_outcome(gh, report, repo, allowed):
         ):
             lines.append("A related pull request is recorded privately.")
             continue
-        revisions = f"reported head `{item['head']}`, current head `{head}`"
+        url = live["html_url"]
+        reference = {
+            "url": url,
+            "state": "ready" if stage == "open for review" else stage,
+            "head": head,
+            "base": base,
+            "reported_head": item["head"],
+        }
+        revisions = [f"head `{head}`", f"base `{base}`"]
+        if head != item["head"]:
+            revisions.append(f"previously reported head `{item['head']}`")
         if "base" in item:
-            revisions += f", reported base `{item['base']}`"
+            reference["reported_base"] = item["base"]
+            if base != item["base"]:
+                revisions.append(f"previously reported base `{item['base']}`")
+        visible_pulls.append(reference)
         lines.append(
-            f"- {live['html_url']} ({stage}), {revisions}, current base `{base}`."
+            f"- [PR {target}#{number}]({url}) ({stage}) · "
+            f"[Checks for {target}#{number}]({url}/checks?sha={head}) · {', '.join(revisions)}."
         )
+    record = make_status(
+        outcome,
+        actor,
+        report.get("next_actor", "maintainer"),
+        public_text(report, "next_action"),
+        next_actor_login=report.get("next_actor_login"),
+        pull_requests=visible_pulls,
+        validation_url=report.get("validation_url"),
+    )
     if drift:
-        outcome = "incomplete"
-        lines[2] = (
-            "**Next action:** Revalidate the changed revision and submit an updated outcome."
+        record.update(
+            status="incomplete",
+            next_actor="executor",
+            next_actor_login=actor,
+            next_action="Revalidate the changed revision and submit an updated outcome.",
         )
-    return outcome, lines, list(observed.values())
+    return record, lines, list(observed.values())
 
 
 def ownership(gh, config, endpoint, url, actor):
@@ -133,21 +178,17 @@ def ownership(gh, config, endpoint, url, actor):
         or not {EXTERNAL, CUSTOMER} <= labels
     ):
         raise ValueError("Issue is outside customer ownership")
-    if on_hold(config, labels) or any(
-        login(user) != actor for user in issue.get("assignees", [])
-    ):
-        raise ValueError("The issue has a maintainer hold or another assignee")
+    if any(login(user) != actor for user in issue.get("assignees", [])):
+        raise ValueError("The issue has another assignee")
     timeline = gh.pages(endpoint + "/timeline?per_page=100")
     event = latest_label(timeline, CUSTOMER)
     enrollers = {v.casefold() for v in config["customer_workflow"]["trusted_enrollers"]}
     if event.get("event") != "labeled" or login(event.get("actor")) not in enrollers:
         raise ValueError("Missing trusted customer enrollment")
-    return (
-        issue,
-        labels,
-        timeline,
-        (event.get("node_id") or event.get("id") or event.get("created_at")),
-    )
+    enrollment = event.get("node_id") or event.get("id") or event.get("created_at")
+    if not enrollment:
+        raise ValueError("Missing customer enrollment identity")
+    return issue, labels, timeline, enrollment
 
 
 def open_repair(timeline, repo, number):
@@ -185,6 +226,31 @@ def prior_pulls(receipts):
     }
 
 
+def publish(gh, endpoint, issue_url, attempt, record, lines=(), *, start=False):
+    role = record["next_actor"]
+    next_actor = "CI" if role == "ci" else role.capitalize()
+    if record.get("next_actor_login"):
+        next_actor += f" (`{record['next_actor_login']}`)"
+    actor = record["owner"]
+    body = "\n\n".join(
+        [
+            f"**Customer workflow:** {record['status'].replace('_', ' ')} · attempt `{attempt}`",
+            f"**Implementation owner:** `{actor}`",
+            f"**Next actor:** {next_actor}",
+            "**Next action:** " + markdown_text(record["next_action"]),
+            *lines,
+        ]
+    )
+    status_url = gh.write_status(endpoint, actor, body, record, marker=MARKER)
+    return {
+        "start": start,
+        "issue": issue_url,
+        "attempt": attempt,
+        "status_url": status_url,
+        **record,
+    }
+
+
 def run(config, operation, issue_url, attempt, report=None, *, github=None):
     if operation not in ("claim", "report", "reconcile") or (operation == "report") != (
         report is not None
@@ -219,6 +285,27 @@ def run(config, operation, issue_url, attempt, report=None, *, github=None):
         issue, labels, timeline, enrollment = ownership(
             gh, config, endpoint, issue_url, actor
         )
+
+        def current_labels(*, start=False, held=False):
+            current, live_labels, current_timeline, current_enrollment = ownership(
+                gh, config, endpoint, issue_url, actor
+            )
+            if current_enrollment != enrollment:
+                raise ValueError("Customer enrollment changed during publication")
+            if on_hold(config, live_labels) != held or (
+                held and current["state"] != "open"
+            ):
+                raise ValueError(
+                    "The issue's maintainer hold changed during publication"
+                )
+            if start and (
+                current["state"] != "open"
+                or not {ACTIVE, READY} & live_labels
+                or open_repair(current_timeline, repo, number)
+            ):
+                raise ValueError("The issue is no longer eligible to start")
+            return live_labels
+
         factory = root / "factory-handoff.json"
         if factory.exists() and endpoint.casefold() in {
             key.casefold() for key in read_json(factory)
@@ -226,6 +313,23 @@ def run(config, operation, issue_url, attempt, report=None, *, github=None):
             raise ValueError("Reconcile the recorded Factory attempt before transfer")
         if native_claimed(root, issue_url):
             raise ValueError("Reconcile the native repair before transfer")
+        if on_hold(config, labels):
+            if (
+                operation != "reconcile"
+                or issue["state"] != "open"
+                or previous.get("attempt") != attempt
+                or previous.get("owner") != actor
+                or previous.get("enrollment") != enrollment
+            ):
+                raise ValueError("The issue has a maintainer hold")
+            record = make_status(
+                "maintainer_hold",
+                actor,
+                "maintainer",
+                "Resolve the blocker and remove the hold label when work can resume.",
+            )
+            current_labels(held=True)
+            return publish(gh, endpoint, issue_url, attempt, record)
         if previous.get("attempt") != attempt:
             if (
                 operation != "claim"
@@ -279,12 +383,6 @@ def run(config, operation, issue_url, attempt, report=None, *, github=None):
             and "report" not in previous
             and not previous.get("start_delivered")
         )
-        if start and (
-            issue["state"] != "open"
-            or not {ACTIVE, READY} & labels
-            or open_repair(timeline, repo, number)
-        ):
-            raise ValueError("The issue is no longer eligible to start")
         if operation == "report":
             if not previous.get("start_delivered") and "report" not in previous:
                 raise ValueError("Complete the claim before reporting")
@@ -294,49 +392,46 @@ def run(config, operation, issue_url, attempt, report=None, *, github=None):
                 if prior:
                     history.append(prior)
                 previous["report"] = report
-        outcome, lines = (
-            "implementing",
-            ["**Next action:** The customer executor investigates the issue."],
-        )
         if "report" in previous:
-            outcome, lines, previous["observed_pulls"] = verify_outcome(
-                gh, previous["report"], repo, allowed
+            record, lines, previous["observed_pulls"] = verify_outcome(
+                gh, previous["report"], repo, allowed, actor
             )
-        elif operation == "reconcile":
-            raise ValueError("No reported outcome to reconcile")
+        elif operation == "reconcile" and not previous.get("start_delivered"):
+            raise ValueError("Complete the claim before reconciling")
+        else:
+            record = make_status(
+                "implementing",
+                actor,
+                "executor",
+                "Investigate the issue and report the outcome.",
+                next_actor_login=actor,
+            )
+            lines = []
+        outcome = record["status"]
+        current_labels(start=start)
         previous.update(outcome=outcome, publication_pending=True)
         replace_json(path, previous)
-        body = "\n\n".join(
-            [
-                MARKER,
-                f"**Customer workflow:** {actor} · attempt `{attempt}` · **{outcome}**",
-                *lines,
-            ]
+        published = publish(
+            gh, endpoint, issue_url, attempt, record, lines, start=start
         )
-        gh.write_comment(endpoint, actor, body, marker=MARKER)
+        labels = current_labels(start=start)
         desired = {ACTIVE} if outcome == "implementing" else {OUTCOME_LABELS[outcome]}
         add = desired - labels
+        remove = (labels & {ACTIVE, *OUTCOME_LABELS.values()}) - desired
+        if outcome == "implementing" and READY in labels:
+            remove.add(READY)
         if add:
             gh.api(
                 endpoint + "/labels",
                 "POST",
                 ["labels[]=" + label for label in sorted(add)],
             )
-        remove = (labels & {ACTIVE, *OUTCOME_LABELS.values()}) - desired
-        if outcome == "implementing" and READY in labels:
-            remove.add(READY)
+            labels = current_labels(start=start)
         for name in sorted(remove):
-            gh.api(endpoint + "/labels/" + name, "DELETE")
-        current, after, timeline, current_enrollment = ownership(
-            gh, config, endpoint, issue_url, actor
-        )
-        if (
-            not desired <= after
-            or remove & after
-            or current_enrollment != enrollment
-            or start
-            and (current["state"] != "open" or open_repair(timeline, repo, number))
-        ):
+            if name in labels:
+                gh.api(endpoint + "/labels/" + name, "DELETE")
+                labels = current_labels(start=start)
+        if not desired <= labels or remove & labels:
             raise ValueError(
                 "Customer lifecycle or enrollment changed during publication"
             )
@@ -344,13 +439,7 @@ def run(config, operation, issue_url, attempt, report=None, *, github=None):
         if start:
             previous["start_delivered"] = True
         replace_json(path, previous)
-        return {
-            "start": start,
-            "issue": issue_url,
-            "attempt": attempt,
-            "owner": actor,
-            "status": outcome,
-        }
+        return published
     finally:
         os.close(fd)
 

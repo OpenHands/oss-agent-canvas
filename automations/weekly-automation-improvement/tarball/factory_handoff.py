@@ -24,6 +24,7 @@ from backlog import (
 from common import callback, encode, read_json, replace_json
 from factory_linear import Linear, matches_target
 from github_io import command, json_pages
+from public_status import make_status, markdown_text, status_marker, update_issue_status
 
 REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*/(?!\.{1,2}$)[A-Za-z0-9_.-]+")
 ISSUE = re.compile(rf"https://github\.com/({REPO.pattern})/issues/([1-9][0-9]*)")
@@ -33,33 +34,71 @@ STATUS = "<!-- automation-improvement-factory: 1 -->"
 RESULT = "<!-- automation-improvement-resolver: {} -->"
 TERMINAL = {"blocked", "unrepaired", "merged", "closed"}
 NEXT = {
-    "assigning": ("Assigning this issue to the configured resolver.", "Dispatcher"),
+    "assigning": (
+        "dispatcher",
+        "Assign the configured resolver and confirm the assignment on GitHub.",
+    ),
     "filing": (
-        "Preparing this issue for the configured implementation queue.",
-        "Dispatcher",
+        "dispatcher",
+        "File the implementation ticket and confirm it reached the configured queue.",
     ),
     "implementing": (
-        "The resolver is investigating and testing this issue.",
-        "Resolver",
+        "executor",
+        "Investigate the issue, test the fix and open a linked draft pull request, or report the blocker.",
     ),
-    "checks": ("The current revision needs all configured checks to pass.", "CI"),
+    "checks": ("ci", "Run the configured checks on the current pull request head."),
     "reviewing": (
-        "The current revision is waiting for independent review.",
-        "Reviewer",
+        "reviewer",
+        "Review the current pull request head and record a verdict on GitHub.",
     ),
     "revision-needed": (
-        "The current revision requires changes or has failing checks.",
-        "Maintainer",
+        "maintainer",
+        "Review the requested changes and arrange a revision on the existing pull request.",
     ),
-    "incomplete": ("The reviewer could not verify this revision.", "Maintainer"),
+    "incomplete": (
+        "maintainer",
+        "Inspect the independent review and provide the missing behavior evidence.",
+    ),
     "accepted": (
-        "The current revision passed the configured checks and independent review.",
-        "Maintainer",
+        "maintainer",
+        "Inspect the behavior evidence and decide whether to merge the reviewed pull request.",
     ),
-    "blocked": ("The external handoff needs maintainer intervention.", "Maintainer"),
-    "unrepaired": ("The resolver finished without a patch.", "Maintainer"),
-    "merged": ("GitHub reports the linked pull request was merged.", "Maintainer"),
-    "closed": ("GitHub reports the linked work was closed.", "Maintainer"),
+    "blocked": (
+        "maintainer",
+        "Reconcile the recorded implementation attempt before requesting another run.",
+    ),
+    "unrepaired": (
+        "maintainer",
+        "Review the investigation and decide whether to narrow the brief or close the issue.",
+    ),
+    "merged": (
+        "maintainer",
+        "Verify the merged change against the issue’s acceptance criteria and close any remaining follow-up.",
+    ),
+    "closed": (
+        "maintainer",
+        "Reconcile the issue with the closed work and decide whether to reopen or close the investigation.",
+    ),
+    "maintainer_hold": (
+        "maintainer",
+        "Resolve the hold and remove the hold label when the Factory can resume.",
+    ),
+    "configuration_changed": (
+        "maintainer",
+        "Restore the recorded Factory route or reconcile the existing work before transferring it.",
+    ),
+    "untrusted_enrollment": (
+        "maintainer",
+        "Review the existing work and have a trusted enroller confirm the Factory route.",
+    ),
+    "ownership_conflict": (
+        "maintainer",
+        "Reconcile the existing work and select one owner.",
+    ),
+    "enrollment_removed": (
+        "maintainer",
+        "Reconcile the existing work before selecting an owner.",
+    ),
 }
 
 
@@ -209,36 +248,68 @@ class GitHub:
             )
         )
 
-    def write_comment(self, endpoint, author, body, marker=STATUS):
-        comments = self.pages(endpoint + "/comments?per_page=100")
-        owned = [
-            row
-            for row in comments
-            if login(row.get("user")) == author
-            and (row.get("body") or "").startswith(marker + "\n")
-        ]
+    def write_comment(
+        self, endpoint, author, body, marker=STATUS, *, before_write=None
+    ):
+        def owned_comments():
+            return [
+                row
+                for row in self.pages(endpoint + "/comments?per_page=100")
+                if login(row.get("user")) == author.casefold()
+                and (row.get("body") or "").startswith(marker + "\n")
+            ]
+
+        owned = owned_comments()
         if len(owned) > 1:
             raise ValueError("Multiple dispatcher status comments exist")
+        original_id = owned[0].get("id") if owned else None
+        if owned and (type(original_id) is not int or original_id <= 0):
+            raise ValueError("Missing GitHub status comment identity")
         if owned and owned[0]["body"] == body:
-            return
-        if not owned:
-            self.api(endpoint + "/comments", "POST", ["body=" + body])
-        else:
-            self.api(
-                endpoint.split("/issues/")[0] + f"/issues/comments/{owned[0]['id']}",
+            return original_id
+        if before_write:
+            before_write()
+        if owned:
+            result = self.api(
+                endpoint.split("/issues/")[0] + f"/issues/comments/{original_id}",
                 "PATCH",
                 ["body=" + body],
             )
-        confirmed = [
-            row.get("body")
-            for row in self.pages(endpoint + "/comments?per_page=100")
-            if login(row.get("user")) == author
-            and (row.get("body") or "").startswith(marker + "\n")
-        ]
-        if confirmed != [body]:
+        else:
+            result = self.api(endpoint + "/comments", "POST", ["body=" + body])
+        confirmed = owned_comments()
+        if len(confirmed) != 1 or confirmed[0]["body"] != body:
             raise ValueError("GitHub did not confirm the status comment")
+        comment_id = confirmed[0].get("id")
+        if (
+            type(comment_id) is not int
+            or comment_id <= 0
+            or (original_id is not None and comment_id != original_id)
+            or (result and result.get("id") != comment_id)
+        ):
+            raise ValueError("GitHub did not confirm the status comment identity")
+        return comment_id
 
-    def sync_labels(self, endpoint, issue, status):
+    def write_status(
+        self, endpoint, actor, body, record, marker=STATUS, *, recheck=None
+    ):
+        if not body.startswith(marker + "\n"):
+            body = marker + "\n" + body
+        body += "\n\n" + status_marker(record)
+        comment_id = self.write_comment(
+            endpoint, actor, body, marker, before_write=recheck
+        )
+        update_issue_status(
+            self,
+            endpoint,
+            comment_id,
+            record,
+            current_issue=(lambda: recheck()[0]) if recheck else None,
+        )
+        return f"https://github.com/{endpoint.removeprefix('repos/')}#issuecomment-{comment_id}"
+
+    def sync_labels(self, endpoint, issue, status, *, current=None):
+        current = current or (lambda: self.api(endpoint))
         labels = label_names(issue)
         desired = {ACTIVE} if status not in (TERMINAL | {"accepted"}) else set()
         if status == "blocked":
@@ -250,9 +321,10 @@ class GitHub:
         if add:
             self.api(endpoint + "/labels", "POST", ["labels[]=" + name for name in add])
         for name in remove:
-            self.api(endpoint + "/labels/" + name, "DELETE")
+            if name in label_names(current()):
+                self.api(endpoint + "/labels/" + name, "DELETE")
         if add or remove:
-            after = label_names(self.api(endpoint))
+            after = label_names(current())
             if after & managed != desired:
                 raise ValueError("GitHub did not confirm the issue labels")
 
@@ -363,75 +435,125 @@ class Dispatcher:
     def save(self):
         replace_json(self.state_path, self.state)
 
-    def publish(self, endpoint, issue, attempt):
-        status = attempt["status"]
-        text, actor = NEXT[status]
-        extra = attempt.get("detail", "")
-        if attempt.get("pr") is not None:
-            repo = attempt["route"]["repo"]
-            extra += (
-                f"\n\n[Pull request](https://github.com/{repo}/pull/{attempt['pr']})"
-            )
-            if attempt.get("head"):
-                extra += f" at `{attempt['head']}`"
-            if "draft" in attempt:
-                extra += " (draft)" if attempt["draft"] else " (ready for review)"
-            extra += "."
+    def write_status(
+        self, endpoint, attempt, status, detail="", action="", *, recheck=None
+    ):
         route = attempt["route"]
-        if actor == "Reviewer":
-            actor = "@" + route["reviewer"]
-        elif actor == "Resolver":
-            actor = "@" + route["resolver_author"]
+        role, default_action = NEXT[status]
+        next_login = {
+            "executor": route["resolver_author"],
+            "reviewer": route["reviewer"],
+            "dispatcher": self.actor,
+        }.get(role)
+        actor = "CI" if role == "ci" else role.capitalize()
+        if next_login:
+            actor += f" (@{next_login})"
         route_name = (
             "GitHub assignment" if route["mode"] == "assignment" else "Linear ticket"
         )
-        marker = f"<!-- automation-improvement-route: {route['mode']} {status} -->"
         sections = [
-            f"{STATUS}\n{marker}",
+            f"{STATUS}\n<!-- automation-improvement-route: {route['mode']} {status} -->",
+            f"**Factory status:** {status.replace('_', ' ').replace('-', ' ')} · **Dispatcher:** @{self.actor}.",
             f"**Implementation owner:** @{route['resolver_author']} via {route_name}.",
-            text,
-            extra.strip(),
-            f"**Next actor:** {actor}.",
+            detail,
         ]
-        body = "\n\n".join(section for section in sections if section)
-        self.gh.write_comment(endpoint, self.actor, body)
-        self.gh.sync_labels(endpoint, issue, status)
+        pulls = []
+        if attempt.get("pr") is not None:
+            url = f"https://github.com/{route['repo']}/pull/{attempt['pr']}"
+            summary = f"[Pull request #{attempt['pr']}]({url})"
+            head = attempt.get("head")
+            if head:
+                summary += f" last observed at `{head}`"
+            if stage := attempt.get("pr_state"):
+                summary += f" ({stage})"
+            elif "draft" in attempt:
+                summary += " (draft)" if attempt["draft"] else " (ready for review)"
+            pr_state = {
+                "draft": "draft",
+                "ready for review": "ready",
+                "closed without merging": "closed",
+                "merged": "merged",
+            }.get(stage)
+            if head and pr_state:
+                pull = {"url": url, "head": head, "state": pr_state}
+                if (
+                    status in {"accepted", "revision-needed"}
+                    and attempt.get("reviewed_head") == head
+                ):
+                    pull["reviewed_head"] = head
+                pulls.append(pull)
+            if head:
+                names = ", ".join(
+                    markdown_text(" ".join(name.split())) for name in route["checks"]
+                )
+                summary += (
+                    f" · [Checks for this head]({url}/checks?sha={head}) ({names})"
+                )
+            sections.append(summary)
+            if status == "checks" and attempt.get("previous_head"):
+                sections.append(
+                    f"The prior head `{attempt['previous_head']}` was superseded. "
+                    "The new head needs fresh checks and review."
+                )
+        record = make_status(
+            status,
+            route["resolver_author"],
+            role,
+            action or default_action,
+            next_actor_login=next_login,
+            pull_requests=pulls,
+        )
+        sections.extend(
+            [f"**Next actor:** {actor}.", f"**Next action:** {record['next_action']}"]
+        )
+        self.gh.write_status(
+            endpoint,
+            self.actor,
+            "\n\n".join(filter(None, sections)),
+            record,
+            recheck=recheck,
+        )
 
-    def transition(self, endpoint, issue, attempt, status, detail=""):
-        attempt.update(status=status, detail=detail)
-        if status == "implementing":
-            attempt["dispatched"] = True
-        self.save()
-        self.publish(endpoint, issue, attempt)
-        return status
+    def publish(self, endpoint, attempt, current):
+        self.write_status(
+            endpoint,
+            attempt,
+            attempt["status"],
+            attempt.get("detail", ""),
+            attempt.get("action", ""),
+            recheck=current,
+        )
 
-    def assign(self, endpoint, issue, attempt, route):
+        def current_issue():
+            return current()[0]
+
+        self.gh.sync_labels(
+            endpoint, current_issue(), attempt["status"], current=current_issue
+        )
+
+    def assign(self, endpoint, attempt, route, current, land):
         repo = route["repo"]
         if self.gh.api(f"repos/{repo}").get("visibility") != "public":
-            return self.transition(
-                endpoint,
-                issue,
-                attempt,
+            return land(
                 "blocked",
                 "The configured OSS resolver requires a public repository.",
+                "Select an implementation route authorized for this repository.",
             )
-        self.publish(endpoint, issue, attempt)
-        timeline = endpoint + "/timeline?per_page=100"
+        self.publish(endpoint, attempt, current)
+        issue, timeline = current(start=True)
         assignee = route["assignee"]
-        assignment = latest_assignment(self.gh.pages(timeline), assignee)
+        assignment = latest_assignment(timeline, assignee)
         if not assignment and not issue.get("assignees"):
             attempt["dispatch_intent"] = True
             self.save()
             self.gh.api(endpoint + "/assignees", "POST", ["assignees[]=" + assignee])
-            issue = self.gh.api(endpoint)
-            assignment = latest_assignment(self.gh.pages(timeline), assignee)
+            issue, timeline = current()
+            assignment = latest_assignment(timeline, assignee)
         if assignee not in set(map(login, issue.get("assignees", []))):
-            return self.transition(
-                endpoint,
-                issue,
-                attempt,
+            return land(
                 "blocked",
                 "GitHub did not confirm the resolver assignment.",
+                "Check the issue assignees and reconcile the dispatcher’s recorded assignment.",
             )
         if not assignment and self.now - attempt["started"] < self.timeout:
             return "awaiting_assignment_event"
@@ -439,14 +561,12 @@ class Dispatcher:
             assignment.get("event") != "assigned"
             or login(assignment.get("actor")) != self.actor
         ):
-            return self.transition(
-                endpoint,
-                issue,
-                attempt,
+            return land(
                 "blocked",
                 "GitHub did not confirm a trusted assignment event.",
+                "Check who assigned the resolver and reconcile the assignment with the dispatcher.",
             )
-        return self.transition(endpoint, issue, attempt, "implementing")
+        return land("implementing")
 
     def find_pulls(self, route, number):
         owner = route["repo"].split("/", 1)[0]
@@ -516,18 +636,16 @@ class Dispatcher:
             None,
         )
 
-    def advance(self, repo, number, *, dispatch):
-        route = self.routes[repo.casefold()]
-        endpoint = f"repos/{route['repo']}/issues/{number}"
-        key = endpoint.casefold()
-        issue = self.gh.api(endpoint)
+    def route_status(self, issue, timeline, route, number, attempt):
+        repo = route["repo"]
         if (
             issue.get("html_url", "").casefold()
-            != f"https://github.com/{route['repo']}/issues/{number}".casefold()
+            != f"https://github.com/{repo}/issues/{number}".casefold()
         ):
-            return "issue_identity_changed"
+            return "issue_identity_changed", ""
+        if "pull_request" in issue:
+            return "not_enrolled", ""
         labels = label_names(issue)
-        attempt = self.state.get(key)
         customer_claim = (
             self.state_path.parent
             / "customer-attempts"
@@ -540,53 +658,142 @@ class Dispatcher:
         elif CUSTOMER in labels or customer_claim.is_file():
             other_owner = "customer"
         if other_owner:
-            if not attempt:
+            if attempt:
                 return (
-                    "ownership_conflict"
-                    if other_owner == "customer"
-                    and CUSTOMER in labels
-                    and FACTORY in labels
-                    else other_owner + "_owned"
+                    "ownership_conflict",
+                    f"A Factory claim exists and the issue also has a {other_owner} owner.",
                 )
-            if not self.dry_run:
-                self.gh.write_comment(
-                    endpoint,
-                    self.actor,
-                    STATUS
-                    + f"\n\nA Factory claim exists and the issue also has a {other_owner} owner. "
-                    "Reconcile the existing work and select one owner.\n\n**Next actor:** Maintainer.",
-                )
-            return "ownership_conflict"
-        if "pull_request" in issue:
-            return "not_enrolled"
+            if other_owner == "customer" and {CUSTOMER, FACTORY} <= labels:
+                return "ownership_conflict", ""
+            return other_owner + "_owned", ""
         if not {EXTERNAL, FACTORY} <= labels:
-            if not attempt:
-                return "not_enrolled"
-            if not self.dry_run:
-                self.gh.write_comment(
-                    endpoint,
-                    self.actor,
-                    STATUS
-                    + "\n\nFactory enrollment was removed during a recorded attempt. "
-                    "Reconcile the existing work before selecting an owner.\n\n**Next actor:** Maintainer.",
+            if attempt:
+                return (
+                    "enrollment_removed",
+                    "Factory enrollment was removed during a recorded attempt.",
                 )
-            return "enrollment_removed"
-        timeline = self.gh.pages(endpoint + "/timeline?per_page=100")
+            return "not_enrolled", ""
         enrollment = latest_label(timeline, FACTORY)
         if (
             enrollment.get("event") != "labeled"
             or login(enrollment.get("actor")) not in self.enrollers
         ):
-            return "untrusted_enrollment"
+            return (
+                "untrusted_enrollment",
+                "The latest Factory enrollment could not be verified.",
+            )
+        if attempt and (
+            attempt["route"] != route or attempt["dispatcher"] != self.actor
+        ):
+            return (
+                "configuration_changed",
+                "The configured Factory route differs from the recorded attempt.",
+            )
+        if attempt:
+            assignee = route.get("assignee")
+            assigned = {login(row) for row in issue.get("assignees", [])}
+            if assigned - {assignee}:
+                return (
+                    "ownership_conflict",
+                    "Another account is assigned to the Factory issue.",
+                )
+            event = latest_assignment(timeline, assignee) if assignee else {}
+            if (
+                assignee and attempt.get("dispatched") and assignee not in assigned
+            ) or (
+                event
+                and (
+                    event["event"] == "unassigned"
+                    or login(event.get("actor")) != self.actor
+                )
+            ):
+                return (
+                    "ownership_conflict",
+                    "The recorded resolver assignment changed on GitHub.",
+                )
         if on_hold(self.config, labels - {BLOCKED}):
-            return "maintainer_hold"
+            return (
+                "maintainer_hold",
+                "A maintainer hold label has paused the Factory handoff.",
+            )
         if BLOCKED in labels:
             hold = latest_label(timeline, BLOCKED)
+            if hold.get("event") != "labeled" or login(hold.get("actor")) != self.actor:
+                return (
+                    "maintainer_hold",
+                    "The blocked label has paused the Factory handoff.",
+                )
+        return None, ""
+
+    def advance(self, repo, number, *, dispatch):
+        route = self.routes[repo.casefold()]
+        endpoint = f"repos/{route['repo']}/issues/{number}"
+        key = endpoint.casefold()
+        attempt = self.state.get(key)
+
+        def snapshot():
+            events = self.gh.pages(endpoint + "/timeline?per_page=100")
+            issue = self.gh.api(endpoint)
+            reason, detail = self.route_status(issue, events, route, number, attempt)
+            return issue, events, reason, detail
+
+        def enrollment_key(events):
+            event = latest_label(events, FACTORY)
+            return (
+                event.get("node_id") or event.get("id") or event.get("created_at"),
+                login(event.get("actor")),
+            )
+
+        first = self.gh.api(endpoint)
+        if (
+            first.get("html_url", "").casefold()
+            != f"https://github.com/{route['repo']}/issues/{number}".casefold()
+        ):
+            return "issue_identity_changed"
+        if "pull_request" in first:
+            return "not_enrolled"
+
+        issue, timeline, reason, detail = snapshot()
+        enrollment = enrollment_key(timeline)
+
+        def current(*, start=False):
+            existing = self.find_pulls(route, number) if start else []
+            live, events, live_reason, live_detail = snapshot()
             if (
-                hold.get("event") == "labeled"
-                and login(hold.get("actor")) != self.actor
+                (live_reason, live_detail) != (reason, detail)
+                or enrollment_key(events) != enrollment
+                or live["state"] != issue["state"]
             ):
-                return "maintainer_hold"
+                raise ValueError(
+                    "Factory ownership, enrollment, hold or issue state changed"
+                )
+            if (
+                not reason
+                and live["state"] == "open"
+                and attempt["status"] in {"assigning", "filing"}
+                and not {ACTIVE, READY} & label_names(live)
+            ):
+                raise ValueError("Factory readiness was removed before dispatch")
+            if start and (
+                live["state"] != "open"
+                or (
+                    not live.get("assignees")
+                    and (existing or self.linked_pulls(route, number, events))
+                )
+            ):
+                raise ValueError("The Factory issue is no longer eligible for dispatch")
+            return live, events
+
+        if reason:
+            if (
+                detail
+                and attempt
+                and attempt.get("dispatcher") == self.actor
+                and not self.dry_run
+            ):
+                self.write_status(endpoint, attempt, reason, detail, recheck=current)
+            return reason
+        labels = label_names(issue)
         linked = self.linked_pulls(route, number, timeline)
         if not attempt:
             if (
@@ -619,19 +826,25 @@ class Dispatcher:
         elif self.dry_run:
             return attempt["status"]
 
-        def land(status, detail=""):
-            return self.transition(endpoint, issue, attempt, status, detail)
+        def land(status, detail="", action=""):
+            current()
+            attempt.update(status=status, detail=detail, action=action)
+            if status == "implementing":
+                attempt["dispatched"] = True
+            self.save()
+            self.publish(endpoint, attempt, current)
+            return status
 
-        if attempt["route"] != route or attempt["dispatcher"] != self.actor:
-            return "configuration_changed"
         if (
             attempt.get("pr") is None
             and attempt["status"] in TERMINAL
             and not attempt.get("dispatched")
         ):
-            return land(attempt["status"], attempt.get("detail", ""))
+            return land(
+                attempt["status"], attempt.get("detail", ""), attempt.get("action", "")
+            )
         if issue["state"] != "open" and attempt["status"] in {"assigning", "filing"}:
-            return land("closed")
+            return land("closed", "The issue was closed before dispatch.")
         if (
             attempt["status"] in {"assigning", "filing"}
             and "dispatch_intent" not in attempt
@@ -640,29 +853,37 @@ class Dispatcher:
                 pr["number"] for pr in self.find_pulls(route, number)
             }
             if existing:
-                return land("blocked", self.competing_detail(route, existing))
-        if attempt["status"] == "filing" and issue.get("assignees"):
-            return land("blocked", "The issue already has an implementation owner.")
+                return land(
+                    "blocked",
+                    self.competing_detail(route, existing),
+                    "Compare the linked work and select the pull request for this issue.",
+                )
         if attempt["status"] == "assigning":
-            return self.assign(endpoint, issue, attempt, route)
+            return self.assign(endpoint, attempt, route, current, land)
         ticket = None
         if route["mode"] == "linear":
             canonical = f"https://github.com/{route['repo']}/issues/{number}"
             if attempt["status"] == "filing":
-                self.publish(endpoint, issue, attempt)
-                attempt["dispatch_intent"] = True
-                self.save()
-                ticket = self.linear.ensure(route, canonical)
+                self.publish(endpoint, attempt, current)
+
+                def before_create():
+                    current(start=True)
+                    attempt["dispatch_intent"] = True
+                    self.save()
+
+                ticket = self.linear.ensure(
+                    route, canonical, before_create=before_create
+                )
                 attempt["ticket"] = {
                     name: ticket[name] for name in ("id", "identifier", "url")
                 }
-                issue = self.gh.api(endpoint)
                 return land("implementing")
             ticket = self.linear.ticket(attempt["ticket"]["id"], route)
             if ticket is None:
                 return land(
                     "blocked",
                     "The associated implementation ticket is unavailable.",
+                    "Verify access to the recorded implementation ticket and restore it before resuming.",
                 )
             if (
                 not matches_target(ticket, route, canonical)
@@ -672,61 +893,82 @@ class Dispatcher:
                     for name in ("id", "identifier")
                 )
             ):
-                return land("blocked", "The implementation ticket identity changed.")
+                return land(
+                    "blocked",
+                    "The implementation ticket identity changed.",
+                    "Verify the original ticket’s team and issue reference before resuming.",
+                )
 
         pulls = self.find_pulls(route, number)
         repo_info = self.gh.api(f"repos/{route['repo']}")
-        route = route | {"base_ref": repo_info["default_branch"]}
-        matches = [pr for pr in pulls if self.valid_pr(pr, route, number, ticket)]
+        pull_route = route | {"base_ref": repo_info["default_branch"]}
+        matches = [pr for pr in pulls if self.valid_pr(pr, pull_route, number, ticket)]
         candidates = {pr["number"] for pr in pulls} | set(linked)
         if (
             len(candidates) > 1
             or (pulls and len(matches) != 1)
             or (linked and not pulls)
         ):
-            return land("blocked", self.competing_detail(route, candidates))
+            return land(
+                "blocked",
+                self.competing_detail(route, candidates),
+                "Compare the linked work and select the pull request for this issue.",
+            )
         if not attempt.get("pr"):
             if not matches:
                 if issue["state"] != "open":
-                    return land("closed")
+                    return land(
+                        "closed",
+                        "The issue was closed before a resolver pull request appeared.",
+                    )
                 outcome = self.resolver_outcome(endpoint, route, ticket)
                 if outcome:
                     return land(
                         outcome,
                         "The configured implementation adapter recorded this outcome.",
+                        "Check the resolver’s recorded blocker and resolve it before resuming."
+                        if outcome == "blocked"
+                        else "",
                     )
                 if self.now - attempt["started"] >= self.timeout:
                     return land(
                         "blocked",
                         "No resolver pull request appeared before the handoff deadline.",
+                        "Check the resolver’s progress and reconcile any existing branch before retrying.",
                     )
                 return land("implementing")
             attempt["pr"] = matches[0]["number"]
             self.save()
 
-        return self.review(route, number, ticket, issue, attempt, land)
+        return self.review(pull_route, number, ticket, issue, attempt, current, land)
 
-    def review(self, route, number, ticket, issue, attempt, land):
+    def review(self, route, number, ticket, issue, attempt, current, land):
+        attempt.pop("reviewed_head", None)
         pr_endpoint = f"repos/{route['repo']}/pulls/{attempt['pr']}"
         pr = self.gh.api(pr_endpoint)
         if not self.valid_pr(pr, route, number, ticket):
             return land(
                 "blocked",
                 "The linked pull request no longer matches the resolver and issue.",
+                "Verify the pull request’s author, branch and issue reference before resuming.",
             )
-        head = pr["head"]["sha"]
-        attempt["draft"] = pr["draft"]
-        if attempt.get("head") != head:
-            attempt.update(head=head, head_seen=self.now)
-            self.save()
-        if pr.get("merged"):
-            return land("merged")
-        if pr["state"] != "open" or issue["state"] != "open":
-            return land("closed")
+        self.observe_pull(attempt, pr)
+        head = attempt["head"]
+        if attempt["pr_state"] == "merged":
+            return land("merged", "GitHub reports that the linked pull request merged.")
+        if pr["state"] != "open":
+            return land("closed", "The pull request was closed without merging.")
+        if issue["state"] != "open":
+            return land(
+                "closed",
+                "The issue was closed while its pull request was still open.",
+                "Decide whether to reopen the issue or close the outstanding pull request.",
+            )
         if ticket and self.resolver_outcome("", route, ticket):
             return land(
                 "blocked",
                 "The implementation ticket needs maintainer attention before review.",
+                "Resolve the blocker in the implementation queue before requesting review.",
             )
         if route["scopes"] != ["*"]:
             files = self.gh.pages(pr_endpoint + "/files?per_page=100")
@@ -745,7 +987,8 @@ class Dispatcher:
             ):
                 return land(
                     "blocked",
-                    "The changes exceed the reviewer’s configured path scope.",
+                    f"The changes exceed the configured path scope for @{route['reviewer']}.",
+                    "Narrow the pull request or arrange a review that covers all changed paths.",
                 )
         checks = self.gh.checks(route["repo"], head, route["checks"])
         if checks != "green":
@@ -753,10 +996,13 @@ class Dispatcher:
                 return land(
                     "revision-needed",
                     "At least one configured check failed on this revision.",
+                    "Inspect the failing checks and arrange a fix on the existing pull request.",
                 )
             if self.now - attempt["head_seen"] >= self.timeout:
                 return land(
-                    "blocked", "The configured checks have not passed on this revision."
+                    "blocked",
+                    "The configured checks have not passed on this revision before the deadline.",
+                    "Inspect the linked checks and restore the missing or stalled check runs.",
                 )
             return land("checks")
 
@@ -772,52 +1018,50 @@ class Dispatcher:
             None,
         )
         pr = self.gh.api(pr_endpoint)
-        if pr.get("merged"):
-            return land("merged")
-        if pr["state"] != "open":
-            return land("closed")
-        if pr["head"]["sha"] != head:
-            attempt.update(
-                head=pr["head"]["sha"], head_seen=self.now, draft=pr["draft"]
-            )
-            return land(
-                "checks",
-                "A new revision arrived while the previous one was being checked.",
-            )
         if not self.valid_pr(pr, route, number, ticket):
             return land(
                 "blocked",
                 "The linked pull request no longer matches the resolver and issue.",
+                "Verify the pull request’s author, branch and issue reference before resuming.",
             )
-        attempt["draft"] = pr["draft"]
+        self.observe_pull(attempt, pr)
+        if attempt["pr_state"] == "merged":
+            return land("merged", "GitHub reports that the linked pull request merged.")
+        if pr["state"] != "open":
+            return land("closed", "The pull request was closed without merging.")
+        if attempt["head"] != head:
+            return land(
+                "checks",
+                "The head changed while the dispatcher was checking the previous revision.",
+            )
         if verdict == "APPROVED":
-            checks = ", ".join(route["checks"])
-            action = (
-                "inspect the behavior evidence and mark the draft ready"
-                if pr["draft"]
-                else "inspect the behavior evidence and decide whether to merge"
-            )
+            attempt["reviewed_head"] = head
             return land(
                 "accepted",
-                f"Configured checks passed ({checks}). @{route['reviewer']} approved the code. "
-                f"The maintainer should {action}.",
+                f"Configured checks passed. @{route['reviewer']} approved this head.",
+                "Inspect the behavior evidence and mark the draft ready if the acceptance criteria are met."
+                if pr["draft"]
+                else NEXT["accepted"][1],
             )
         if verdict == "INCONCLUSIVE":
             return land(
                 "incomplete",
-                "Inspect the independent review and provide the missing evidence.",
+                f"@{route['reviewer']} could not verify this head.",
             )
         if verdict == "CHANGES_REQUESTED":
+            attempt["reviewed_head"] = head
             return land(
                 "revision-needed",
-                "Read the independent review on the linked pull request, then push a revision there.",
+                f"@{route['reviewer']} requested changes to this head.",
             )
         if verdict == "DISMISSED":
             return land(
                 "blocked",
-                "The independent review was dismissed. A maintainer can request a fresh review.",
+                f"The review from @{route['reviewer']} on this head was dismissed.",
+                "Check the dismissal reason and request a fresh independent review.",
             )
         if head not in attempt["requests"]:
+            current()
             attempt["requests"][head] = self.now
             self.save()
             if route["reviewer"] not in set(
@@ -831,9 +1075,43 @@ class Dispatcher:
         if self.now - attempt["requests"][head] >= self.timeout:
             return land(
                 "blocked",
-                "No independent verdict arrived. Check the review request before requesting it again.",
+                f"No verdict arrived from @{route['reviewer']} before the review deadline.",
+                "Check the outstanding reviewer request on the pull request and arrange a fresh review.",
             )
-        return land("reviewing")
+        stale_review = next(
+            (
+                r["commit_id"]
+                for r in reversed(reviews)
+                if login(r.get("user")) == route["reviewer"]
+                and review_decision(r)
+                and r.get("commit_id") != head
+                and SHA.fullmatch(r.get("commit_id") or "")
+            ),
+            None,
+        )
+        detail = (
+            f"The review from @{route['reviewer']} covered the earlier head `{stale_review}`. "
+            "The current head still needs an independent verdict."
+            if stale_review
+            else "Configured checks passed. Independent review is pending on this head."
+        )
+        return land("reviewing", detail)
+
+    def observe_pull(self, attempt, pr):
+        attempt["draft"] = pr["draft"]
+        if pr.get("merged") or pr.get("merged_at"):
+            attempt["pr_state"] = "merged"
+        elif pr["state"] == "closed":
+            attempt["pr_state"] = "closed without merging"
+        else:
+            attempt["pr_state"] = "draft" if pr["draft"] else "ready for review"
+        if attempt.get("head") != pr["head"]["sha"]:
+            attempt.update(
+                previous_head=attempt.get("head"),
+                head=pr["head"]["sha"],
+                head_seen=self.now,
+            )
+            self.save()
 
     @staticmethod
     def valid_pr(pr, route, number, ticket=None):

@@ -11,6 +11,7 @@ from github_io import (
     repository_private,
     work_item,
 )
+from public_status import make_status, managed_block, status_marker
 from repair_policy import permits, resolve
 from topic_issue import SECTIONS, TopicIssue, public_issue_errors
 
@@ -22,7 +23,7 @@ EXTERNAL = "improvement-external"
 CUSTOMER = "improvement-customer"
 FACTORY = "improvement-factory"
 RECURRENT = "improvement-recurrent"
-EXTERNAL_STATUS = (
+LEGACY_EXTERNAL_STATUS = (
     "Check the issue labels for current eligibility. The external dispatcher's status comment records the latest handoff, any blocker, and the next actor. "
     "If no status comment exists, a maintainer can check whether this issue is enrolled for dispatch."
 )
@@ -216,6 +217,77 @@ def block(name, text):
     return f"<!-- {name}:start -->\n{text}\n<!-- {name}:end -->"
 
 
+def status_text(status, owner, summary, next_actor, next_action, *, pull_requests=None):
+    record = make_status(
+        status, owner, next_actor, next_action, pull_requests=pull_requests
+    )
+    owner_name = {"native": "Native repair workflow", "external": "External workflow"}
+    return "\n\n".join(
+        [
+            summary,
+            f"**Owner:** {owner_name[owner]}.",
+            f"**Next actor:** {next_actor.capitalize()}.",
+            f"**Next action:** {next_action}",
+            status_marker(record),
+        ]
+    )
+
+
+def initial_status_text(external: bool):
+    if external:
+        return status_text(
+            "awaiting_enrollment",
+            "external",
+            "Awaiting a maintainer's routing decision. After enrollment, the status comment "
+            "records the latest handoff, any blocker, and the next actor.",
+            "maintainer",
+            "Confirm the implementation target, acceptance criteria and validation plan. "
+            "Apply improvement-factory to enroll in the configured Factory route or "
+            "improvement-customer to use your own executor. Apply only one of these labels.",
+        )
+    return status_text(
+        "ready",
+        "native",
+        "Ready for investigation.",
+        "dispatcher",
+        "Claim this issue on the next native repair run when its priority is reached.",
+    )
+
+
+def refresh_enrollment_status(config, issue):
+    old_block = block("backlog-status", LEGACY_EXTERNAL_STATUS)
+    if old_block not in issue.value["body"]:
+        return
+    issue.refresh()
+    body = issue.value["body"]
+    labels = {row["name"] for row in issue.value.get("labels", [])}
+    if (
+        old_block not in body
+        or issue.value["state"] != "open"
+        or issue.value.get("assignees")
+        or not {EXTERNAL, READY, TOPIC} <= labels
+        or {ACTIVE, FACTORY, CUSTOMER, *OUTCOME_LABELS.values()} & labels
+        or on_hold(config, labels)
+        or any(
+            (comment.get("body") or "").startswith(
+                (
+                    "<!-- automation-improvement-customer:",
+                    "<!-- automation-improvement-factory:",
+                )
+            )
+            for comment in issue.comments
+        )
+    ):
+        return
+    if not managed_block(issue.value):
+        return
+    replacement = block("backlog-status", initial_status_text(True))
+    issue.update_body(body.replace(old_block, replacement, 1))
+    issue.refresh()
+    if replacement not in issue.value["body"]:
+        raise ValueError("GitHub did not confirm the external enrollment status")
+
+
 def input_text(reference, topic=None):
     markers = event_markers(topic) if topic else ""
     return (
@@ -314,16 +386,12 @@ def publish(config, context, topic, existing, output, *, preview=False):
             verify=True,
             expected=f"<!-- automation-improvement-input: {old_refs[0]} -->",
         )
+        refresh_enrollment_status(config, io)
         return existing["url"]
 
     external = (
         config.get("execution_owner") == "external"
         or config.get("finding_source") == "portable"
-    )
-    status = (
-        EXTERNAL_STATUS
-        if external
-        else "Ready for investigation. No repair has been validated. The native dispatcher owns the next investigation."
     )
     texts = (
         brief["problem"],
@@ -334,7 +402,7 @@ def publish(config, context, topic, existing, output, *, preview=False):
             f"\n\n### {section['heading']}\n\n{section['text']}"
             for section in brief.get("submission", [])
         ),
-        block("backlog-status", status),
+        block("backlog-status", initial_status_text(external)),
         block("backlog-input", inputs) + "\n\n" + block("topic-evidence", ""),
         f"Initial discovery ranked this topic **P{topic['priority']}**. "
         + priority_reason(topic)
@@ -379,4 +447,5 @@ def publish(config, context, topic, existing, output, *, preview=False):
         return publish(
             config, context, topic, work_item(issue.value, repository), output
         )
+    refresh_enrollment_status(config, issue)
     return issue.value["html_url"]

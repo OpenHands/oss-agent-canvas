@@ -50,6 +50,30 @@ Start each search with `repo:OWNER/REPO is:issue is:open`. Use additional `repo:
 
 A native candidate also requires a valid namespace, exactly one priority, accessible evidence and no open competing repair. A visible enrollment label nominates an external owner. Eligibility additionally depends on the trusted timeline actor, holds, and prior dispatch receipts. Recurrence comments can be attached to ordinary issues and PRs without enrolling them. The weekly summary links these comments; an ordinary item can have recurrence evidence without the managed topic label. Search indexes may lag writes. Use the issue and PR APIs for dispatch and readback.
 
+### Read the current handoff
+
+On generated topics, **Current status** gives the owner, next actor, and action. Once an external executor reports, that section links directly to its current comment. The comment contains validation details, limitations, and links to visible PRs and checks. On an imported human-authored issue, use the executor’s status comment or its returned `status_url`. The workflow preserves the original brief.
+
+A read-only consumer can use the packaged `read_status.py` with GitHub CLI read access. Supply the GitHub login of the trusted dispatcher, customer executor, or managed topic author. If a different account updates the handoff, supply both the original author and the trusted editor with repeated `--publisher` options. Use the full `name[bot]` login for a GitHub App. The reader needs no worker state or Laminar credential.
+
+```sh
+python3 tarball/read_status.py OWNER/REPO --issue 42 --publisher my-dispatcher
+python3 tarball/read_status.py OWNER/REPO --label improvement-customer --next-actor maintainer --publisher my-executor
+```
+
+The output is a JSON array. Label queries include open issues matching every supplied label. An empty array with a successful exit means no matching published record was available. The reader checks the selected issue body or comment against GitHub’s current text, original author and last editor. If a selected record is ambiguous, changes during verification, or has an unknown or untrusted editor, the reader omits its issue, reports the error on stderr and exits nonzero. Other verified results remain available on stdout. Older issues acquire records on their next eligible publication or reconciliation. An issue-number query can also read a closed issue.
+
+| Field | Meaning |
+| --- | --- |
+| `schema`, `status` | The record version is `openhands.improvement-status.v1`. The status names the last published stage or outcome. |
+| `owner`, `publisher` | The implementation owner and the last GitHub account to edit the selected issue body or comment. For original content, the publisher is its author. |
+| `next_actor`, `next_actor_login`, `next_action` | A role from `maintainer`, `executor`, `reviewer`, `ci`, or `dispatcher`, an optional account, and a human-readable action. |
+| `issue_url`, `status_url` | The canonical issue and the location of the current handoff. |
+| `pull_requests` | Visible PRs with observed head, state and head-specific checks URL, plus available base, reported or reviewed revisions. Up to 32 entries are included. For larger native outcomes, `additional_pull_requests` counts further visible entries. |
+| `validation_url` | Optional customer-supplied evidence, linked to a GitHub Actions run or a commit-pinned file in the issue repository. A customer report attributes that evidence to its executor. |
+
+The public record is embedded as single-line JSON in an HTML comment beginning `<!-- automation-improvement-status: `. Clients can use the reader to verify the publishing account, select the active route and handle pagination. The issue and PR APIs remain authoritative for current labels, checks, approvals and ownership before dispatch or merge.
+
 ## Weekly path
 
 1. Laminar runs Flow-1 on matching finished automation traces according to its sampling
@@ -622,4 +646,4 @@ python3 customer_workflow.py report --config customer.json --issue "$ISSUE" --at
 python3 customer_workflow.py reconcile --config customer.json --issue "$ISSUE" --attempt test-42
 ```
 
-For example, an outcome file can contain `{"outcome":"blocked","validation":"Reproduction requires a private deployment.","limitations":"The executor has only the public brief.","next_action":"The repository maintainer can provide a sanitized reproducer.","pull_requests":[]}`. Allowed decisions are accepted, blocked, revised, revision-needed, unrepaired, failed and incomplete. For implemented changes, include one entry per PR with its GitHub URL in `url` and the complete reviewed commit SHA in `head`. Supply `base` to pin the reviewed base as well. The comment attributes the validation to the customer executor. The adapter verifies the revisions and draft or merge state and reports a changed head as incomplete. An accepted customer result alone does not promote a PR or certify CI. The comment hides links into other private repositories. The author's issue body remains intact.
+For example, an outcome file can contain `{"outcome":"blocked","validation":"Reproduction requires a private deployment.","limitations":"The executor has only the public brief.","next_actor":"maintainer","next_action":"Provide a sanitized reproducer.","pull_requests":[]}`. Allowed decisions are accepted, blocked, revised, revision-needed, unrepaired, failed and incomplete. Existing reports default to a maintainer next actor. A new report can name another role and supply `next_actor_login` or `validation_url`. A changed revision assigns revalidation to the executor. For implemented changes, include one entry per PR with its GitHub URL in `url` and the complete reviewed commit SHA in `head`. Supply `base` to pin the reviewed base as well. The comment attributes the validation to the customer executor. The adapter verifies the revisions and draft or merge state and reports a changed head as incomplete. An accepted customer result alone does not promote a PR or certify CI. The comment hides links into other private repositories. The author's issue body remains intact.
