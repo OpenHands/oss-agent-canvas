@@ -4,6 +4,9 @@ The repo contains the automations of the oss-agent-canvas.
 
 See https://oss-agent-canvas.ngrok.dev
 
+See [how the self-improving automation works](automations/weekly-automation-improvement/HOW_IT_WORKS.md)
+for the Flow-1, triage, repair and independent-review workflow.
+
 ## Layout
 
 - `automations/` — git-synced automations, one directory per slug, each with an
