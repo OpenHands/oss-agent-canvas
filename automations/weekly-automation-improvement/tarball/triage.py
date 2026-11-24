@@ -4,13 +4,22 @@ import json
 import re
 from collections import Counter
 
-from backlog import BRIEF_FIELDS, issue_guides, safe_brief
+from backlog import (
+    BRIEF_FIELDS,
+    IDENTITY,
+    PRIVATE_TEXT,
+    identity,
+    issue_guides,
+    priority_reason,
+    safe_brief,
+)
 from common import encode, redact, timestamp, topic_id, write_json
 from attribution import automation_ids, candidates, conversation_ids, unit
+from finding_record import occurrence_id, prepare_portable
 from triage_agent import rank
 from epic import is_index
 from laminar import object_value
-from tracked_work import comment, matching
+from tracked_work import comment, matching, safe_work_link
 from github_io import command, work_item, IMPROVEMENT_LABEL
 from repair_policy import permits
 
@@ -183,6 +192,8 @@ def group_findings(records):
 
 
 def prepare(records, prs, previous_attempts, retry_topic_ids=()):
+    if records and "occurrence_id" in records[0]:
+        return prepare_portable(records, prs, previous_attempts, retry_topic_ids)
     by_event = {record["event"]["id"]: record for record in records}
     events = {
         "e" + str(i): identifier for i, identifier in enumerate(sorted(by_event), 1)
@@ -307,32 +318,44 @@ def prepare(records, prs, previous_attempts, retry_topic_ids=()):
     )
 
 
-def discover_work(urls, references):
-    known = {item["url"].casefold() for item in references.get("existing_work", [])}
+def discover_work(urls, references, canonical_issues=()):
+    known = {
+        item["url"].casefold(): item["url"]
+        for item in references.get("existing_work", [])
+    }
     policy = references.get("repair_policy")
-    for url in sorted(url for url in urls if url.casefold() not in known):
+    for url in sorted(urls):
         match = re.fullmatch(
             r"https://github\.com/([\w.-]+/[\w.-]+)/(issues|pull)/([1-9][0-9]*)", url
         )
-        if (
-            references.get("isolated_validation")
-            or not policy
-            or not match
-            or not permits(policy, match[1])
-        ):
+        if not match or policy and not permits(policy, match[1]):
+            raise ValueError("Topic cites unknown or out-of-scope existing work")
+        if url.casefold() in known:
+            continue
+        if references.get("isolated_validation") or not policy:
             raise ValueError("Topic cites unknown or duplicate existing work")
         row = json.loads(command(["gh", "api", f"repos/{match[1]}/issues/{match[3]}"]))
         if row["html_url"].casefold() != url.casefold():
             raise ValueError("Existing work URL does not match GitHub")
         if is_index(row.get("body") or ""):
             raise ValueError("An issue index cannot track a repair topic")
-        if row["state"] != "open" and IMPROVEMENT_LABEL not in {
-            label["name"] for label in row.get("labels", [])
-        }:
+        if (
+            url.casefold() not in canonical_issues
+            and row["state"] != "open"
+            and IMPROVEMENT_LABEL
+            not in {label["name"] for label in row.get("labels", [])}
+        ):
             raise ValueError(
                 "Existing work must be open or a prior self-improvement topic"
             )
-        references.setdefault("existing_work", []).append(work_item(row, match[1]))
+        item = work_item(row, match[1])
+        if IDENTITY.search(item["body"]) and not identity(
+            item, references.get("backlog_scope")
+        ):
+            raise ValueError("Existing work belongs to another discovery scope")
+        references.setdefault("existing_work", []).append(item)
+        known[url.casefold()] = item["url"]
+    return sorted({known[url.casefold()] for url in urls})
 
 
 def validate(result, records, references, limit):
@@ -344,7 +367,7 @@ def validate(result, records, references, limit):
         raise ValueError("Triage must return a finite topic list and no-action reason")
     if not result["topics"] and not str(result["no_action_reason"]).strip():
         raise ValueError("Triage must explain an empty plan")
-    by_id = {record["event"]["id"]: record for record in records}
+    by_id = {occurrence_id(record): record for record in records}
     events = references["events"]
     seen_events, seen_topics, plans = set(), set(), []
     extra_fields = {"brief"} if references.get("publish_backlog") else set()
@@ -370,12 +393,6 @@ def validate(result, records, references, limit):
             or len({url.casefold() for url in urls}) != len(urls)
         ):
             raise ValueError("Topic cites unknown or duplicate existing work")
-        discover_work(urls, references)
-        canonical = {
-            item["url"].casefold(): item["url"]
-            for item in references.get("existing_work", [])
-        }
-        urls = [canonical[url.casefold()] for url in urls]
         if type(topic["priority"]) is not int or not 0 <= topic["priority"] <= 3:
             raise ValueError("Topic priority must be an integer from P0 through P3")
         for field, bound in (("title", 200), ("reason", 4000)):
@@ -405,15 +422,34 @@ def validate(result, records, references, limit):
         if set(selected).intersection(seen_events):
             raise ValueError("Topic repeats evidence from another topic")
         chosen = [by_id[event_id] for event_id in selected]
-        owners = sorted({a for record in chosen for a in automation_ids(record)})
+        canonical_issues = {
+            record["issue_url"] for record in chosen if record.get("issue_url")
+        }
+        urls = discover_work(
+            set(urls) | canonical_issues,
+            references,
+            {url.casefold() for url in canonical_issues},
+        )
+        owners = sorted(
+            {
+                a
+                for record in chosen
+                if "occurrence_id" not in record
+                for a in automation_ids(record)
+            }
+        )
         automation_id = owners[0] if len(owners) == 1 else None
         identifier = topic_id(references.get("topic_namespace", "shared"), topic["key"])
         if identifier in seen_topics:
             raise ValueError("Triage repeats a topic key")
         used_conversations, used_traces = set(), set()
         for record in chosen:
-            conversations = set(conversation_ids(record))
-            trace = record["event"]["trace_id"]
+            if "occurrence_id" in record:
+                conversations = set()
+                trace = record.get("unit") or occurrence_id(record)
+            else:
+                conversations = set(conversation_ids(record))
+                trace = record["event"]["trace_id"]
             if trace in used_traces or conversations.intersection(used_conversations):
                 raise ValueError("Topic representatives repeat a conversation or trace")
             used_conversations.update(conversations)
@@ -451,10 +487,12 @@ def triage(args, records, prs, completed_topics=()):
     if getattr(args, "publish_backlog", False):
         source = args.repositories.get(args.repository)
         context["issue_guide_files"] = issue_guides(source)
+        context["guide_revision"] = (source or {}).get("revision")
     references["repair_policy"] = context["repair_policy"]
     references["isolated_validation"] = getattr(args, "isolated_validation", False)
     references["publish_backlog"] = getattr(args, "publish_backlog", False)
     references["topic_namespace"] = getattr(args, "topic_namespace", "shared")
+    references["backlog_scope"] = getattr(args, "backlog_scope", None)
     write_json(args.output / "triage-input.json", context)
     write_json(args.output / "triage-references.json", references)
     schema = copy.deepcopy(TRIAGE)
@@ -477,33 +515,31 @@ def triage(args, records, prs, completed_topics=()):
     ranked = validate(result, records, references, args.limit)
     plans, tracked = [], []
     for topic in ranked:
-        urls = matching(topic, prs)
+        urls = matching(topic, references["existing_work"])
         if not urls:
             plans.append(topic)
             continue
         update = {"topic": topic, "existing_work_urls": urls}
-        try:
-            update["comments"] = comment(
-                topic,
-                prs,
+        if not references["publish_backlog"] or issue.preview:
+            publish_recurrence(
+                update,
+                references["existing_work"],
                 records,
                 issue,
                 args.output / "recurrences",
-                policy=getattr(args, "repair_policy", None),
+                policy=references["repair_policy"],
             )
-            update["status"] = (
-                "recurrence_preview" if issue.preview else "recurrence_recorded"
-            )
-        except Exception as error:
-            update.update(status="recurrence_pending", error=redact(str(error))[:1000])
         tracked.append(update)
-    queue = "\n".join(
-        f"- **P{topic['priority']}: {topic['title']}**" for topic in plans
-    )
-    issue.update_block(
-        "triage-plan",
-        f"Identified {len(plans)} new investigation topics and {len(tracked)} recurrences. GitHub topic issues hold readiness and priority.\n\n{queue}",
-    )
+    if not references["publish_backlog"] or issue.preview:
+        updates = [{"topic": topic, "status": "planned"} for topic in plans] + tracked
+        issue.update_block(
+            "triage-plan",
+            render_plan(
+                getattr(args, "repository", ""),
+                updates,
+                selection_summary(records, updates),
+            ),
+        )
     issue.record(
         "Attempts and decisions — validated topic plan",
         f"Validated {len(plans)} new investigation topics. These are proposed investigations, not confirmed defects or proven repairs.",
@@ -525,3 +561,97 @@ def triage(args, records, prs, completed_topics=()):
     }
     write_json(args.output / "triage-result.json", aggregation)
     return plans, aggregation
+
+
+def publish_recurrence(update, existing, records, issue, output, *, policy, scope=None):
+    try:
+        receipts = comment(
+            update["topic"], existing, records, issue, output, policy, scope
+        )
+        update["comments"] = receipts
+        update["status"] = (
+            "recurrence_preview"
+            if issue.preview
+            else "recurrence_pending"
+            if any("error" in receipt for receipt in receipts)
+            else "recurrence_recorded"
+        )
+    except Exception as error:
+        update.update(status="recurrence_pending", error=redact(str(error))[:1000])
+
+
+def selection_summary(records, updates):
+    reviewed = {occurrence_id(r) for r in records}
+    selected = {
+        identifier
+        for update in updates
+        for identifier in update["topic"]["representative_event_ids"]
+    }
+    held = len(reviewed - selected)
+    statuses = {update.get("status") for update in updates}
+    if statuses & {"recurrence_pending", "publication_pending"}:
+        action = "Retry the pending GitHub publications."
+    elif held or "superseded" in statuses:
+        action = "Review the remaining findings and repository submission requirements at the next discovery run."
+    elif "planned" in statuses or "recurrence_preview" in statuses:
+        action = "Run discovery to publish the selected investigations."
+    elif updates:
+        action = "Review the linked investigations and recurrence updates."
+    else:
+        action = "Wait for new findings."
+    return {
+        "reviewed_findings": len(reviewed),
+        "held_findings": held,
+        "next_action": action,
+    }
+
+
+def render_plan(destination, updates, selection):
+    visibility = {}
+    lines = []
+    for update in sorted(
+        updates,
+        key=lambda value: (
+            value["topic"]["priority"],
+            value["topic"].get("selection_order", 0),
+        ),
+    ):
+        topic = update["topic"]
+        title = topic["title"]
+        if redact(title) != title or PRIVATE_TEXT.search(title):
+            title = "Investigation topic"
+        title = re.sub(r"([\\`*_\[\]<>])", r"\\\1", title).replace("@", "&#64;")
+        issue_url = update.get("issue_url")
+        if issue_url and safe_work_link(destination, issue_url, visibility):
+            title = f"[{title}]({issue_url})"
+        comments = [
+            f"[Recurrence update {index}]({receipt['url']})"
+            for index, receipt in enumerate(update.get("comments", ()), 1)
+            if receipt.get("url")
+            and safe_work_link(destination, receipt["url"], visibility)
+        ]
+        details = {
+            "planned": "Planned for investigation.",
+            "recurrence_preview": "Matches existing work.",
+            "topic_created": "Investigation issue published.",
+            "topic_updated": "Investigation issue refreshed.",
+            "recurrence_recorded": "Recurrence recorded on existing work.",
+            "recurrence_pending": "One or more recurrence updates are pending.",
+            "publication_pending": "Investigation issue publication is pending.",
+            "superseded": "A supporting finding was superseded. Remaining publication stopped.",
+        }
+        status = details[update.get("status", "planned")]
+        links = " " + " · ".join(comments) if comments else ""
+        lines.append(
+            f"- **P{topic['priority']}** {title} — {priority_reason(topic)} {status}{links}"
+        )
+    outcome = (
+        "Original discovery priorities. Current priorities and readiness are set on the topic issues.\n\n"
+        + "\n".join(lines)
+        if lines
+        else "Discovery selected no new investigation topics or recurrences."
+    )
+    return (
+        f"{outcome}\n\nDiscovery reviewed {selection['reviewed_findings']} finding(s) "
+        f"and held {selection['held_findings']} for later triage. {selection['next_action']}"
+    )

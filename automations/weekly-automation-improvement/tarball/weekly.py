@@ -15,6 +15,7 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
         result = repair(
             config, state_dir, dry_run=False, limit=limit, seed=seed, budget=budget
         )
+        summary["discovery"] = summary.copy()
         summary["repair"] = result
         summary["topics"] = result["topics"]
         summary["epic"] = result["epic"]

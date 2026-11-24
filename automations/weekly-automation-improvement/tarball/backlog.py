@@ -1,21 +1,50 @@
 import hashlib
+import json
 import re
 from pathlib import Path
 
-from common import redact
-from github_io import IMPROVEMENT_LABEL, command, github_pages
+from common import read_json, redact
+from github_io import (
+    IMPROVEMENT_LABEL,
+    command,
+    github_pages,
+    repository_private,
+    work_item,
+)
+from repair_policy import permits, resolve
 from topic_issue import SECTIONS, TopicIssue, public_issue_errors
 
 TOPIC = "improvement-topic"
 READY = "improvement-ready"
 ACTIVE = "improvement-in-progress"
 BLOCKED = "improvement-blocked"
+EXTERNAL = "improvement-external"
+CUSTOMER = "improvement-customer"
+FACTORY = "improvement-factory"
+RECURRENT = "improvement-recurrent"
+OUTCOME_LABELS = {
+    outcome: f"improvement-outcome-{outcome}"
+    for outcome in (
+        "accepted",
+        "blocked",
+        "unrepaired",
+        "revision-needed",
+        "revised",
+        "incomplete",
+        "failed",
+    )
+}
 PRIORITIES = tuple(f"priority:P{i}" for i in range(4))
 LABELS = {
     TOPIC: "6056B3",
     READY: "0E8A16",
     ACTIVE: "1D76DB",
     BLOCKED: "B60205",
+    EXTERNAL: "5319E7",
+    CUSTOMER: "5319E7",
+    FACTORY: "5319E7",
+    RECURRENT: "006B75",
+    **dict.fromkeys(OUTCOME_LABELS.values(), "CFD3D7"),
     **dict.fromkeys(PRIORITIES, "FBCA04"),
 }
 IDENTITY = re.compile(
@@ -23,14 +52,53 @@ IDENTITY = re.compile(
 )
 REFERENCE = re.compile(r"<!-- automation-improvement-input: ([a-f0-9]{64}\.json) -->")
 BRIEF_FIELDS = ("problem", "example", "prevention", "validation")
+PRIVATE_TEXT = re.compile(
+    r"[<>\\`]|https?://|[\\/]|(?m:^\s*#)"
+    r"|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}|[a-f0-9]{32,}",
+    re.I,
+)
+
+
+def on_hold(config, labels):
+    def normalize(name):
+        return re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
+
+    holds = {
+        BLOCKED,
+        "needs-triage",
+        "not-ready",
+        "not-ready-for-review",
+        "not-ready-for-rev",
+        "needs-information",
+    }
+    holds.update(normalize(name) for name in config.get("issue_hold_labels", []))
+    return any(normalize(label) in holds for label in labels)
+
+
+def native_claimed(state_dir, issue_url):
+    root = Path(state_dir)
+    url = issue_url.casefold()
+    for journal in (root / "native-claims").glob("*.json"):
+        if read_json(journal)["topic"]["issue_url"].casefold() == url:
+            return True
+    ledger = root / "state.json"
+    if not ledger.exists():
+        return False
+    return any(
+        attempt.get("status") == "dispatched"
+        and (attempt["topic"].get("issue_url") or "").casefold() == url
+        for attempt in read_json(ledger, 32_000_000).get("topic_weeks", {}).values()
+    )
 
 
 def namespace(config, state_dir):
-    values = [
-        config["repository"].casefold(),
-        config["project_id"],
-        config["signal_id"],
-    ]
+    values = [config["repository"].casefold()]
+    if config.get("finding_source") == "portable":
+        from finding_record import SCHEMA, portable_namespace
+
+        values.extend([SCHEMA, portable_namespace(config)])
+    else:
+        values.extend([config["project_id"], config["signal_id"]])
     if config.get("isolated_validation"):
         values.append(str(state_dir))
     return hashlib.sha256("/".join(values).encode()).hexdigest()[:20]
@@ -53,13 +121,14 @@ def issue_guides(source):
     if not source or not source.get("revision"):
         return []
     files = command(
-        ["git", "ls-tree", "-r", "--name-only", source["revision"]],
+        ["git", "ls-tree", "-rz", "--name-only", source["revision"]],
         source["checkout"],
+        strip=False,
     )
     guides = {"agents.md", "contributing.md", "readme.md", "issue_template.md"}
     return [
         path
-        for path in files.splitlines()
+        for path in files.split("\0")
         if path.casefold().startswith(
             (".github/issue_template/", "docs/issue_template/")
         )
@@ -113,12 +182,7 @@ def safe_brief(topic):
             not isinstance(value, str)
             or not 1 <= len(value.strip()) <= 2000
             or redact(value) != value
-            or re.search(
-                r"[<>\\`]|https?://|(?:^|[\s(])/?[\w.-]+/[\w./-]+"
-                r"|(?m:^\s*#)|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}",
-                value,
-                re.I,
-            )
+            or PRIVATE_TEXT.search(value)
         ):
             raise ValueError(
                 "Topic needs plain-language public text without private references"
@@ -137,31 +201,73 @@ def event_markers(topic):
     )
 
 
+def priority_reason(topic):
+    reason = " ".join(topic.get("reason", "").split())
+    if not reason or redact(reason) != reason or PRIVATE_TEXT.search(reason):
+        return "A public rationale was unavailable."
+    return re.sub(r"([*_\[\]#])", r"\\\1", reason[:480]).replace("@", "&#64;")
+
+
 def block(name, text):
     return f"<!-- {name}:start -->\n{text}\n<!-- {name}:end -->"
 
 
-def input_text(reference):
+def input_text(reference, topic=None):
+    markers = event_markers(topic) if topic else ""
     return (
-        f"<!-- automation-improvement-input: {reference} -->\n"
+        markers + f"<!-- automation-improvement-input: {reference} -->\n"
         f"Authorized workers can read the private topic index `{reference}` with "
-        "`read_issue_artifact`. Original Signals, traces and preparation records are retained privately."
+        "`read_issue_artifact`. Original findings and preparation records are retained privately."
     )
+
+
+def weekly_summary_link(home, destination, weekly):
+    url = (weekly or {}).get("url") or ""
+    if not re.fullmatch(
+        r"https://github\.com/" + re.escape(home) + r"/issues/[1-9][0-9]*", url, re.I
+    ):
+        return ""
+    if home.casefold() != destination.casefold():
+        try:
+            if repository_private(home, command):
+                return ""
+        except Exception:
+            return ""
+    return f"\n\n[Weekly discovery summary]({url})"
 
 
 def publish(config, context, topic, existing, output, *, preview=False):
     scope = namespace(config, context["state_dir"])
     repository = existing["repository"] if existing else config["repository"]
+    if not permits(resolve(config), repository):
+        raise ValueError("Backlog destination is outside the configured repair scope")
+    if existing and not re.fullmatch(
+        r"https://github\.com/" + re.escape(repository) + r"/issues/[1-9][0-9]*",
+        existing["url"],
+        re.IGNORECASE,
+    ):
+        raise ValueError("Backlog issue URL differs from its repository")
     topic_id = identity(existing, scope) if existing else topic["id"]
+    if not topic_id:
+        raise ValueError("Backlog issue is outside the discovery scope")
     root = evidence_root(context["state_dir"], repository, topic_id)
     if preview:
         safe_brief(topic)
         return existing["url"] if existing else None
+    prior_evidence = root.is_dir() and any(root.glob("*.json"))
 
     output.mkdir(parents=True, mode=0o700, exist_ok=True)
     io = TopicIssue(repository, output, root, {"number": 0}, [], preview)
-    old_body = existing["body"] if existing else ""
-    old_refs = REFERENCE.findall(old_body)
+    if existing:
+        number = int(existing["url"].rsplit("/", 1)[1])
+        io = TopicIssue(repository, output, root, {"number": number}, [], preview)
+        io.refresh()
+        if (
+            io.value["html_url"].casefold() != existing["url"].casefold()
+            or identity({"kind": "issue", "body": io.value["body"]}, scope) != topic_id
+        ):
+            raise ValueError("Backlog issue identity changed during triage")
+    old_refs = REFERENCE.findall(io.value.get("body", ""))
     if existing and len(old_refs) != 1:
         raise ValueError(
             "Backlog issue has a missing or ambiguous private evidence reference"
@@ -173,23 +279,49 @@ def publish(config, context, topic, existing, output, *, preview=False):
         "repository": repository.casefold(),
         "inventory_path": context["inventory_path"],
         "records_path": context["records_path"],
+        "source_revision": context.get("source_revision"),
         "triage_issue": context["triage_issue"],
         "triage_evidence_dir": context["triage_evidence_dir"],
         "previous_reference": old_refs[0] if old_refs else None,
     }
-    reference = io.artifact("topic-input.json", data)["reference"]
+    reference = None
+    if old_refs:
+        previous = json.loads(io.read_artifact(old_refs[0]))
+        if (
+            previous.get("namespace") != scope
+            or previous.get("repository") != data["repository"]
+            or previous["topic"]["id"] != topic_id
+        ):
+            raise ValueError("Private evidence does not belong to this backlog issue")
+        if previous.get("records_path") == data["records_path"] and previous[
+            "topic"
+        ] == redact(topic):
+            reference = old_refs[0]
+    if not reference:
+        reference = io.artifact("topic-input.json", data)["reference"]
+    inputs = input_text(reference, topic) + weekly_summary_link(
+        config["repository"], repository, context["triage_issue"]
+    )
     brief = safe_brief(topic)
     if existing:
-        number = int(existing["url"].rsplit("/", 1)[1])
-        issue = TopicIssue(repository, output, root, {"number": number}, [], preview)
-        issue.refresh()
-        if REFERENCE.findall(issue.value["body"]) != old_refs:
-            raise ValueError("Backlog issue evidence changed during triage")
-        if "<!-- automation-improvement-run:" not in issue.value["body"]:
-            issue.update_block("backlog-observation", brief["example"])
-        issue.update_block("backlog-input", input_text(reference))
+        io.update_block(
+            "backlog-input",
+            inputs,
+            verify=True,
+            expected=f"<!-- automation-improvement-input: {old_refs[0]} -->",
+        )
         return existing["url"]
 
+    external = (
+        config.get("execution_owner") == "external"
+        or config.get("finding_source") == "portable"
+    )
+    status = (
+        "Check the issue labels for current eligibility. The external dispatcher's status comment records the latest handoff, any blocker, and the next actor. "
+        "If no status comment exists, a maintainer can check whether this issue is enrolled for dispatch."
+        if external
+        else "Ready for investigation. No repair has been validated. The native dispatcher owns the next investigation."
+    )
     texts = (
         brief["problem"],
         block("backlog-observation", brief["example"]),
@@ -199,20 +331,16 @@ def publish(config, context, topic, existing, output, *, preview=False):
             f"\n\n### {section['heading']}\n\n{section['text']}"
             for section in brief.get("submission", [])
         ),
-        block(
-            "backlog-status", "Ready for investigation. No repair has been validated."
-        ),
-        block("backlog-input", input_text(reference))
-        + "\n\n"
-        + block("topic-evidence", ""),
-        "Initial triage recorded this investigation lead."
+        block("backlog-status", status),
+        block("backlog-input", inputs) + "\n\n" + block("topic-evidence", ""),
+        f"Initial discovery ranked this topic **P{topic['priority']}**. "
+        + priority_reason(topic)
         + "\n\n"
         + block("topic-attempts", ""),
     )
     body = (
         f"<!-- automation-improvement-backlog: {scope}/{topic_id} -->\n"
         f"<!-- automation-improvement-topic: {topic_id} -->\n"
-        + event_markers(topic)
         + "\n"
         + "\n\n".join(
             f"## {heading}\n\n{text}"
@@ -222,6 +350,8 @@ def publish(config, context, topic, existing, output, *, preview=False):
     if public_issue_errors(body):
         raise ValueError("Backlog issue needs all public brief sections")
     labels = [IMPROVEMENT_LABEL, TOPIC, READY, PRIORITIES[topic["priority"]]]
+    if external:
+        labels.append(EXTERNAL)
     known_labels = ensure_labels(repository)
     reserved = {label.casefold() for label in LABELS} | {IMPROVEMENT_LABEL}
     for name in brief.get("labels", []):
@@ -240,5 +370,10 @@ def publish(config, context, topic, existing, output, *, preview=False):
         topic["title"],
         preview,
         labels=labels,
+        search_unlabeled=prior_evidence,
     )
+    if REFERENCE.findall(issue.value["body"]) != [reference]:
+        return publish(
+            config, context, topic, work_item(issue.value, repository), output
+        )
     return issue.value["html_url"]

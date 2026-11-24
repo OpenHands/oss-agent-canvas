@@ -1,8 +1,11 @@
+from types import SimpleNamespace
+
 import pytest
 
 from budget import RunBudget
 from common import topic_id, write_json
 from test_triage import topic
+from test_topic_issue import GitHub
 from test_weekly import inventory, record, SIGNAL
 import tracked_work
 import triage
@@ -33,6 +36,69 @@ def test_matching_uses_stable_identity_and_expands_semantic_matches_across_repos
     assert tracked_work.matching(
         {"id": "new-name", "existing_work_urls": [existing[0]["url"]]}, existing
     ) == sorted([existing[0]["url"], existing[1]["url"]])
+
+
+def test_recurrence_private_destinations_and_managed_label(tmp_path, monkeypatch):
+    from backlog import RECURRENT, TOPIC
+    from github_io import IMPROVEMENT_LABEL
+
+    scope, topic_identifier = "f" * 20, topic_id("shared", "known-problem")
+    home, other = "Example/source", "Another/private"
+    existing = [
+        work(10, repository=home),
+        work(11, repository=other),
+        work(12, repository=home),
+    ]
+    existing[0]["body"] += (
+        f"\n<!-- automation-improvement-backlog: {scope}/{topic_identifier} -->"
+    )
+    github = GitHub()
+    github.issues.extend(
+        {
+            "number": index + 10,
+            "body": item["body"],
+            "html_url": item["url"],
+            "state": "open",
+            "labels": [
+                {"name": name} for name in (IMPROVEMENT_LABEL, TOPIC, "priority:P2")
+            ]
+            if not index
+            else [],
+        }
+        for index, item in enumerate(existing)
+    )
+    monkeypatch.setattr(tracked_work, "command", github)
+    monkeypatch.setattr(tracked_work, "ensure_labels", lambda repository: None)
+    raw = {"occurrence_id": "private-occurrence-id", "summary": "Private finding text"}
+    candidate = {
+        "id": topic_identifier,
+        "representative_event_ids": [raw["occurrence_id"]],
+    }
+    issue = SimpleNamespace(
+        preview=False,
+        value={"html_url": f"https://github.com/{home}/issues/99"},
+        artifact=lambda name, values: {"reference": "a" * 64 + ".json"},
+    )
+    for _ in range(2):
+        result = tracked_work.comment(
+            candidate, existing, [raw], issue, tmp_path, scope=scope
+        )
+        assert all(receipt["url"] and "error" not in receipt for receipt in result)
+    assert len(github.comments) == 3
+    assert [item["name"] for item in github.issues[0]["labels"]] == [
+        IMPROVEMENT_LABEL,
+        TOPIC,
+        "priority:P2",
+        RECURRENT,
+    ]
+    assert not github.issues[1]["labels"] and not github.issues[2]["labels"]
+    for item in github.comments:
+        body = item["body"]
+        other_repository = home if other in item["issue_url"] else other
+        assert other_repository not in body
+        assert raw["occurrence_id"] not in body and raw["summary"] not in body
+        assert ("Private evidence reference:" in body) is (home in item["issue_url"])
+        assert "Automation improvement recurrence" in body
 
 
 @pytest.mark.parametrize(

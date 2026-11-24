@@ -11,20 +11,31 @@ from repair_policy import resolve as repair_policy
 
 
 def load_environment(config):
+    uses_laminar = config.get("finding_source", "laminar") == "laminar"
     if config.get("credentials_file"):
         path = Path(config["credentials_file"]).expanduser()
         if path.stat().st_mode & 0o077:
             raise ValueError("Credentials file must be owner-only")
         values = read_json(path)
-        for name in ("LMNR_PROJECT_API_KEY", "LITELLM_API_KEY"):
+        keys = (
+            ("LITELLM_API_KEY", "LMNR_PROJECT_API_KEY")
+            if uses_laminar
+            else ("LITELLM_API_KEY",)
+        )
+        for name in keys:
             if name in values:
                 os.environ[name] = values[name]
-    os.environ["LMNR_BASE_URL"] = config["laminar_base_url"]
-    os.environ.setdefault("LMNR_FORCE_HTTP", "true")
+    if uses_laminar:
+        os.environ["LMNR_BASE_URL"] = config["laminar_base_url"]
+        os.environ.setdefault("LMNR_FORCE_HTTP", "true")
     os.environ["LLM_BASE_URL"] = config["llm_base_url"]
 
 
 def run(config, run_locked, *, dry_run=False, limit=3, seed=None):
+    if config.get("finding_source", "laminar") not in ("laminar", "portable"):
+        raise ValueError("Unsupported finding_source")
+    if config.get("execution_owner", "native") not in ("native", "external"):
+        raise ValueError("Unsupported execution_owner")
     if type(config.get("isolated_validation", False)) is not bool:
         raise ValueError("isolated_validation must be a boolean")
     hold_labels = config.get("issue_hold_labels", [])
@@ -112,7 +123,9 @@ def main(run):
         ),
     )
     parser.add_argument(
-        "--input", type=Path, help="Load a frozen Laminar inventory before analysis"
+        "--input",
+        type=Path,
+        help="Read a frozen Laminar inventory or portable finding batch",
     )
     parser.add_argument(
         "--dry-run",
@@ -131,11 +144,14 @@ def main(run):
         print(encode(redact(result)))
         if result["status"] in (
             "partial_failure",
+            "review_incomplete",
             "collection_incomplete",
             "discovery_incomplete",
             "triage_incomplete",
         ):
-            raise ValueError("Weekly run incomplete; inspect weekly-report.json")
+            raise ValueError(
+                f"Workflow incomplete; inspect the receipts under {result.get('output', 'the configured state directory')}"
+            )
     except Exception:
         callback("FAILED")
         raise

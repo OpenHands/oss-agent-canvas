@@ -265,6 +265,33 @@ def test_laminar_sdk_uses_reachable_http_transport(monkeypatch):
     assert os.environ["LMNR_FORCE_HTTP"] == "true"
 
 
+def test_portable_environment_uses_only_model_credentials(tmp_path, monkeypatch):
+    import os
+
+    keys = tmp_path / "credentials.json"
+    keys.write_text(
+        json.dumps({"LITELLM_API_KEY": "model", "LMNR_PROJECT_API_KEY": "unused"})
+    )
+    keys.chmod(0o600)
+    for name in (
+        "LMNR_PROJECT_API_KEY",
+        "LMNR_BASE_URL",
+        "LITELLM_API_KEY",
+        "LLM_BASE_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    workflow_runtime.load_environment(
+        {
+            "finding_source": "portable",
+            "llm_base_url": "https://proxy.test",
+            "credentials_file": keys,
+        }
+    )
+    assert os.environ["LITELLM_API_KEY"] == "model"
+    assert "LMNR_PROJECT_API_KEY" not in os.environ
+    assert "LMNR_BASE_URL" not in os.environ
+
+
 @pytest.mark.parametrize(
     "name,value",
     [
@@ -398,7 +425,7 @@ def test_explicit_retry_restores_representative_events_despite_prior_prs():
     assert weekly.update_backlog(state, inventory([row]), prs, ["prior"]) == [row]
 
 
-def test_explicit_retry_uses_prior_pr_markers_without_local_history():
+def test_old_github_work_remains_matchable_after_worker_state_loss():
     row = record()
     event = row["event"]["id"]
     state = {"events": {}}
@@ -410,9 +437,7 @@ def test_explicit_retry_uses_prior_pr_markers_without_local_history():
             + " -->"
         }
     ]
-    assert weekly.update_backlog(state, inventory([row]), prs) == []
-    assert weekly.update_backlog(state, inventory([row]), prs, ["other"]) == []
-    assert weekly.update_backlog(state, inventory([row]), prs, ["prior"]) == [row]
+    assert weekly.update_backlog(state, inventory([row]), prs) == [row]
 
 
 def test_isolated_validation_does_not_pass_old_outputs_to_triage(tmp_path, monkeypatch):
