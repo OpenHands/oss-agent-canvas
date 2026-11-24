@@ -241,6 +241,10 @@ def test_recurrence_comments_hide_private_counterparts_but_keep_full_evidence(
     }
     captured = []
     github = GitHub()
+    github.issues = [
+        {"number": i, "body": item["body"], "html_url": item["url"]}
+        for i, item in enumerate(existing, 1)
+    ]
 
     def request(argv):
         if argv[-1] == "repos/Upstream/sdk":

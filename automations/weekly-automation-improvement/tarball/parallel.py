@@ -10,6 +10,24 @@ from common import read_json, redact, replace_json, write_json
 from repair_policy import permits, resolve as repair_policy, resource_errors
 
 
+def recover_resources(root, policy):
+    from topic_agent import discover, hold_drafts
+
+    recovered = {"resources": [], "errors": []}
+    if (root / "context.json").exists():
+        try:
+            recovered = discover(read_json(root / "context.json", 32_000_000), root)
+        except Exception as error:
+            recovered["errors"].append({"error": redact(str(error))[:1000]})
+    recovered["errors"] += [
+        {"error": error} for error in resource_errors(policy, recovered["resources"])
+    ]
+    recovered["errors"] += hold_drafts(
+        [r for r in recovered["resources"] if permits(policy, r["repository"])]
+    )
+    return recovered
+
+
 def worker(request_path):
     from repair_workflow import prepare_topic
     from topic_agent import run
@@ -24,44 +42,24 @@ def worker(request_path):
         )
         result["outcome"] = run(request["config"], context, root, budget)
     except Exception as error:
-        from topic_agent import discover, hold_drafts
-
-        recovered = {"resources": [], "errors": []}
-        if (root / "context.json").exists():
-            try:
-                recovered = discover(read_json(root / "context.json", 32_000_000), root)
-            except Exception as recovery_error:
-                recovered["errors"].append(
-                    {"error": redact(str(recovery_error))[:1000]}
-                )
-        recovered["errors"] += [
-            {"error": e}
-            for e in resource_errors(
-                repair_policy(request["config"]), recovered["resources"]
-            )
-        ]
-        recovered["errors"] += hold_drafts(
-            [
-                r
-                for r in recovered["resources"]
-                if permits(repair_policy(request["config"]), r["repository"])
-            ]
-        )
+        recovered = recover_resources(root, repair_policy(request["config"]))
         result["outcome"] = {
             "topic": request["topic"],
             "status": "review_incomplete" if recovered["resources"] else "failed",
             "error": redact(str(error))[:2000],
+            "resource_recovery_pending": bool(recovered["errors"]),
             **recovered,
         }
     finally:
         result["budget"] = budget.snapshot()
-        write_json(root / "result.json", result)
+        replace_json(root / "result.json", result)
 
 
 def launch(config, context, topic, budget, root):
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
     lock = config.get("_workflow_lock_fd")
     path = root / "request.json"
+    seconds = budget.timeout(config.get("max_run_seconds", 10800))
     write_json(
         path,
         {
@@ -70,7 +68,7 @@ def launch(config, context, topic, budget, root):
             "topic": topic,
             "budget": {
                 "max_inference_cost_usd": max(0.001, budget.maximum_cost - budget.cost),
-                "max_run_seconds": budget.timeout(config.get("max_run_seconds", 10800)),
+                "max_run_seconds": seconds,
             },
         },
     )
@@ -84,17 +82,96 @@ def launch(config, context, topic, budget, root):
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
-    write_json(
-        root / "process.json",
-        {"pid": process.pid, "topic_id": topic["id"], "started_at": time.time()},
-    )
+    started = time.monotonic()
     return {
         "process": process,
         "root": root,
         "topic": topic,
-        "started": time.monotonic(),
-        "deadline": time.monotonic() + read_json(path)["budget"]["max_run_seconds"],
+        "started": started,
+        "deadline": started + seconds,
     }
+
+
+def ledger_key(context, topic):
+    run_id = Path(context["output"]).name if topic.get("issue_url") else context["week"]
+    return run_id + "/" + topic["id"]
+
+
+def record_outcome(config, context, state, topic, outcome, root):
+    resources = outcome.get("resources", [])
+    state["topic_weeks"][ledger_key(context, topic)] = {
+        "topic": topic,
+        "status": outcome["status"],
+        "report": str(root / "topic-report.json"),
+        "reason": outcome.get("error"),
+        "resources": resources,
+        "decision": (outcome.get("review_decision") or {}).get("decision"),
+    }
+    prs = [
+        r["url"]
+        for r in resources
+        if r["kind"] == "pull"
+        and r["state"] == "open"
+        and permits(repair_policy(config), r["repository"])
+    ]
+    if prs:
+        for identifier in topic["representative_event_ids"]:
+            state["events"].setdefault(identifier, {}).update(
+                topic_id=topic["id"], pr_urls=prs
+            )
+            state["backlog"].pop(identifier, None)
+    replace_json(root / "topic-report.json", outcome)
+    replace_json(Path(context["state_path"]), state)
+
+
+def reconcile_claims(config, context, state):
+    from backlog_dispatch import finish
+
+    reconciled = []
+    for path in sorted((Path(context["state_dir"]) / "native-claims").glob("*.json")):
+        topic = {"id": path.stem}
+        try:
+            claim = read_json(path)
+            topic = claim["topic"]
+            previous = context | {"output": claim["output"]}
+            root = Path(previous["output"]) / "workers" / topic["id"]
+            result_path = root / "result.json"
+            report_path = root / "topic-report.json"
+            if result_path.exists():
+                outcome = read_json(result_path, 32_000_000)["outcome"]
+            else:
+                outcome = (
+                    read_json(report_path, 32_000_000) if report_path.exists() else {}
+                )
+                if not outcome.get("attempts") and (root / "context.json").exists():
+                    outcome = {"resource_recovery_pending": True}
+                if not outcome or outcome.get("resource_recovery_pending"):
+                    outcome = {
+                        "topic": topic,
+                        "status": "review_incomplete",
+                        "error": "The prior attempt ended without a final worker receipt",
+                        **outcome,
+                    }
+            if outcome.get("resource_recovery_pending"):
+                recovered = recover_resources(root, repair_policy(config))
+                outcome |= recovered | {
+                    "resource_recovery_pending": bool(recovered["errors"])
+                }
+            record_outcome(config, previous, state, topic, outcome, root)
+            finish(previous, topic, outcome, root)
+            reconciled.append(
+                outcome
+                | {"reconciled": not outcome.get("resource_recovery_pending", False)}
+            )
+        except Exception as error:
+            reconciled.append(
+                {
+                    "topic": topic,
+                    "status": "review_incomplete",
+                    "claim_release_error": redact(str(error))[:1000],
+                }
+            )
+    return reconciled
 
 
 def execute(config, context, queue, state, budget):
@@ -115,44 +192,16 @@ def execute(config, context, queue, state, budget):
     ]
     stopped = None
 
-    def ledger_key(topic):
-        run_id = output.name if topic.get("issue_url") else context["week"]
-        return run_id + "/" + topic["id"]
-
     def record(topic, outcome, root, *, claimed=True):
-        key = ledger_key(topic)
-        resources = outcome.get("resources", [])
-        state["topic_weeks"][key] = {
-            "topic": topic,
-            "status": outcome["status"],
-            "report": str(root / "topic-report.json"),
-            "reason": outcome.get("error"),
-            "resources": resources,
-        }
-        prs = [
-            r["url"]
-            for r in resources
-            if r["kind"] == "pull"
-            and r["state"] == "open"
-            and permits(repair_policy(config), r["repository"])
-        ]
-        if prs:
-            for identifier in topic["representative_event_ids"]:
-                state["events"].setdefault(identifier, {}).update(
-                    topic_id=topic["id"], pr_urls=prs
-                )
-                state["backlog"].pop(identifier, None)
-        replace_json(root / "topic-report.json", outcome)
-        save_state(state_path, state)
+        record_outcome(config, context, state, topic, outcome, root)
         if claimed and topic.get("issue_url"):
             try:
                 finish(context, topic, outcome, root)
             except Exception as error:
-                outcome["claim_release_error"] = redact(str(error))[:1000]
-                outcome["status"] = "review_incomplete"
-                state["topic_weeks"][key]["status"] = outcome["status"]
-                replace_json(root / "topic-report.json", outcome)
-                save_state(state_path, state)
+                outcome = outcome | {
+                    "status": "review_incomplete",
+                    "claim_release_error": redact(str(error))[:1000],
+                }
         outcomes.append(outcome)
 
     try:
@@ -168,7 +217,7 @@ def execute(config, context, queue, state, budget):
                 claimed = False
                 if topic.get("issue_url"):
                     try:
-                        claimed = claim(config, context, topic, root)
+                        claimed = claim(config, context, topic, root, state)
                     except Exception as error:
                         root.mkdir(parents=True, mode=0o700, exist_ok=True)
                         record(
@@ -185,7 +234,7 @@ def execute(config, context, queue, state, budget):
                     if not claimed:
                         outcomes.append({"topic": topic, "status": "issue_changed"})
                         continue
-                key = ledger_key(topic)
+                key = ledger_key(context, topic)
                 state["topic_weeks"][key] = {
                     "topic": topic,
                     "status": "dispatched",
@@ -208,6 +257,14 @@ def execute(config, context, queue, state, budget):
                     )
                     continue
                 active.append(job)
+                write_json(
+                    root / "process.json",
+                    {
+                        "pid": job["process"].pid,
+                        "topic_id": topic["id"],
+                        "started_at": time.time(),
+                    },
+                )
                 starts.append(
                     {
                         "topic_id": topic["id"],
@@ -254,33 +311,12 @@ def execute(config, context, queue, state, budget):
             )
             outcome = result.get("outcome")
             if not outcome:
-                from topic_agent import discover, hold_drafts
-
-                try:
-                    prepared = read_json(root / "context.json", 32_000_000)
-                    recovered = discover(prepared, root)
-                except Exception as error:
-                    recovered = {
-                        "resources": [],
-                        "errors": [{"error": redact(str(error))[:2000]}],
-                    }
-                recovered["errors"] += [
-                    {"error": e}
-                    for e in resource_errors(
-                        repair_policy(config), recovered["resources"]
-                    )
-                ]
-                recovered["errors"] += hold_drafts(
-                    [
-                        r
-                        for r in recovered["resources"]
-                        if permits(repair_policy(config), r["repository"])
-                    ]
-                )
+                recovered = recover_resources(root, repair_policy(config))
                 outcome = {
                     "topic": topic,
                     "status": "review_incomplete",
                     "error": "Worker exited without a result; remote work requires review",
+                    "resource_recovery_pending": bool(recovered["errors"]),
                     **recovered,
                 }
             record(topic, outcome, root)

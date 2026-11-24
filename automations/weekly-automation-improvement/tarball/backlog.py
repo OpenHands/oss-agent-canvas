@@ -22,6 +22,10 @@ EXTERNAL = "improvement-external"
 CUSTOMER = "improvement-customer"
 FACTORY = "improvement-factory"
 RECURRENT = "improvement-recurrent"
+EXTERNAL_STATUS = (
+    "Check the issue labels for current eligibility. The external dispatcher's status comment records the latest handoff, any blocker, and the next actor. "
+    "If no status comment exists, a maintainer can check whether this issue is enrolled for dispatch."
+)
 OUTCOME_LABELS = {
     outcome: f"improvement-outcome-{outcome}"
     for outcome in (
@@ -317,8 +321,7 @@ def publish(config, context, topic, existing, output, *, preview=False):
         or config.get("finding_source") == "portable"
     )
     status = (
-        "Check the issue labels for current eligibility. The external dispatcher's status comment records the latest handoff, any blocker, and the next actor. "
-        "If no status comment exists, a maintainer can check whether this issue is enrolled for dispatch."
+        EXTERNAL_STATUS
         if external
         else "Ready for investigation. No repair has been validated. The native dispatcher owns the next investigation."
     )

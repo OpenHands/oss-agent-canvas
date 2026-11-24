@@ -4,13 +4,14 @@ import uuid
 from pathlib import Path
 
 from attribution import automation_ids as origin_automations
-from backlog_dispatch import issue_for, selection
+from backlog import ACTIVE, CUSTOMER, EXTERNAL, FACTORY
+from backlog_dispatch import RUN, external_owner, issue_for, publish_outcome, selection
 from cohorts import collect as collect_cohort, topic_records
-from common import read_json, redact, write_json
+from common import read_json, redact, replace_json, write_json
 from epic import refresh as refresh_epic
 from events import hydrate_events
 from laminar import Laminar
-from repair_policy import resolve as repair_policy
+from repair_policy import permits, resolve as repair_policy
 from sources import github_auth, native_request
 from triage_workflow import arguments, repository_catalog, week_key
 from workflow_runtime import main, run as run_workflow
@@ -110,8 +111,120 @@ def prepare_topic(config, context, topic, root):
     }
 
 
+def reconcile_promotions(config, context, state, budget):
+    from topic_agent import hold_drafts, live_pr, owns, verify_pr_ci
+
+    latest = {}
+    for key, record in state["topic_weeks"].items():
+        latest[record["topic"]["id"]] = (key, record)
+    results = []
+    policy = repair_policy(config)
+    for key, record in latest.values():
+        topic = record["topic"]
+        if record.get("decision") != "accepted" or not topic.get("issue_url"):
+            continue
+        resources = record.get("resources", [])
+        promoted = [r for r in resources if r.get("promoted")]
+        if not promoted:
+            continue
+        run_id = key.split("/", 1)[0]
+        try:
+            changed = []
+            output = Path(context["output"]) / "promotion" / topic["id"]
+            for pr in promoted:
+                live = live_pr(pr["url"])
+                merged = bool(live.get("merged_at") or live.get("merged"))
+                problems = []
+                if live["state"] == "closed":
+                    if not merged:
+                        problems.append(
+                            "The reviewed pull request closed without merging"
+                        )
+                elif (live["base"]["sha"], live["head"]["sha"]) != (
+                    pr["base"],
+                    pr["head"],
+                ) or (pr.get("base_ref") and pr["base_ref"] != live["base"]["ref"]):
+                    problems.append("The reviewed base or head changed after promotion")
+                elif live["draft"]:
+                    problems.append("The reviewed pull request returned to draft")
+                else:
+                    problems = verify_pr_ci(
+                        [pr],
+                        output / pr["repository"] / pr["url"].rsplit("/", 1)[1],
+                        budget,
+                        wait_seconds=0,
+                    )
+                if merged or problems:
+                    changed.append((pr, live, merged, problems))
+            if not changed:
+                continue
+            issue = issue_for(
+                topic["issue_url"],
+                context["state_dir"],
+                topic["id"],
+                output,
+            )
+            issue.refresh()
+            labels = {row["name"] for row in issue.value["labels"]}
+            if {CUSTOMER, EXTERNAL, FACTORY, ACTIVE} & labels or RUN.findall(
+                issue.value["body"]
+            ) != [run_id]:
+                raise ValueError(
+                    "The changed PR requires maintainer review because issue ownership changed"
+                )
+            updated = {}
+            reasons = []
+            for pr, live, merged, problems in changed:
+                reasons.extend(problems)
+                if not permits(policy, pr["repository"]) or not owns(
+                    {"topic": topic, "run_id": run_id}, live.get("body") or ""
+                ):
+                    raise ValueError(
+                        "The changed PR is outside the active native repair ownership"
+                    )
+                status = pr | {
+                    "draft": live["draft"],
+                    "state": live["state"],
+                    "merged": merged,
+                    "promoted": False,
+                }
+                current = (live["base"]["sha"], live["head"]["sha"])
+                if current != (pr["base"], pr["head"]):
+                    status["current_base"], status["current_head"] = current
+                if hold_drafts([status]):
+                    raise ValueError("Could not return changed repair PR to draft")
+                updated[pr["url"]] = status
+            outcome = {
+                "topic": topic,
+                "status": "review_incomplete" if reasons else record["status"],
+                "review_decision": {"decision": record["decision"]},
+                "resources": [updated.get(r["url"], r) for r in resources],
+                "stale_prs": sorted(
+                    pr["url"] for pr, _, _, problems in changed if problems
+                ),
+            }
+            if reasons:
+                outcome["error"] = "; ".join(reasons)
+            publish_outcome(issue, outcome, labels)
+            state["topic_weeks"][key] = record | {
+                "status": outcome["status"],
+                "resources": outcome["resources"],
+            }
+            replace_json(Path(context["state_path"]), state)
+            results.append(outcome)
+        except Exception as error:
+            results.append(
+                {
+                    "topic": topic,
+                    "status": "review_incomplete",
+                    "error": redact(str(error))[:1000],
+                }
+            )
+    return results
+
+
 def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
-    from parallel import execute
+    from parallel import execute, reconcile_claims
 
     github_auth(config)
     now = dt.datetime.now(dt.UTC)
@@ -136,6 +249,11 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
         "repair_policy": repair_policy(config),
         "previous": list(state["topic_weeks"].values()),
     }
+    reconciled = []
+    if not dry_run and not external_owner(config):
+        reconciled = reconcile_claims(config, context, state)
+        reconciled.extend(reconcile_promotions(config, context, state, budget))
+        context["previous"] = list(state["topic_weeks"].values())
     queue, excluded = selection(config, context, state)
     if dry_run:
         count = config.get("max_topics_per_run", 10)
@@ -162,7 +280,18 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
         "budget": budget.snapshot(),
     }
     if not dry_run:
+        summary["reconciled"] = reconciled
         summary["epic"] = refresh_epic(config, state_dir, state, output / "epic")
+        if execution["status"] != "partial_failure" and (
+            any(
+                row["status"]
+                in ("backlog_evidence_unavailable", "duplicate_topic_identity")
+                for row in excluded
+            )
+            or any(row["status"] == "review_incomplete" for row in reconciled)
+            or summary["epic"]["status"] in ("refresh_failed", "partially_refreshed")
+        ):
+            summary["status"] = "review_incomplete"
     write_json(output / "repair-report.json", redact(summary))
     return summary
 
