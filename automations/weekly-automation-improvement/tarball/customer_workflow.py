@@ -58,7 +58,7 @@ def verify_outcome(gh, report, repo, allowed):
         "**Limitations:** " + public_text(report, "limitations"),
         "**Next action:** " + public_text(report, "next_action"),
     ]
-    seen = set()
+    observed = {}
     drift = False
     for item in pulls:
         if not isinstance(item, dict) or not isinstance(item.get("url"), str):
@@ -78,10 +78,9 @@ def verify_outcome(gh, report, repo, allowed):
         ):
             raise ValueError("Invalid pull request repository or revision")
         target, number = match.groups()
-        identity = (target.casefold(), number)
-        if identity in seen:
+        identity = item["url"].casefold()
+        if identity in observed:
             raise ValueError("Duplicate pull request")
-        seen.add(identity)
         live = gh.api(f"repos/{target}/pulls/{number}")
         if live["html_url"].casefold() != item["url"].casefold():
             raise ValueError("Pull request identity changed")
@@ -89,12 +88,6 @@ def verify_outcome(gh, report, repo, allowed):
         if not SHA.fullmatch(head) or not SHA.fullmatch(base):
             raise ValueError("GitHub did not confirm the current revisions")
         drift |= head != item["head"] or ("base" in item and item["base"] != base)
-        if (
-            target.casefold() != repo.casefold()
-            and gh.api(f"repos/{target}").get("visibility") != "public"
-        ):
-            lines.append("A related pull request is recorded privately.")
-            continue
         stage = (
             "merged"
             if live.get("merged_at")
@@ -104,6 +97,18 @@ def verify_outcome(gh, report, repo, allowed):
             if live["draft"]
             else "open for review"
         )
+        observed[identity] = {
+            "url": live["html_url"],
+            "head": head,
+            "base": base,
+            "stage": stage,
+        }
+        if (
+            target.casefold() != repo.casefold()
+            and gh.api(f"repos/{target}").get("visibility") != "public"
+        ):
+            lines.append("A related pull request is recorded privately.")
+            continue
         revisions = f"reported head `{item['head']}`, current head `{head}`"
         if "base" in item:
             revisions += f", reported base `{item['base']}`"
@@ -115,7 +120,7 @@ def verify_outcome(gh, report, repo, allowed):
         lines[2] = (
             "**Next action:** Revalidate the changed revision and submit an updated outcome."
         )
-    return outcome, lines
+    return outcome, lines, list(observed.values())
 
 
 def ownership(gh, config, endpoint, url, actor):
@@ -294,7 +299,9 @@ def run(config, operation, issue_url, attempt, report=None, *, github=None):
             ["**Next action:** The customer executor investigates the issue."],
         )
         if "report" in previous:
-            outcome, lines = verify_outcome(gh, previous["report"], repo, allowed)
+            outcome, lines, previous["observed_pulls"] = verify_outcome(
+                gh, previous["report"], repo, allowed
+            )
         elif operation == "reconcile":
             raise ValueError("No reported outcome to reconcile")
         previous.update(outcome=outcome, publication_pending=True)

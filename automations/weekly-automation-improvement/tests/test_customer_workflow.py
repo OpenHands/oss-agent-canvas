@@ -117,6 +117,7 @@ def test_claim_then_reconcile_customer_revisions_privately_and_publicly(
     }
     receipt = read_json(tmp_path / "customer-attempts" / REPO.casefold() / "42.json")
     assert receipt["outcome"] == "incomplete" and receipt["report"] == accepted
+    assert [pr["head"] for pr in receipt["observed_pulls"]] == ["c" * 40, "9" * 40]
 
 
 @pytest.mark.parametrize(
@@ -193,6 +194,7 @@ def test_interrupted_customer_claim_and_stale_requeue(route, tmp_path):
         run("claim", "new-job")
     open_pr = gh.pull(REPO, 2)
     run("report", report=result("blocked", open_pr))
+    run("report", report=result("unrepaired"))
     with pytest.raises(ValueError, match="prior open"):
         run("claim", "new-job")
     open_pr["state"] = "closed"

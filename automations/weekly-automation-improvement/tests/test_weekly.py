@@ -374,7 +374,7 @@ def test_frozen_inventory_preview_never_launches_repair_or_changes_ledger(
 
     def rank(args, records, prs, previous):
         assert args.dry_run and records == rows
-        return [{"id": "one"}], {}
+        return [{"id": "one", "representative_event_ids": [rows[0]["event"]["id"]]}], {}
 
     monkeypatch.setattr(weekly, "triage", rank)
     result = weekly.run_locked(
@@ -382,6 +382,7 @@ def test_frozen_inventory_preview_never_launches_repair_or_changes_ledger(
     )
     assert result["status"] == "preview"
     assert result["topics"][0]["status"] == "planned"
+    assert result["selection"]["held_findings"] == 0
     assert state_path.read_bytes() == before
 
 
