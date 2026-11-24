@@ -29,6 +29,12 @@ from pathlib import Path, PurePosixPath
 
 from github_client import github_request as _github_request
 from github_client import github_paginate as _github_paginate
+from review_publisher import (
+    APPROVED,
+    CHANGES_REQUESTED,
+    DISCLOSURE,
+    MAINTAINER_DECISION_VERDICT,
+)
 
 # Configuration. Two setup paths write it, and both end up here:
 #
@@ -57,12 +63,6 @@ DEFAULT_OPENHANDS_URL = "http://localhost:8000"
 # keeps a first scan over a large backlog from starting an agent for every
 # eligible pull request at once.
 MAX_NEW_PER_RUN = 2
-
-# A review that ends with this marker is a scope stop: the reviewer found the
-# change out of scope, or needing a product/architecture decision, before the
-# technical review. The completion handler hands it to a maintainer without
-# approving or merging the PR.
-MAINTAINER_DECISION_VERDICT = "🛑 MAINTAINER DECISION REQUIRED"
 
 CONFIG_FILENAME = os.environ.get("AUTOMATION_CONFIG_PATH") or "config.json"
 
@@ -764,6 +764,7 @@ def _build_review_prompt(
     workspace_instructions: str | None = None,
     github_token_secret: str = "GITHUB_PERSONAL_ACCESS_TOKEN",
     trigger_description: str | None = None,
+    guarded_publication: str | None = None,
 ) -> str:
     number = pr.get("number", "?")
     title = pr.get("title", "(no title)")
@@ -793,10 +794,41 @@ def _build_review_prompt(
         "Do not clone, fetch, check out, or delete the repository."
     )
 
+    scope_publication = (
+        "using the publisher in step 7 with "
+        if guarded_publication
+        else f"with `POST /repos/{repo}/pulls/{number}/reviews`, using "
+    )
+    publication = guarded_publication or (
+        f"Publish one review with `POST /repos/{repo}/pulls/{number}/reviews`, using "
+        "`commit_id` equal to the Head SHA above."
+    )
+    retry = (
+        "On HTTP 422, retry only after correcting a known rejection: move invalid inline "
+        "findings into the body and omit `comments`, or change a rejected self-approval to "
+        "`event: COMMENT` and keep the approved verdict. If the publisher says not to retry, "
+        "stop and report that publication could not be verified, with the review ID if known. "
+        "Do not edit it, post another review or comment, or report success."
+        if guarded_publication
+        else "If the API rejects the inline positions, retry with every finding in the body and no "
+        "`comments` array. If GitHub forbids the configured bot from approving its own PR, "
+        "retry the clean review with `event: COMMENT` and keep the approved verdict."
+    )
+    completion = (
+        "Output exactly `GITHUB_REVIEW_POSTED` only if the publisher verified the result. "
+        "If publication fails, report the failure without writing anything else to GitHub."
+        if guarded_publication
+        else "After GitHub accepts the review, output exactly `GITHUB_REVIEW_POSTED`. "
+        "If publishing still fails after the fallback in step 8, output the complete review text "
+        "so it can be posted as a comment instead."
+    )
+
+    workspace_guard = (
+        "Do not modify repository files" if guarded_publication else "Do not modify files"
+    )
     return (
         "You are an AI code reviewer. Review the GitHub pull request below and publish "
-        "the review directly to GitHub. Do not modify files, push commits, or merge "
-        "the pull request.\n\n"
+        f"the review to GitHub. {workspace_guard}, push commits, or merge the pull request.\n\n"
         f"Repository : {repo}\n"
         f"PR #{number}: \"{title}\"\n"
         f"Author     : @{author}\n"
@@ -831,8 +863,8 @@ def _build_review_prompt(
         "use the repository guidance above (its scope categories and ownership boundaries) to decide "
         "whether this change belongs in this repository and has the product/architecture direction "
         "it needs. If it does, continue the technical review unchanged. If it does not, or needs a "
-        "product/architecture decision, stop here and publish exactly one review with "
-        f"`POST /repos/{repo}/pulls/{number}/reviews`, using `commit_id` equal to the Head SHA above "
+        "product/architecture decision, stop here and publish exactly one review "
+        f"{scope_publication}`commit_id` equal to the Head SHA above "
         "and `event: COMMENT`. Briefly say whether the change should move repositories, close, or "
         "receive a maintainer decision; when it belongs elsewhere, name the likely owning repository "
         "only if the evidence supports it. Do not run tests or report implementation findings. This "
@@ -847,8 +879,7 @@ def _build_review_prompt(
         "credential, configuration, or external state stayed unchanged. Do not add speculative or "
         "out-of-scope notes: every blocking or non-blocking observation must identify demonstrated "
         "behavior on the current head and explain why it matters to the merge decision.\n"
-        f"7. Publish one review with `POST /repos/{repo}/pulls/{number}/reviews`, using "
-        "`commit_id` equal to the Head SHA above. Use `event: APPROVE` when there are "
+        f"7. {publication} Use `event: APPROVE` when there are "
         "no material findings; otherwise use `event: COMMENT`. Never use "
         "`REQUEST_CHANGES`.\n"
         "   The native GitHub review is the only result channel. Do not create commit "
@@ -859,19 +890,14 @@ def _build_review_prompt(
         "array with `path`, `line`, `side: RIGHT`, and `body`.\n"
         "   Only create inline comments for actionable findings; do not open praise or nitpick threads.\n"
         "8. If a finding cannot be attached to a changed line, put it in the review body instead. "
-        "If the API rejects the inline positions, retry with every finding in the body and no `comments` array. "
-        "If GitHub forbids the configured bot from approving its own PR, retry the clean review with "
-        "`event: COMMENT` and keep the approved verdict.\n"
-        "9. Begin the review body with this disclosure: "
-        "`_This review was posted by an AI agent (OpenHands)._`\n"
-        "10. End the review body with a verdict on its own line: either `✅ APPROVED` "
-        "or `🔄 CHANGES REQUESTED`.\n"
+        f"{retry}\n"
+        f"9. Begin the review body with this disclosure: `{DISCLOSURE}`\n"
+        f"10. End the technical review body with a verdict on its own line: either `{APPROVED}` "
+        f"or `{CHANGES_REQUESTED}`.\n"
         "11. If there are no material issues, still publish a review saying so, with the "
         "disclosure and the verdict.\n"
         f"\nReview instructions:\n{tone}{extra}{guide_section}\n\n"
-        "After GitHub accepts the review, output exactly `GITHUB_REVIEW_POSTED`. "
-        "If publishing still fails after the fallback in step 8, output the complete review text "
-        "so it can be posted as a comment instead."
+        f"{completion}"
     )
 
 
