@@ -326,6 +326,77 @@ class MergeCapTests(unittest.TestCase):
                 self.assertEqual(merged, [1, 2, 3, 4, 5, 6, 7])
 
 
+# What the automation service accepts for one KV value (`kv_max_value_size`).
+KV_VALUE_LIMIT = 64 * 1024
+
+
+class StateSizeTests(unittest.TestCase):
+    """The state must stay small enough to be saved, poll after poll."""
+
+    def poll(self, module, state, open_prs):
+        module.HANDLE_DEPENDABOT = True
+        module.PIN_BUMP_BRANCH = ""
+        module._verify_repo = lambda *a, **k: None
+        module._list_open_prs = lambda *a, **k: open_prs
+        module._get_pr = lambda token, repo, number: next(
+            pr for pr in open_prs if pr["number"] == number
+        )
+        module._ci_status = lambda *a, **k: "running"
+        module._check_fix_completion = lambda *a, **k: None
+        module._process_repo("owner/repo", "token", "http://agent", "key", "http://oh", state)
+
+    def fix(self, number, status):
+        key = f"owner/repo#{number}@{number:040d}"
+        return key, {
+            "repo": "owner/repo", "pr_number": number, "head_sha": f"{number:040d}",
+            "status": status, "last_activity": 1.0 + number,
+        }
+
+    def merge(self, number):
+        key = f"owner/repo#{number}@{number:040d}"
+        return key, {
+            "repo": "owner/repo", "pr_number": number, "head_sha": f"{number:040d}",
+            "classification": "version-only", "merged_at": 1.0 + number,
+        }
+
+    def test_poll_forgets_pull_requests_that_are_no_longer_open(self):
+        for path in MODULES:
+            with self.subTest(module=str(path.relative_to(ROOT))):
+                module = load_module(path)
+                open_key, open_rec = self.fix(1, "handoff")
+                gone_key, gone_rec = self.fix(2, "handoff")
+                active_key, active_rec = self.fix(3, "active")
+                merged_key, merged_rec = self.merge(4)
+                state = {"version": 1, "repos": {"owner/repo": {
+                    "fixes": {open_key: open_rec, gone_key: gone_rec, active_key: active_rec},
+                    "merges": {merged_key: merged_rec},
+                }}}
+                open_pr = {
+                    "number": 1,
+                    "head": {"sha": f"{1:040d}", "ref": "dependabot/1"},
+                    "user": {"login": "dependabot[bot]"},
+                }
+                self.poll(module, state, [open_pr])
+                repo_state = state["repos"]["owner/repo"]
+                # The open PR stays handled, and a running fix keeps its record
+                # until the completion check closes it.
+                self.assertEqual(set(repo_state["fixes"]), {open_key, active_key})
+                self.assertEqual(repo_state["merges"], {})
+
+    def test_state_fits_the_kv_store_after_a_poll(self):
+        for path in MODULES:
+            with self.subTest(module=str(path.relative_to(ROOT))):
+                module = load_module(path)
+                # Two hundred hand-offs and two hundred merges, all long closed:
+                # within the per-repo record caps, yet too big to save.
+                fixes = dict(self.fix(n, "handoff") for n in range(1, 201))
+                merges = dict(self.merge(n) for n in range(201, 401))
+                state = {"version": 1, "repos": {"owner/repo": {"fixes": fixes, "merges": merges}}}
+                self.assertGreater(len(json.dumps(state).encode()), KV_VALUE_LIMIT)
+                self.poll(module, state, [])
+                self.assertLessEqual(len(json.dumps(state).encode()), KV_VALUE_LIMIT)
+
+
 class MaintainerHandoffTests(unittest.TestCase):
     def check_handoff(self, roster, reviews, requested, author, expected_login):
         for path in MODULES:

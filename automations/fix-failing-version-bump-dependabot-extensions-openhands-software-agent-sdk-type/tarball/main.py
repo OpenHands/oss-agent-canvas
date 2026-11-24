@@ -1433,8 +1433,16 @@ def _check_fix_completion(
     print(f"  Posted fix summary for {repo} PR #{pr_number} at {reviewed_sha[:12]}")
 
 
-def _trim_seen(repo_state: dict) -> None:
+def _trim_seen(repo_state: dict, open_prs: dict) -> None:
+    # A record is only ever looked up for an open pull request. Kept after the
+    # pull request is merged or closed, they pile up until the state is larger
+    # than the KV store takes for one value (64 KB), and no later poll can save.
     fixes = repo_state.setdefault("fixes", {})
+    for k in [
+        k for k, v in fixes.items()
+        if v.get("status") != "active" and v.get("pr_number") not in open_prs
+    ]:
+        del fixes[k]
     if len(fixes) > MAX_SEEN_FIXES:
         # Drop oldest closed entries first.
         closed = sorted(
@@ -1445,6 +1453,8 @@ def _trim_seen(repo_state: dict) -> None:
             del fixes[k]
 
     merges = repo_state.setdefault("merges", {})
+    for k in [k for k, v in merges.items() if v.get("pr_number") not in open_prs]:
+        del merges[k]
     if len(merges) > MAX_SEEN_FIXES:
         # Drop oldest merged keys first; a merged PR cannot reopen.
         oldest = sorted(merges, key=lambda k: merges[k].get("merged_at", 0))
@@ -1552,7 +1562,7 @@ def _process_repo(
             continue
         _check_fix_completion(rec, latest_open_prs, repo, github_token, agent_url, api_key)
 
-    _trim_seen(repo_state)
+    _trim_seen(repo_state, latest_open_prs)
     repo_state["updated_at"] = time.time()
     return last_conversation_id
 
