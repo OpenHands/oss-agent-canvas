@@ -22,7 +22,7 @@ jobs:
         env:
           SLACK_BOT_TOKEN: ci-test-placeholder
         run: |
-          mapfile -t directories < <(find tests automations plugins -type f -name 'test_*.py' -printf '%h\n' | sort -u)
+          mapfile -t directories < <(find tests automations plugins evals/automation-repair/tests -type f -name 'test_*.py' -printf '%h\n' | sort -u)
           if (( ${#directories[@]} == 0 )); then
             echo 'No unit tests found'
             exit 1
@@ -30,7 +30,7 @@ jobs:
           failed=0
           for directory in "${directories[@]}"; do
             echo "Running tests in ${directory}"
-            if [[ "$directory" == "automations/weekly-automation-improvement/tests" ]]; then
+            if [[ "$directory" == "automations/weekly-automation-improvement/tests" || "$directory" == "evals/automation-repair/tests" ]]; then
               python -m pytest "$directory" -q || failed=1
             else
               python -m unittest discover -s "$directory" -p 'test_*.py' -v || failed=1

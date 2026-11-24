@@ -1,13 +1,54 @@
 # Weekly Automation Improvement
 
-Persisted Flow-1 findings become prioritized GitHub topic issues. Native OpenHands agents investigate and repair the underlying
-problem, including SDK bugs, and open PRs with before/after evidence. An independent
-agent reviews the actual changes and execution records. Humans merge and deploy.
+Discovery turns Laminar findings or customer observations into prioritized GitHub issues. Native repair uses private evidence to test changes and open PRs. Customers can also enroll issues in their own implementation and review process or connect the GitHub assignment or Linear implementation automations already in their Software Factory. Humans decide what to merge and deploy.
 
 Start with [How the self-improving automation works](HOW_IT_WORKS.md) for the
 high-level workflow, agent responsibilities, evidence and main controls. This
 README covers setup and operation. The [GitHub backlog validation report](BACKLOG_VALIDATION.md)
 records the live results, costs and review of the generated issues.
+
+## Choose a workflow
+
+For a standalone installation, run `python3 package_workflow.py STAGE OUTPUT_DIRECTORY` from this directory. Choose `discovery`, `native-repair`, or `factory-handoff`. Each generates a disabled Git-sync folder containing its entrypoint, manifest and self-contained tarball. The existing manifest still runs both native stages weekly. In Enterprise, import only the selected folders, set run-as identity, profile, secrets and durable worker storage, then enable the intended schedule. Generated native stages cap the internal run budget at 1500 seconds inside the 1800-second deployment timeout. Shorter configured budgets take precedence. The packaged handoff uses system Python.
+
+**Portable evidence.** To use your own collector set `finding_source` to `portable`, choose a stable `source_namespace` and run `triage_workflow.py --config CONFIG --input BATCH`. Keep the ordinary repository/checkout, GitHub, triage-model and state settings. Laminar connection settings, project and Signal credentials are unnecessary. New topics are externally owned. The native Laminar cohort runner does not consume portable findings. For a Laminar installation handing repairs elsewhere, set `execution_owner` to `external` before publishing. Existing topics retain their human-controlled labels. For already-filed issues, use the [customer executor](#customer-managed-execution-and-review) or the [Factory handoff](FACTORY_HANDOFF.md).
+
+```json
+{
+  "schema": "openhands.findings.v1",
+  "source": "ci-tests",
+  "findings": [{
+    "id": "launch-42/test-7",
+    "observed_at": "2026-11-24T10:00:00Z",
+    "summary": "Submitting an empty report returned success.",
+    "impact": "The requested explanation was missing.",
+    "group": "report-publication",
+    "unit": "launch-42",
+    "origins": ["reporter", "publisher"],
+    "evidence": "A populated control returned success in the same fixture.",
+    "evidence_ref": "private-run-42"
+  }]
+}
+```
+
+The batch source must equal the configured namespace. Each observation requires an immutable ID, observation time, and summary. Supply a new ID and optional `supersedes` list for corrections. `group` hints at a common mechanism; `unit` identifies examples that should not count as independent. Origins can be uncertain. The ranker can inspect `read_finding(event_ref, offset)` for authorized evidence embedded in the private batch. External evidence references are opaque and never fetched automatically. A canonical `issue_url` reconciles matching existing work within scope. Ordinary human-authored issues receive recurrence evidence; enrollment for execution is separate.
+
+**Coordination.** Use one dispatcher and persistent state directory per scope. All stages that mutate the same backlog must share its filesystem lock or be routed to a single writer. Separate ephemeral sandbox directories do not coordinate claims. Drain or reconcile active attempts and open PRs before transferring ownership. Keep preexisting private state and paths available for historical native work. The Factory bridge can run on a host with GitHub access only when the issue brief is sufficient. Its operator configures trusted enrollers and verifies the assignment, reviewer, repository scope and check permissions.
+
+## Query the backlog on GitHub
+
+Start each search with `repo:OWNER/REPO is:issue is:open`. Use additional `repo:` qualifiers for the repositories the reader can access. The live dispatcher paginates the issues and timelines directly, then verifies current ownership and PR state before acting.
+
+| Question | Additional search terms |
+| --- | --- |
+| Which P1 topics are ready for investigation? | `label:improvement-topic label:priority:P1 label:improvement-ready` |
+| Which issues are candidates for native repair? | `label:improvement-topic label:improvement-ready -label:improvement-external -label:improvement-customer -label:improvement-factory -label:improvement-in-progress -label:improvement-blocked no:assignee` |
+| Which issues await an external routing decision? | `label:improvement-external label:improvement-ready -label:improvement-factory -label:improvement-customer` |
+| Which implementation owner is active? | `label:improvement-factory label:improvement-in-progress` or `label:improvement-customer label:improvement-in-progress`. Add `assignee:LOGIN` for a GitHub assignment. |
+| What recurred or needs attention? | `label:improvement-recurrent` for issues with recorded recurrence. Use `label:improvement-outcome-blocked`, `label:improvement-outcome-incomplete` or another outcome label for the last execution result. |
+| Which issues have an accepted result? | `label:improvement-outcome-accepted`. Open the issue's status for the reviewed revision, draft or merge state, and next actor. |
+
+A native candidate also requires a valid namespace, exactly one priority, accessible evidence and no open competing repair. A visible enrollment label nominates an external owner. Eligibility additionally depends on the trusted timeline actor, holds, and prior dispatch receipts. Recurrence comments can be attached to ordinary issues and PRs without enrolling them. The weekly summary links these comments; an ordinary item can have recurrence evidence without the managed topic label. Search indexes may lag writes. Use the issue and PR APIs for dispatch and readback.
 
 ## Weekly path
 
@@ -29,7 +70,7 @@ records the live results, costs and review of the generated issues.
    execution records. It checks the complete fix across repositories, records a
    verdict on the issues/PRs, and checks the destination repository's submission
    requirements and CI. The controller marks accepted PRs ready after all reported
-   CI checks on the exact reviewed head pass. It waits up to three minutes within
+   CI checks on the exact reviewed head pass, including named checks required by classic protection and branch rules. Workflow-file identity requirements need maintainer verification. It waits up to three minutes within
    the run budget. Failed, pending or unavailable checks and stale reviews keep
    the PR draft.
 
@@ -223,7 +264,7 @@ without claiming issues, writing the ledger or running agents.
 
 ## Configure and run
 
-Copy [weekly.example.json](weekly.example.json) outside git. Configure Laminar
+For native deployments, copy [weekly.example.json](weekly.example.json) outside git. Configure Laminar
 project/Signal/endpoints, proxy endpoint, home repository/canonical checkout,
 private state directory, native automation API and GitHub secret name. Register
 relevant checkouts under `repositories`. Upstream contributions are allowed by
@@ -341,7 +382,7 @@ The factory issue-triage automation and weekly triage share the native OpenHands
 profile foundation, but have different policies and lifecycles. Factory triage
 maintains acceptance criteria/readiness labels on individual GitHub issues using
 a persistent dispatcher; weekly triage awaits one finite cross-automation ranking
-from Laminar evidence. Importing one independently packaged plugin's worker into
+from collected observations. Importing one independently packaged plugin's worker into
 another would couple deployment and apply the wrong policy. The ownership guard
 prevents both from rewriting the same managed issues.
 
@@ -568,3 +609,17 @@ The original repair cohorts were not replaced. Native inference for the two full
 runs was approximately **$76.61**; standalone projections and supplementary checks
 are outside that accounting. Both runs ended within their configured guards.
 Scheduled workers, production settings and deployments were unchanged.
+
+## Customer-managed execution and review
+
+A customer can run its own executor without configuring either native agent or the Factory integrations. Use `customer_workflow.py` from the handoff bundle or the source tarball on the single dispatch host. The customer runner calls this CLI at claim and completion and after PR changes. Set `customer_workflow.executor_login`, `customer_workflow.trusted_enrollers`, `customer_workflow.repositories` and `state_dir` in its private config. The allowed GitHub repositories include the backlog and permissible repair destinations. Set the GitHub CLI credential for the executor. Precreate the normal improvement lifecycle/outcome labels and `improvement-customer`. Start from an unassigned issue or one assigned solely to the configured executor. A trusted maintainer enrolls a new or human-authored issue by adding `improvement-external`, `improvement-customer` and `improvement-ready` after checking for existing implementation work. An already-filed issue needs no generated body, private index, model key or Laminar settings.
+
+Use a stable, public-safe attempt ID for each dispatch. On the first successful claim, the CLI returns `start: true`. Start at most one customer job for that attempt and persist its job ID in the customer's runner. Repeat delivery returns `start: false`. If a response is lost, reconcile the executor's job by attempt ID before starting anything. Send the result from the configured executor identity and reconcile on subsequent PR changes.
+
+```sh
+python3 customer_workflow.py claim --config customer.json --issue "$ISSUE" --attempt test-42
+python3 customer_workflow.py report --config customer.json --issue "$ISSUE" --attempt test-42 --report outcome.json
+python3 customer_workflow.py reconcile --config customer.json --issue "$ISSUE" --attempt test-42
+```
+
+For example, an outcome file can contain `{"outcome":"blocked","validation":"Reproduction requires a private deployment.","limitations":"The executor has only the public brief.","next_action":"The repository maintainer can provide a sanitized reproducer.","pull_requests":[]}`. Allowed decisions are accepted, blocked, revised, revision-needed, unrepaired, failed and incomplete. For implemented changes, include one entry per PR with its GitHub URL in `url` and the complete reviewed commit SHA in `head`. Supply `base` to pin the reviewed base as well. The comment attributes the validation to the customer executor. The adapter verifies the revisions and draft or merge state and reports a changed head as incomplete. An accepted customer result alone does not promote a PR or certify CI. The comment hides links into other private repositories. The author's issue body remains intact.

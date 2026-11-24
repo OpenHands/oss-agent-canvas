@@ -3,7 +3,7 @@
 **Turn observed automation failures into proposed code improvements—with evidence
 for a human merge decision.**
 
-- Flow-1 finds potential problems; OpenHands agents investigate and propose fixes.
+- Flow-1 or a customer collector provides observations. Discovery turns them into GitHub investigation briefs.
 - Fixes can target customer configuration or any relevant authorized repository.
 - Before/after evidence and independent review determine readiness. Unproven fixes
   stay draft; humans merge and deploy.
@@ -12,6 +12,12 @@ for a human merge decision.**
 flowchart LR
     runs["Past automation runs"] --> findings["Laminar findings and clusters"]
     findings --> issues["GitHub topic issues"]
+    batch["Customer finding batch"] --> issues
+    issues --> native["Native repair and evidence review"]
+    issues --> external["Customer or Factory implementation"]
+    filed["Existing GitHub issue"] --> external
+    native --> status["Issue status and reviewed revision"]
+    external --> status
     issues --> epic["Persistent GitHub epic"]
     epic --> human["Human decision"]
 ```
@@ -24,11 +30,21 @@ flowchart LR
    topic issues, then runs repairs and independent reviews. It refreshes the epic
    after recording outcomes, including newly tracked cross-repository issues.
 
-`weekly.py` runs both in order under the existing lock and shared budget. Both
-workflows share one uploaded bundle and configuration; no extra scheduler, service
-or GitHub-trigger protocol is needed. They can also run separately on the same
-worker. GitHub holds topic priority and readiness. Private indexes retain the original
-Signals, trace references and execution evidence.
+The combined native schedule runs both entrypoints under one worker lock and inference budget. Its report retains both discovery and repair results. The discovery, native repair and Factory handoff entrypoints can also be packaged as separate disabled imports. A shared persistent dispatcher coordinates writers for each issue scope.
+
+### How the stages fit a repository’s Software Factory
+
+The Software Factory is the team’s complete set of repository automations. A collector can file the issue, another automation can triage it, and the team can select its existing implementer and reviewer. The issue connects those stages and records which one owns the next action.
+
+| Starting point | Handoff and owner |
+| --- | --- |
+| Laminar Signal | Discovery groups evidence and publishes an investigation brief. Native repair can load the indexed evidence and build the comparison cohort. Set `execution_owner=external` to send new topics to an external workflow. |
+| Another collector | Supply an `openhands.findings.v1` batch with stable occurrence IDs, times and observations. The ranker can read evidence scoped to a batch record. Discovery publishes externally owned investigations. |
+| An existing GitHub issue | A trusted maintainer enrolls the issue after deciding it is ready to implement. The customer adapter or configured Factory route can use its existing brief. |
+| Customer implementation or review | Claim one attempt and report the outcome, reviewed Git revisions, limitations and next actor. The receiving worker reconciles head changes on GitHub. |
+| Factory implementation | Assignment triggers the Canvas resolver, or a configured Linear ticket triggers the implementation poller. A distinct reviewer receives an explicit request once the configured checks pass. The bridge reflects its current observations on the original issue. |
+
+GitHub carries the public brief, original priority rationale, recurrence links, current lifecycle labels and outcome. Private worker storage carries raw findings, source attribution, claim receipts and validation artifacts. See [installation and queries](README.md) and [Factory handoff and recovery](FACTORY_HANDOFF.md).
 
 ## From findings to PRs
 
@@ -97,8 +113,7 @@ allowing prompt-cache reuse. Each review uses a separate conversation. Acceptanc
 external blockers, the attempt limit or resource limits stop the loop. The same
 frozen comparison inputs are retained.
 
-**GitHub is the backlog.** Open topic issues with the ready label and one priority
-remain eligible across runs. Repair claims the oldest issues at the highest
+**GitHub is the backlog.** Native-owned topic issues with one priority, the ready label and accessible private evidence remain eligible across runs. Repair claims the oldest issues at the highest
 priority first, subject to the topic limit. Open repair PRs, active claims and
 blocked issues prevent dispatch. The worker lock and dispatch ledger coordinate
 claims and recovery. A completed or inconclusive attempt requires an explicit
@@ -144,8 +159,7 @@ as conclusions change and archive prior versions privately. Triage refreshes the
 matching issues/PRs. Repair starts from the selected topic issue. Bounded repair
 revisions update the same current brief and PRs.
 
-**Raw evidence stays private.** Issues link to authorized access for inputs,
-Signals, prompts and logs. Public explanations use sanitized summaries; credential
+**Raw evidence stays private.** Issues publish opaque references that an authorized worker can resolve to inputs, Signals, prompts and logs. Public explanations use sanitized summaries; credential
 checks supplement agent privacy review. Public upstream work must not name or
 link private customer repositories; authorized readers retrieve the full evidence
 through a private index.

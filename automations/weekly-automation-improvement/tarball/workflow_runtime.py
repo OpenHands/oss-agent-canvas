@@ -134,10 +134,21 @@ def main(run):
     )
     parser.add_argument("--limit", type=int, choices=(1, 2, 3), default=3)
     parser.add_argument("--seed", type=int)
+    parser.add_argument(
+        "--max-run-seconds",
+        type=int,
+        help="Cap the configured run budget for this invocation",
+    )
     args = parser.parse_args()
 
     try:
         config = read_json(args.config)
+        if args.max_run_seconds is not None:
+            if args.max_run_seconds <= 0:
+                raise ValueError("--max-run-seconds must be positive")
+            config["max_run_seconds"] = min(
+                RunBudget(config).maximum_seconds, args.max_run_seconds
+            )
         if args.input:
             config["input"] = str(args.input.resolve())
         result = run(config, dry_run=args.dry_run, limit=args.limit, seed=args.seed)

@@ -1,6 +1,8 @@
-# External Factory handoff
+# Connect discovery to the repository’s Software Factory
 
-The dispatcher gives a GitHub improvement issue one implementation route and keeps the issue as the canonical record. It updates one dispatcher-owned status comment and the improvement status labels. An existing issue's description and human comments are preserved. Native repair skips issues labeled `improvement-external`.
+A Software Factory is the set of automations a team uses to collect findings, create and triage issues, implement changes, review PRs and validate outcomes in its repositories. A customer can keep the stages that already work for them.
+
+The optional `factory_handoff.py` dispatcher connects discovery to two existing implementation routes, GitHub assignment and a labeled Linear ticket. It gives a GitHub improvement issue one implementation route and keeps the issue as the canonical record. It updates one dispatcher-owned status comment and the improvement status labels. An existing issue's description and human comments are preserved. Native repair skips issues labeled `improvement-external`.
 
 ## Enroll and run
 
