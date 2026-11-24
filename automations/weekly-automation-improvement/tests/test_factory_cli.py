@@ -14,6 +14,7 @@ from test_factory_handoff import GitHub, LinearFixture, ISSUE, PULL, REPO, SUMMA
 def test_opted_in_cli_recovers_and_reports_exact_review(tmp_path, mode):
     gh, linear = GitHub(), LinearFixture()
     errors = []
+    callbacks = []
 
     class Server(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -22,7 +23,11 @@ def test_opted_in_cli_recovers_and_reports_exact_review(tmp_path, mode):
         def do_POST(self):
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             try:
-                if self.path == "/linear":
+                if self.path == "/callback":
+                    assert self.headers["Authorization"] == "Bearer fixture-only"
+                    callbacks.append(payload)
+                    result = {}
+                elif self.path == "/linear":
                     assert self.headers["Authorization"] == "fixture-only"
                     result = {
                         "data": linear.gql(payload["query"], **payload["variables"])
@@ -84,6 +89,9 @@ with urllib.request.urlopen(os.environ["TEST_API"] + "/gh", data=data) as respon
         "PATH": str(tmp_path) + os.pathsep + os.defpath,
         "PYTHONPATH": os.pathsep.join(map(str, (tmp_path, SUMMARY.parent))),
         "TEST_API": base,
+        "AUTOMATION_CALLBACK_URL": base + "/callback",
+        "AUTOMATION_CALLBACK_API_KEY": "fixture-only",
+        "AUTOMATION_RUN_ID": "route-exercise",
         "LINEAR_API_KEY": "fixture-only",
         "PYTHONDONTWRITEBYTECODE": "1",
     }
@@ -128,6 +136,11 @@ with urllib.request.urlopen(os.environ["TEST_API"] + "/gh", data=data) as respon
         )
         assert not errors, errors
         assert process.returncode == int(failure), process.stderr
+        assert len(callbacks) == len(steps) + 1
+        assert callbacks[-1] == {
+            "status": "FAILED" if failure else "COMPLETED",
+            "run_id": "route-exercise",
+        }
         status = json.loads(process.stdout)["issues"][ISSUE.casefold()]
         steps.append(
             {

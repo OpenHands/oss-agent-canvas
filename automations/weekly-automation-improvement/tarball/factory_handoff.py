@@ -21,7 +21,7 @@ from backlog import (
     native_claimed,
     on_hold,
 )
-from common import encode, read_json, replace_json
+from common import callback, encode, read_json, replace_json
 from factory_linear import Linear, matches_target
 from github_io import command, json_pages
 
@@ -949,9 +949,15 @@ def main():
     parser.add_argument("--issue")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    result = run(read_json(args.config), issue_url=args.issue, dry_run=args.dry_run)
-    print(encode(result))
-    return int("readback_or_write_failed" in result["issues"].values())
+    try:
+        result = run(read_json(args.config), issue_url=args.issue, dry_run=args.dry_run)
+        print(encode(result))
+        failed = "readback_or_write_failed" in result["issues"].values()
+    except Exception:
+        callback("FAILED")
+        raise
+    callback("FAILED" if failed else "COMPLETED")
+    return int(failed)
 
 
 if __name__ == "__main__":

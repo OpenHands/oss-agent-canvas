@@ -2,11 +2,10 @@ import argparse
 import fcntl
 import os
 import re
-import sys
 from pathlib import Path
 
 from budget import RunBudget
-from common import encode, read_json, redact
+from common import callback, encode, read_json, redact
 from repair_policy import resolve as repair_policy
 
 
@@ -86,28 +85,6 @@ def run(config, run_locked, *, dry_run=False, limit=3, seed=None):
         )
     finally:
         os.close(lock)
-
-
-def callback(status):
-    import urllib.request
-
-    url = os.environ.get("AUTOMATION_CALLBACK_URL")
-    if url:
-        request = urllib.request.Request(
-            url,
-            data=encode(
-                {"status": status, "run_id": os.environ.get("AUTOMATION_RUN_ID")}
-            ).encode(),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": "Bearer "
-                + os.environ.get("AUTOMATION_CALLBACK_API_KEY", ""),
-            },
-        )
-        try:
-            urllib.request.urlopen(request, timeout=10).close()
-        except OSError:
-            print("Completion callback failed", file=sys.stderr)
 
 
 def main(run):

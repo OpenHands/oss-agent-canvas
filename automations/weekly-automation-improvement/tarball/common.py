@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -68,6 +69,26 @@ def redact(value, *, opaque=True):
             value,
         )
     return value
+
+
+def callback(status):
+    url = os.environ.get("AUTOMATION_CALLBACK_URL")
+    if url:
+        request = urllib.request.Request(
+            url,
+            data=encode(
+                {"status": status, "run_id": os.environ.get("AUTOMATION_RUN_ID")}
+            ).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Bearer "
+                + os.environ.get("AUTOMATION_CALLBACK_API_KEY", ""),
+            },
+        )
+        try:
+            urllib.request.urlopen(request, timeout=10).close()
+        except OSError:
+            print("Completion callback failed", file=sys.stderr)
 
 
 def encode(value):
