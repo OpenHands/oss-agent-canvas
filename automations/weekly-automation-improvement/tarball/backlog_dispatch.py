@@ -18,6 +18,7 @@ from backlog import (
     TOPIC,
     ensure_labels,
     evidence_root,
+    external_owner,
     identity,
     namespace,
     on_hold,
@@ -32,13 +33,6 @@ from triage_workflow import discovery_repositories
 ISSUE = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/([1-9][0-9]*)")
 PULL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/([1-9][0-9]*)")
 RUN = re.compile(r"(?m)^<!-- automation-improvement-run: ([\w-]+) -->\n?")
-
-
-def external_owner(config):
-    return (
-        config.get("finding_source") == "portable"
-        or config.get("execution_owner") == "external"
-    )
 
 
 def recorded_external_owner(state_dir, url, factory):

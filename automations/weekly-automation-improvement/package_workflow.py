@@ -45,6 +45,7 @@ DISCOVERY_FILES = SHARED_FILES + (
     "epic.py",
     "events.py",
     "tracked_work.py",
+    "topic_finder.py",
     "triage.py",
     "triage_agent.py",
     "triage_workflow.py",
@@ -67,7 +68,9 @@ STAGE_FILES = {
 }
 
 
-def package(stage, directory):
+def package(stage, directory, *, without_sdk=False):
+    if without_sdk and stage != "discovery":
+        raise ValueError("--without-sdk applies to standalone discovery")
     name, entrypoint, schedule = STAGES[stage]
     root = Path(__file__).resolve().parent
     destination = directory / ("automation-improvement-" + stage)
@@ -78,17 +81,21 @@ def package(stage, directory):
         folder = Path(tmp) / destination.name
         tarball = folder / "tarball"
         tarball.mkdir(parents=True)
-        native = stage != "factory-handoff"
+        use_sdk = stage != "factory-handoff" and not without_sdk
         for filename in STAGE_FILES[stage]:
+            if without_sdk and filename == "setup.sh":
+                continue
             shutil.copy2(root / "tarball" / filename, tarball)
+        python = ".venv/bin/python" if use_sdk else "python3"
+        run = f"{python} {entrypoint}"
+        if stage != "factory-handoff":
+            run += " --max-run-seconds 1500"
         manifest = {
             "enabled": False,
             "name": name,
-            "entrypoint": f".venv/bin/python {entrypoint} --max-run-seconds 1500"
-            if native
-            else f"python3 {entrypoint}",
-            "setup_script_path": "setup.sh" if native else None,
-            "tarball_executables": ["setup.sh"] if native else [],
+            "entrypoint": run,
+            "setup_script_path": "setup.sh" if use_sdk else None,
+            "tarball_executables": ["setup.sh"] if use_sdk else [],
             "tarball_source": {"type": "internal", "url": None},
             "keep_alive": False,
             "timeout": 1800,
@@ -103,5 +110,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("stage", choices=STAGES)
     parser.add_argument("directory", type=Path)
+    parser.add_argument(
+        "--without-sdk",
+        action="store_true",
+        help="Package standalone discovery for an operator-installed topic finder",
+    )
     options = parser.parse_args()
-    print(package(options.stage, options.directory))
+    if options.without_sdk and options.stage != "discovery":
+        parser.error("--without-sdk applies to standalone discovery")
+    print(package(options.stage, options.directory, without_sdk=options.without_sdk))

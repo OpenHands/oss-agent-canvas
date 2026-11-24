@@ -11,8 +11,9 @@ for a human merge decision.**
 ```mermaid
 flowchart LR
     runs["Past automation runs"] --> findings["Laminar findings and clusters"]
-    findings --> issues["GitHub topic issues"]
-    batch["Customer finding batch"] --> issues
+    findings --> rank["OpenHands or a customer topic finder"]
+    batch["Customer finding batch"] --> rank
+    rank --> issues["Verified GitHub topic issues"]
     issues --> native["Native repair and evidence review"]
     issues --> external["Customer or Factory implementation"]
     filed["Existing GitHub issue"] --> external
@@ -40,6 +41,7 @@ The Software Factory is the team’s complete set of repository automations. A c
 | --- | --- |
 | Laminar Signal | Discovery groups evidence and publishes an investigation brief. Native repair can load the indexed evidence and build the comparison cohort. Set `execution_owner=external` to send new topics to an external workflow. |
 | Another collector | Supply an `openhands.findings.v1` batch with stable occurrence IDs, times and observations. The ranker can read evidence scoped to a batch record. Discovery publishes externally owned investigations. |
+| Another topic finder | An operator-installed program can group and prioritize findings from either source. It returns proposals against the supplied evidence references and schema. The workflow validates the plan and handles GitHub publication and recurrence. |
 | An existing GitHub issue | A trusted maintainer enrolls the issue after deciding it is ready to implement. The customer adapter or configured Factory route can use its existing brief. |
 | Customer implementation or review | Claim one attempt and report the outcome, reviewed Git revisions, limitations and next actor. The receiving worker reconciles head changes on GitHub. |
 | Factory implementation | Assignment triggers the Canvas resolver, or a configured Linear ticket triggers the implementation poller. A distinct reviewer receives an explicit request once the configured checks pass. The bridge reflects its current observations on the original issue. |

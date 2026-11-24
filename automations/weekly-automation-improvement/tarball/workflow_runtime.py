@@ -7,30 +7,34 @@ from pathlib import Path
 from budget import RunBudget
 from common import callback, encode, read_json, redact
 from repair_policy import resolve as repair_policy
+from topic_finder import validate_command
 
 
-def load_environment(config):
+def load_environment(config, *, use_model=True):
     uses_laminar = config.get("finding_source", "laminar") == "laminar"
-    if config.get("credentials_file"):
+    if config.get("credentials_file") and (use_model or uses_laminar):
         path = Path(config["credentials_file"]).expanduser()
         if path.stat().st_mode & 0o077:
             raise ValueError("Credentials file must be owner-only")
         values = read_json(path)
-        keys = (
-            ("LITELLM_API_KEY", "LMNR_PROJECT_API_KEY")
-            if uses_laminar
-            else ("LITELLM_API_KEY",)
-        )
+        keys = []
+        if use_model:
+            keys.append("LITELLM_API_KEY")
+        if uses_laminar:
+            keys.append("LMNR_PROJECT_API_KEY")
         for name in keys:
             if name in values:
                 os.environ[name] = values[name]
     if uses_laminar:
         os.environ["LMNR_BASE_URL"] = config["laminar_base_url"]
         os.environ.setdefault("LMNR_FORCE_HTTP", "true")
-    os.environ["LLM_BASE_URL"] = config["llm_base_url"]
+    if use_model:
+        os.environ["LLM_BASE_URL"] = config["llm_base_url"]
 
 
-def run(config, run_locked, *, dry_run=False, limit=3, seed=None):
+def run(config, run_locked, *, dry_run=False, limit=3, seed=None, use_model=True):
+    if "topic_finder_command" in config:
+        validate_command(config["topic_finder_command"])
     if config.get("finding_source", "laminar") not in ("laminar", "portable"):
         raise ValueError("Unsupported finding_source")
     if config.get("execution_owner", "native") not in ("native", "external"):
@@ -66,7 +70,7 @@ def run(config, run_locked, *, dry_run=False, limit=3, seed=None):
         raise ValueError("Select one to three representatives per topic")
     repair_policy(config)
     budget = RunBudget(config)
-    load_environment(config)
+    load_environment(config, use_model=use_model)
     state_dir = Path(config["state_dir"]).expanduser().resolve()
     state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     lock = os.open(state_dir / "weekly.lock", os.O_CREAT | os.O_RDWR, 0o600)

@@ -118,6 +118,7 @@ def configure_triage(args, config, state_dir, week, dry_run, inventory_path):
     args.evidence_location = config.get("evidence_location")
     args.triage_agent_profile = config.get("triage_agent_profile")
     args.triage_agent_config = config.get("triage_agent", {})
+    args.topic_finder_command = config.get("topic_finder_command")
     args.isolated_validation = config.get("isolated_validation", False)
     args.repair_policy = repair_policy(config)
 
@@ -515,7 +516,14 @@ def reconcile_publication(config, scope, state, state_path, pending, output, eli
 
 
 def run(config, *, dry_run=False, limit=3, seed=None):
-    return run_workflow(config, run_locked, dry_run=dry_run, limit=limit, seed=seed)
+    return run_workflow(
+        config,
+        run_locked,
+        dry_run=dry_run,
+        limit=limit,
+        seed=seed,
+        use_model="topic_finder_command" not in config,
+    )
 
 
 if __name__ == "__main__":

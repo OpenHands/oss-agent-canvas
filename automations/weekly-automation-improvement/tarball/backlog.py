@@ -96,6 +96,13 @@ def native_claimed(state_dir, issue_url):
     )
 
 
+def external_owner(config):
+    return (
+        config.get("finding_source") == "portable"
+        or config.get("execution_owner") == "external"
+    )
+
+
 def namespace(config, state_dir):
     values = [config["repository"].casefold()]
     if config.get("finding_source") == "portable":
@@ -139,6 +146,14 @@ def issue_guides(source):
         )
         or path.casefold().removeprefix(".github/").removeprefix("docs/") in guides
     ]
+
+
+def read_issue_guide(source, path, byte_limit=2_000_000):
+    obj = source["revision"] + ":" + path
+    size = int(command(["git", "cat-file", "-s", obj], source["checkout"]))
+    if size > byte_limit:
+        raise ValueError("Issue guidance exceeds its size budget")
+    return command(["git", "show", obj], source["checkout"], strip=False)
 
 
 def ensure_labels(repository):
@@ -389,10 +404,7 @@ def publish(config, context, topic, existing, output, *, preview=False):
         refresh_enrollment_status(config, io)
         return existing["url"]
 
-    external = (
-        config.get("execution_owner") == "external"
-        or config.get("finding_source") == "portable"
-    )
+    external = external_owner(config)
     texts = (
         brief["problem"],
         block("backlog-observation", brief["example"]),

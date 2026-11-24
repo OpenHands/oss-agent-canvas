@@ -7,7 +7,7 @@ import pytest
 from backlog import issue_guides, namespace
 from common import write_json
 from finding_record import SCHEMA, read_batch
-from triage import prepare, validate
+from triage import finder_guides, prepare, validate
 from test_triage import topic
 import triage_agent
 import triage_workflow
@@ -16,6 +16,18 @@ import workflow_runtime
 
 def batch(*rows):
     return {"schema": SCHEMA, "source": "ci-tests", "findings": list(rows)}
+
+
+def test_command_finder_skips_template_attachments(monkeypatch):
+    def read(source, path, limit):
+        assert path.endswith("bug.yml")
+        return "Include reproduction steps."
+
+    monkeypatch.setattr("triage.read_issue_guide", read)
+    paths = [".github/ISSUE_TEMPLATE/screenshot.png", ".github/ISSUE_TEMPLATE/bug.yml"]
+    assert finder_guides({}, paths) == [
+        {"path": paths[1], "text": "Include reproduction steps."}
+    ]
 
 
 def row(key, **fields):

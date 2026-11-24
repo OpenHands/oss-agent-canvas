@@ -4,8 +4,8 @@ import uuid
 from pathlib import Path
 
 from attribution import automation_ids as origin_automations
-from backlog import ACTIVE, CUSTOMER, EXTERNAL, FACTORY
-from backlog_dispatch import RUN, external_owner, issue_for, publish_outcome, selection
+from backlog import ACTIVE, CUSTOMER, EXTERNAL, FACTORY, external_owner
+from backlog_dispatch import RUN, issue_for, publish_outcome, selection
 from cohorts import collect as collect_cohort, topic_records
 from common import read_json, redact, replace_json, write_json
 from epic import refresh as refresh_epic
@@ -297,7 +297,14 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
 
 
 def run(config, *, dry_run=False, limit=3, seed=None):
-    return run_workflow(config, run_locked, dry_run=dry_run, limit=limit, seed=seed)
+    return run_workflow(
+        config,
+        run_locked,
+        dry_run=dry_run,
+        limit=limit,
+        seed=seed,
+        use_model=not dry_run and not external_owner(config),
+    )
 
 
 if __name__ == "__main__":

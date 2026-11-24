@@ -14,6 +14,19 @@ ROOT = Path(__file__).resolve().parents[1]
 packaging = runpy.run_path(str(ROOT / "package_workflow.py"))
 
 
+def test_discovery_with_installed_finder_uses_system_python(tmp_path):
+    folder = packaging["package"]("discovery", tmp_path, without_sdk=True)
+    manifest = json.loads((folder / "automation.yaml").read_text())
+    assert manifest["entrypoint"] == "python3 triage_workflow.py --max-run-seconds 1500"
+    assert manifest["enabled"] is False and manifest["setup_script_path"] is None
+    assert (
+        not manifest["tarball_executables"]
+        and not (folder / "tarball/setup.sh").exists()
+    )
+    with pytest.raises(ValueError, match="standalone discovery"):
+        packaging["package"]("native-repair", tmp_path, without_sdk=True)
+
+
 @pytest.mark.parametrize("stage", list(packaging["STAGES"]))
 def test_generated_entrypoint_and_setup_match_the_disabled_stage(tmp_path, stage):
     folder = packaging["package"](stage, tmp_path)

@@ -10,8 +10,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from agent_runtime import AgentDeadline, create_agent
+from backlog import read_issue_guide
 from common import read_json, redact, write_json
-from github_io import command
 from laminar import Laminar
 from raw_evidence import EvidenceReader
 from repair_policy import instructions
@@ -41,7 +41,7 @@ def prepare_issue(args, context, records):
     texts = (
         "Automation runs produce individual failure findings, but repeated descriptions can hide shared problems and distract from higher-impact repairs. This weekly review turns those unverified leads into a prioritized investigation queue.",
         "<!-- triage-summary:start -->\n" + summary + "\n<!-- triage-summary:end -->",
-        "A topic is one underlying problem and may span automations and repositories, including the SDK. Group findings by underlying failure mechanism across automations and repositories, inspect counterevidence, and prioritize focused repairs. A repair agent investigates each selected topic and compares proposed changes with the original behavior; a human decides whether to merge.",
+        "A topic is one underlying problem and may span automations and repositories, including the SDK. Group findings by underlying failure mechanism across automations and repositories, inspect counterevidence, and prioritize focused repairs. Each topic names its next actor. Once a repair is assigned, the implementer checks the proposed change against the original behavior. A maintainer decides whether to merge.",
         "Rank using impact, recurrence, confidence and repairability. Keep independent problems separate, distinguish hypotheses from confirmed defects, and explain uncertainty. Counts describe the reviewed batch, not population failure rates. Unselected findings remain pending.",
         "<!-- triage-plan:start -->\nPreparation ready; triage has not produced a ranked queue yet.\n<!-- triage-plan:end -->\n\n<!-- triage-epic:start -->\n<!-- triage-epic:end -->",
         "Complete preparation and original source evidence remain on the authenticated worker. Read the latest catalog with read_issue_artifact(reference, offset). Use the scoped reader for deeper inspection.\n\n<!-- topic-evidence:start -->\n<!-- topic-evidence:end -->",
@@ -284,11 +284,7 @@ def evidence(path, name, arguments, automation_id=None, finding_id=None):
         ):
             raise ValueError("Choose a prepared issue guide and a valid offset")
         source = value["repositories"][value["repository"]]
-        obj = source["revision"] + ":" + guide
-        size = int(command(["git", "cat-file", "-s", obj], source["checkout"]))
-        if size > 2_000_000:
-            raise ValueError("Issue guidance exceeds its size budget")
-        data = command(["git", "show", obj], source["checkout"], strip=False)
+        data = read_issue_guide(source, guide)
         print(
             json.dumps(
                 {

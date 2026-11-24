@@ -11,27 +11,70 @@ records the live results, costs and review of the generated issues.
 
 For a standalone installation, run `python3 package_workflow.py STAGE OUTPUT_DIRECTORY` from this directory. Choose `discovery`, `native-repair`, or `factory-handoff`. Each generates a disabled Git-sync folder containing its entrypoint, manifest and self-contained tarball. The existing manifest still runs both native stages weekly. In Enterprise, import only the selected folders, set run-as identity, profile, secrets and durable worker storage, then enable the intended schedule. Generated native stages cap the internal run budget at 1500 seconds inside the 1800-second deployment timeout. Shorter configured budgets take precedence. The packaged handoff uses system Python.
 
-**Portable evidence.** To use your own collector set `finding_source` to `portable`, choose a stable `source_namespace` and run `triage_workflow.py --config CONFIG --input BATCH`. Keep the ordinary repository/checkout, GitHub, triage-model and state settings. Laminar connection settings, project and Signal credentials are unnecessary. New topics are externally owned. The native Laminar cohort runner does not consume portable findings. For a Laminar installation handing repairs elsewhere, set `execution_owner` to `external` before publishing. Existing topics retain their human-controlled labels. For already-filed issues, use the [customer executor](#customer-managed-execution-and-review) or the [Factory handoff](FACTORY_HANDOFF.md).
+### Supply findings from your own detector
+
+Set `finding_source` to `portable` and choose a stable `source_namespace`. Your detector writes an `openhands.findings.v1` batch. For example, a CI check that waits for a report can record each expired deadline in `batch.json`.
 
 ```json
 {
   "schema": "openhands.findings.v1",
   "source": "ci-tests",
-  "findings": [{
-    "id": "launch-42/test-7",
-    "observed_at": "2026-11-24T10:00:00Z",
-    "summary": "Submitting an empty report returned success.",
-    "impact": "The requested explanation was missing.",
-    "group": "report-publication",
-    "unit": "launch-42",
-    "origins": ["reporter", "publisher"],
-    "evidence": "A populated control returned success in the same fixture.",
-    "evidence_ref": "private-run-42"
-  }]
+  "findings": [
+    {
+      "id": "launch-42/test-7",
+      "observed_at": "2026-11-24T10:00:00Z",
+      "summary": "A report request reached its deadline before the report was available.",
+      "group": "report-timeout",
+      "unit": "launch-42",
+      "evidence_ref": "private-run-42"
+    },
+    {
+      "id": "launch-43/test-7",
+      "observed_at": "2026-11-24T11:00:00Z",
+      "summary": "The next run also timed out while waiting for a report.",
+      "group": "report-timeout",
+      "unit": "launch-43"
+    }
+  ]
 }
 ```
 
-The batch source must equal the configured namespace. Each observation requires an immutable ID, observation time, and summary. Supply a new ID and optional `supersedes` list for corrections. `group` hints at a common mechanism; `unit` identifies examples that should not count as independent. Origins can be uncertain. The ranker can inspect `read_finding(event_ref, offset)` for authorized evidence embedded in the private batch. External evidence references are opaque and never fetched automatically. A canonical `issue_url` reconciles matching existing work within scope. Ordinary human-authored issues receive recurrence evidence; enrollment for execution is separate.
+The batch `source` must equal `source_namespace`. Each observation requires an immutable `id`, an `observed_at` timestamp and a `summary`. For corrections, supply a new ID and list replaced IDs in `supersedes`. Set `unit` to the execution that produced the observation so retries or duplicate checks from one run count together. `group` hints at a common mechanism. Optional `impact`, `origins`, and `evidence` fields give the native ranker more context. It can page through the private batch with `read_finding(event_ref, offset)`. External `evidence_ref` values are opaque. A canonical `issue_url` lets discovery attach recurrence to matching work in scope.
+
+### Use your own topic-finding algorithm
+
+Discovery uses the native OpenHands triage agent by default. Set `topic_finder_command` to a JSON array of executable and arguments to select your algorithm with either portable findings or Laminar Signals. The example below uses only the Python standard library and works with the batch above. Copy the finder to a trusted location on the discovery worker. [Example finder](examples/repeated_failure_finder.py)
+
+The standalone worker needs Python 3.11 or later, Git, the GitHub CLI and the installed finder. Save a private `config.json` with your actual worker paths and GitHub repository. Provide `GH_TOKEN` for the worker's GitHub CLI and an existing checkout with that repository as its `origin`. This portable configuration runs discovery without Laminar or model credentials.
+
+```json
+{
+  "repository": "example/automations",
+  "checkout": "/srv/repos/automations",
+  "state_dir": "/srv/improvement/state",
+  "finding_source": "portable",
+  "source_namespace": "ci-tests",
+  "topic_finder_command": ["/usr/bin/python3", "/opt/improvement/repeated_failure_finder.py"]
+}
+```
+
+From the directory containing `tarball/`, run a preview. Omit `--dry-run` to publish.
+
+```sh
+python3 tarball/triage_workflow.py --config config.json --input batch.json --dry-run
+```
+
+To package this workflow for Git sync, run `python3 package_workflow.py discovery DEST --without-sdk`. The generated manifest uses system Python. Install the finder at the configured absolute path on each worker. For scheduled portable discovery, set `input` in the worker config to the path where your detector delivers its batch.
+
+The example proposes one P2 topic when at least two independent runs report `report-timeout`. Its stable `report-timeout` key lets discovery attach a later pair of observations to the same issue. Use fresh observation IDs and distinct run units for the later pair. A single run with multiple timeout observations yields an empty plan. The private run artifact `triage/triage-result.json` records the explanation in `topic_plan.no_action_reason`.
+
+For a different algorithm, read one JSON object from stdin and write one JSON object to stdout. The request's `schema` is `openhands.topic-finder-input.v1`. It includes `request_id`, `representative_limit`, `findings` and `existing_work`. Each finding has a request-local `ref`, a `summary`, a nullable `group` hint and `unit_refs`. Overlapping unit aliases identify observations of the same execution. Each existing work item has a `title` and a `url`. `issue_guides` carries issue-submission guidance from the pinned repository revision. `plan_schema` gives the JSON Schema for the `topics` and `no_action_reason` payload.
+
+Return an `openhands.topic-plan.v1` object with the same `request_id`, a `topics` array and `no_action_reason`. Each topic needs a stable lowercase kebab-case `key` of up to 40 characters, a `title`, a `reason`, integer `priority` from 0 through 3, and a `brief` with `problem`, `example`, `prevention` and `validation` suitable for a public issue. In `representative_event_refs`, select one to `representative_limit` distinct examples from independent executions. Put URLs for matching items from `existing_work` in `existing_work_urls`, or return an empty array. Explain an empty topic list in `no_action_reason`.
+
+The finder receives private data and runs as the worker account, outside a sandbox. The operator configures an absolute executable path and literal arguments. Only `PATH` and `LC_ALL` enter the child environment, and its working directory is temporary. Treat findings and GitHub text as data and author public-safe issue prose. The workflow discards stderr, caps stdout at 8,000,000 bytes, and allows up to 600 seconds within the remaining run budget. It validates the returned plan and reconciles it against the backlog before publishing topics.
+
+Portable topics start with external ownership. For a Laminar installation handing repairs elsewhere, set `execution_owner` to `external` before publishing. Enrollment on an existing issue is an explicit maintainer action. See the [customer executor](#customer-managed-execution-and-review) and [Factory handoff](FACTORY_HANDOFF.md).
 
 **Coordination.** Use one dispatcher and persistent state directory per scope. All stages that mutate the same backlog must share its filesystem lock or be routed to a single writer. Separate ephemeral sandbox directories do not coordinate claims. Drain or reconcile active attempts and open PRs before transferring ownership. Keep preexisting private state and paths available for historical native work. The Factory bridge can run on a host with GitHub access only when the issue brief is sufficient. Its operator configures trusted enrollers and verifies the assignment, reviewer, repository scope and check permissions.
 
@@ -75,6 +118,8 @@ The output is a JSON array. Label queries include open issues matching every sup
 The public record is embedded as single-line JSON in an HTML comment beginning `<!-- automation-improvement-status: `. Clients can use the reader to verify the publishing account, select the active route and handle pagination. The issue and PR APIs remain authoritative for current labels, checks, approvals and ownership before dispatch or merge.
 
 ## Weekly path
+
+The default deployment uses Laminar and native OpenHands agents.
 
 1. Laminar runs Flow-1 on matching finished automation traces according to its sampling
    configuration. Python reads the persisted Signals, retains unprocessed findings privately and
@@ -363,11 +408,7 @@ automations/weekly-automation-improvement/tarball/.venv/bin/python automations/w
   --config /private/weekly.json --input /private/frozen-inventory.json --dry-run
 ```
 
-`--input` loads an inventory upfront; deeper reads/cohort hydration can still need
-Laminar. `--dry-run` prepares and triages only, spending inference tokens but making
-no GitHub writes, repair dispatches or canonical ledger changes. Omit it to run
-repairs. `--limit 1..3` bounds representative conversations per topic, not topic
-count or total collected Signals. The YAML schedules Mondays at 08:00 UTC.
+`--input` loads an inventory upfront. Deeper reads and cohort hydration for Laminar sources can still need Laminar access. `--dry-run` previews the plan. With the native ranker this spends inference tokens. Omit the flag to enable GitHub writes, canonical ledger updates and repair dispatch in the combined workflow. `--limit 1..3` bounds representative conversations per topic. The YAML schedules Mondays at 08:00 UTC.
 
 ## State and recovery
 

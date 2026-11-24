@@ -2,6 +2,7 @@ import copy
 import hashlib
 import json
 import re
+import time
 from collections import Counter
 
 from backlog import (
@@ -11,12 +12,14 @@ from backlog import (
     identity,
     issue_guides,
     priority_reason,
+    read_issue_guide,
     safe_brief,
 )
 from common import encode, redact, timestamp, topic_id, write_json
 from attribution import automation_ids, candidates, conversation_ids, unit
 from finding_record import occurrence_id, prepare_portable
-from triage_agent import rank
+from triage_agent import prepare_issue, rank
+from topic_finder import run_finder
 from epic import is_index
 from laminar import object_value
 from tracked_work import comment, matching, safe_work_link
@@ -285,6 +288,7 @@ def prepare(records, prs, previous_attempts, retry_topic_ids=()):
         "event_catalog": [
             {
                 "event_ref": reference,
+                "group": event_groups[identifier],
                 "automation_ref": automations[owners[0]]["ref"]
                 if len(owners := automation_ids(by_event[identifier])) == 1
                 else None,
@@ -479,6 +483,17 @@ def validate(result, records, references, limit):
     )
 
 
+def finder_guides(source, paths):
+    guides = []
+    remaining = 2_000_000
+    for path in paths:
+        if path.casefold().endswith((".md", ".markdown", ".yaml", ".yml", ".txt")):
+            text = read_issue_guide(source, path, remaining)
+            guides.append({"path": path, "text": text})
+            remaining -= len(text.encode())
+    return guides
+
+
 def triage(args, records, prs, completed_topics=()):
     context, references, prepared_records = prepare(
         records, prs, completed_topics, getattr(args, "retry_topic_ids", [])
@@ -511,8 +526,35 @@ def triage(args, records, prs, completed_topics=()):
         )
         fields["properties"]["brief"] = brief
         fields["required"].append("brief")
-    result, measurement, issue = rank(args, context, prepared_records, schema)
+    finder = getattr(args, "topic_finder_command", None)
+    if finder:
+        guides = finder_guides(
+            args.repositories.get(args.repository), context.get("issue_guide_files", [])
+        )
+        started = time.monotonic()
+        result = run_finder(
+            finder,
+            context
+            | {
+                "issue_guides": guides,
+                "backlog_scope": references["backlog_scope"],
+                "plan_schema": schema,
+            },
+            prepared_records,
+            limit=args.limit,
+            timeout=args.budget.timeout(600),
+        )
+        measurement = {
+            "backend": "topic-finder-command",
+            "role": "triage",
+            "seconds": round(time.monotonic() - started, 3),
+        }
+    else:
+        result, measurement, issue = rank(args, context, prepared_records, schema)
     ranked = validate(result, records, references, args.limit)
+    if finder:
+        issue = prepare_issue(args, context, prepared_records)
+        write_json(args.output / "triage-issue.json", issue.context())
     plans, tracked = [], []
     for topic in ranked:
         urls = matching(topic, references["existing_work"])
@@ -550,7 +592,7 @@ def triage(args, records, prs, completed_topics=()):
         },
     )
     aggregation = context | {
-        "luna_triage": {
+        "topic_plan": {
             "topics": plans,
             "no_action_reason": result["no_action_reason"],
         },
@@ -559,6 +601,8 @@ def triage(args, records, prs, completed_topics=()):
         "tracked_topics": tracked,
         "existing_work": references["existing_work"],
     }
+    if not finder:
+        aggregation["luna_triage"] = aggregation["topic_plan"]
     write_json(args.output / "triage-result.json", aggregation)
     return plans, aggregation
 
