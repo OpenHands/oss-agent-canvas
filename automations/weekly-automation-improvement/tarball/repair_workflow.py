@@ -7,6 +7,7 @@ from attribution import automation_ids as origin_automations
 from backlog_dispatch import issue_for, selection
 from cohorts import collect as collect_cohort, topic_records
 from common import read_json, redact, write_json
+from epic import refresh as refresh_epic
 from events import hydrate_events
 from laminar import Laminar
 from repair_policy import resolve as repair_policy
@@ -150,7 +151,7 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
             ],
         }
     else:
-        execution, _ = execute(config, context, queue, state, budget)
+        execution, state = execute(config, context, queue, state, budget)
     summary = {
         "status": execution["status"],
         "output": str(output),
@@ -160,6 +161,8 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
         },
         "budget": budget.snapshot(),
     }
+    if not dry_run:
+        summary["epic"] = refresh_epic(config, state_dir, state, output / "epic")
     write_json(output / "repair-report.json", redact(summary))
     return summary
 

@@ -19,9 +19,10 @@ flowchart LR
 ## Two workflows
 
 1. **Discover and prioritize** — `triage_workflow.py` reads findings, updates the
-   weekly summary and GitHub topic issues and records recurrence evidence.
+   topic issues and the persistent GitHub epic, and records recurrence evidence.
 2. **Repair and validate** — `repair_workflow.py` queries and claims eligible GitHub
-   topic issues, then runs repairs, independent reviews and bounded revisions.
+   topic issues, then runs repairs and independent reviews. It refreshes the epic
+   after recording outcomes, including newly tracked cross-repository issues.
 
 `weekly.py` runs both in order under the existing lock and shared budget. Both
 workflows share one uploaded bundle and configuration; no extra scheduler, service

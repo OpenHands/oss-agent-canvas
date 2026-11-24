@@ -197,6 +197,14 @@ can run independently:
 .venv/bin/python repair_workflow.py --config /private/config.json
 ```
 
+Start at the **Automation improvement epic** in the configured home repository.
+It links to open topic issues, tracked follow-ups and the latest triage summary.
+Each new weekly summary links back to the epic. Discovery updates the list even
+when there are no new findings, and repair refreshes it after recording outcomes,
+including new issues in other repositories. The epic links to public issues
+across repositories. Private or internal links across repositories stay in the
+worker records. Refresh failures are recorded in the workflow receipt.
+
 Triage writes `triage-report.json`. Repair discovers open topics from GitHub and
 writes `repair-report.json`, including selection, outcomes and cost. Repair can
 start days later with its own configured cost and duration limits. `weekly.py`

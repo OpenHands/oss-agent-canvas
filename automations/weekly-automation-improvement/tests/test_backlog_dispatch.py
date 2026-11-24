@@ -103,6 +103,9 @@ def gh(prepared, monkeypatch):
         monkeypatch.setattr(module, "command", github.request)
     monkeypatch.setattr(repair_workflow, "github_auth", lambda cfg: None)
     monkeypatch.setattr(
+        repair_workflow, "refresh_epic", lambda *a: {"status": "refreshed"}
+    )
+    monkeypatch.setattr(
         repair_workflow,
         "repository_catalog",
         lambda cfg: {name: {} for name in [cfg["repository"], *cfg["repositories"]]},
@@ -131,6 +134,7 @@ def test_selection_honors_priority_across_repositories_and_exclusions(gh):
         "body": covered["html_url"],
     }
     before = repair_workflow.run(gh.config, dry_run=True)
+    assert "epic" not in before
     selected = [
         x["topic"]["issue_url"]
         for x in before["topics"]
@@ -155,7 +159,20 @@ def test_claim_finish_repeat_and_explicit_requeue(gh, monkeypatch, chained):
     import weekly
 
     row, _, _ = gh.issue("Example/source", 1, 0)
-    starts = []
+    starts, refreshes = [], []
+    related = {
+        "kind": "issues",
+        "url": "https://github.com/Example/secondary/issues/27",
+    }
+
+    def refresh(config, state_dir, state, output):
+        attempts = state["topic_weeks"].values()
+        refreshes.append(
+            [resource for attempt in attempts for resource in attempt["resources"]]
+        )
+        return {"status": "refreshed"}
+
+    monkeypatch.setattr(repair_workflow, "refresh_epic", refresh)
     if chained:
 
         def prepare(config, state_dir, *, budget, **kwargs):
@@ -180,7 +197,11 @@ def test_claim_finish_repeat_and_explicit_requeue(gh, monkeypatch, chained):
         write_json(
             root / "result.json",
             {
-                "outcome": {"topic": topic, "status": "unrepaired", "resources": []},
+                "outcome": {
+                    "topic": topic,
+                    "status": "unrepaired",
+                    "resources": [related],
+                },
                 "budget": {"reported_inference_cost_usd": 0.2},
             },
         )
@@ -199,6 +220,8 @@ def test_claim_finish_repeat_and_explicit_requeue(gh, monkeypatch, chained):
         0.3 if chained else 0.2
     )
     assert len(starts) == 1
+    assert refreshes == [[related]]
+    assert result["epic"]["status"] == "refreshed"
     assert "investigation completed" in row["body"].lower()
     assert "Human note to preserve." in row["body"]
     assert runner(gh.config)["topics"][0]["status"] == "issue_ineligible"

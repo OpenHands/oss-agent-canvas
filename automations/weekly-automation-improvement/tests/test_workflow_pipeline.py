@@ -45,6 +45,7 @@ def test_native_triage_reconciles_existing_work_before_publication(
     monkeypatch.setattr(weekly, "github_auth", lambda _: None)
     monkeypatch.setattr(weekly, "repository_catalog", lambda _: {"Example/source": {}})
     monkeypatch.setattr(weekly, "existing_work", lambda _: existing)
+    monkeypatch.setattr(weekly, "refresh_epic", lambda *a: {"status": "refreshed"})
     monkeypatch.setattr(
         weekly,
         "publish",

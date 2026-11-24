@@ -17,6 +17,7 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
         )
         summary["repair"] = result
         summary["topics"] = result["topics"]
+        summary["epic"] = result["epic"]
         if summary["status"] not in ("triage_incomplete", "collection_incomplete"):
             summary["status"] = result["status"]
         summary["budget"] = budget.snapshot()
