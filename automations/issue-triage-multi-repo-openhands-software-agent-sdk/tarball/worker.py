@@ -14,6 +14,53 @@ TRIAGE_FORMAT_VERSION = 2
 # `ready-for-dev` that fails its criteria.
 READINESS_CHECK_MARKER = "<!-- issue-readiness-check -->"
 
+# Conversations run outside the plugin checkout; include the check in their prompt.
+TRIAGE_BODY_CHECK = r'''import json
+import sys
+from pathlib import Path
+
+START = "<!-- openhands-ai-triage:start -->"
+END = "<!-- openhands-ai-triage:end -->"
+
+
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
+def split_body(body):
+    count = body.count(START)
+    require(count == body.count(END) and count <= 1, "Ambiguous managed markers")
+    if not count:
+        return body, False
+    start, end = body.index(START), body.index(END)
+    require(start < end, "Reversed managed markers")
+    return body[:start] + body[end + len(END):], True
+
+
+require(len(sys.argv) == 5, "Expected outcome, before, intended and read-back JSON files")
+outcome = sys.argv[1]
+require(outcome in ("READY", "DECISION NEEDED"), "Unknown outcome")
+bodies = [json.loads(Path(path).read_text())["body"] for path in sys.argv[2:]]
+require(all(body is None or isinstance(body, str) for body in bodies), "Invalid body")
+before, intended, after = [body or "" for body in bodies]
+require(after == intended, "Read-back does not match intended body")
+human_before, had_managed = split_body(before)
+human_after, has_managed = split_body(after)
+# Only trailing separator newlines may differ; spaces and all other text must match.
+require(human_before.rstrip("\n") == human_after.rstrip("\n"), "Author text changed")
+require(has_managed == (outcome == "READY"), "Wrong managed section count for outcome")
+if has_managed:
+    require(after.rstrip("\n").endswith(END), "Managed section must be at the end")
+if before == after:
+    change = "unchanged"
+elif not has_managed:
+    change = "removed managed triage section" if had_managed else "unchanged"
+else:
+    change = "replaced managed triage section" if had_managed else "appended managed triage section"
+print(json.dumps({"body_change": change, "author_text_preserved": True}))
+'''
+
 
 def author_body(body):
     """Return issue text outside the automation-owned body section."""
@@ -101,8 +148,39 @@ class IssueTriage(GitHubRepository):
             "**The following comments were added by the OpenHands AI agent.**\n\n"
             "Follow with `### Decision needed` and only the minimum focused questions. Do "
             "not include provisional acceptance criteria. End with the exact marker below.\n\n"
-            "Never edit or delete human-authored body text or comments. Confirm the final "
-            "body, comments, and labels from GitHub before finishing.\n\n"
+            "Never edit or delete human-authored body text or comments. Managed criteria "
+            "supplement the author's criteria; they do not replace or silently supersede "
+            "them. If requirements conflict and repository evidence cannot resolve the "
+            "conflict, choose DECISION NEEDED rather than rewriting author criteria. If "
+            "managed markers are malformed or duplicated, stop before mutation and report "
+            "the ambiguity instead of guessing which text is automation-owned.\n\n"
+            "Change accounting is required for either outcome. Save the fresh pre-update "
+            "GitHub response as triage-before.json and the exact intended body payload as "
+            "triage-intended.json (each must contain a body field). After the write, fetch "
+            "GitHub again into triage-after.json; never substitute the submitted payload "
+            "for this read-back. If no body write is needed, still save the intended body "
+            "and fetch the read-back. Copy this check into triage_body_check.py and run "
+            "`python3 triage_body_check.py 'READY' triage-before.json triage-intended.json "
+            "triage-after.json` (use 'DECISION NEEDED' for that outcome):\n\n"
+            f"```python\n{TRIAGE_BODY_CHECK}```\n\n"
+            "Compare the before/after diff as well as the check result. Only trailing "
+            "separator newlines may differ outside the managed section. A marker or "
+            "heading-count probe alone does not verify preservation. If read-back is "
+            "unavailable or verification fails, report the update as unverified/failed "
+            "with the specific discrepancy; do not claim successful triage or overwrite "
+            "concurrent human edits to force a match. A passing body check does not prove "
+            "artifact freshness or the absence of a lost concurrent edit. Report only "
+            "fetches and checks actually observed; do not invent files or commands. Confirm "
+            "comments and labels separately from GitHub; the body check does not verify "
+            "them.\n\n"
+            "Base the completion report on the verified body_change, not the intended "
+            "action: say 'appended managed triage section' for a new section, 'replaced "
+            "managed triage section' only for a previous complete managed section, "
+            "'removed managed triage section' for its removal, or 'unchanged'. Explicitly "
+            "state that author text and any original acceptance criteria remain unchanged. "
+            "When both author and managed criteria exist, say the managed criteria are "
+            "additional. Never say the author's criteria were replaced, consolidated, or "
+            "superseded when they remain in the confirmed body.\n\n"
             f"Use GitHub's API with the `{token_name}` environment variable, never print its "
             f"value, and modify only {self.repository} issue #{issue['number']}.\n\n"
             f"Marker: {marker}\n\n"
