@@ -226,3 +226,21 @@ def test_retry_after_state_save_failure_preserves_latest_result(
     assert discover([old], [old["run"]])["status"] == "no_unhandled_findings"
     assert discover([replacement], [replacement["run"]])["status"] == "published"
     assert read_json(state_path)["backlog"] == {replacement["event"]["id"]: replacement}
+
+
+def test_same_run_completes_then_conflicting_terminal_records_are_withheld(
+    discover_snapshots,
+):
+    state_dir, discover = discover_snapshots
+    row = record()
+    run = row["run"]
+    pending = run | {"status": "PENDING", "event_id": None}
+    discover([], [pending])
+    assert discover([row], [run])["status"] == "published"
+    discover([], [pending])
+    state_path = state_dir / "state.json"
+    assert read_json(state_path)["backlog"] == {row["event"]["id"]: row}
+    conflicting = run | {"event_id": record(2)["event"]["id"]}
+    discover([], [conflicting])
+    assert discover([row], [run])["status"] == "no_unhandled_findings"
+    assert not read_json(state_path)["backlog"]
