@@ -141,6 +141,11 @@ def configure(module, github, repo=REPO, **settings):
     module.PIN_BUMP_CHECKS = {}
     module.PIN_BUMP_DRY_RUN = False
     module.HOLD_LABEL = "release: hold"
+    # Release pull requests are off unless a test turns them on.
+    module.RELEASE_BRANCHES = {}
+    module.RELEASE_FILES = {}
+    module.RELEASE_CHECKS = {}
+    module.RELEASE_DRY_RUN = False
     module.MAINTAINERS = ["neubig"]
     module.MINIMAL_FIX_MAX_FILES = 10
     module.MINIMAL_FIX_MAX_CHANGED_LINES = 100

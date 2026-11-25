@@ -28,6 +28,19 @@
     ]
   },
   "hold_label": "release: hold",
+  "release_branches": {
+    "OpenHands/automation": "release-please--branches--main"
+  },
+  "release_files": {
+    "OpenHands/automation": [
+      ".release-please-manifest.json",
+      "openhands/automation/__init__.py",
+      "openhands/automation/app.py",
+      "pyproject.toml",
+      "uv.lock"
+    ]
+  },
+  "release_dry_run": true,
   "maintainers": [
     "neubig",
     "VascoSch92",

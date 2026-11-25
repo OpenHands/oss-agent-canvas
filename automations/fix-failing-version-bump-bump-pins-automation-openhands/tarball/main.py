@@ -27,6 +27,10 @@ With `pin_bump_branch` set, the poll also looks after the rolling pull request
 that the release bot keeps open from that branch to move a repository's pins of
 upstream releases (the `bump-pins` workflow in OpenHands/release-actions). It
 is fixed and merged the same way, under stricter rules: see "Pin bumps" below.
+
+With `release_branches` naming a repository's release branch, the poll also
+merges that repository's release pull request (release-please) once it would
+ship a merged pin bump: see "Release pull requests" below.
 """
 
 import json
@@ -85,6 +89,18 @@ DEFAULT_PIN_BUMP_DRY_RUN = False
 # A pin-bump pull request carrying this label is left alone.
 DEFAULT_HOLD_LABEL = "release: hold"
 
+# Release pull requests are off for a repository until `release_branches` names
+# the branch its release pull request comes from ("owner/repo" -> branch). The
+# next two are per repository as well: the files a release is expected to
+# change, and status checks that must pass on top of the ones the base branch
+# requires.
+DEFAULT_RELEASE_BRANCHES: dict[str, str] = {}
+DEFAULT_RELEASE_FILES: dict[str, list[str]] = {}
+DEFAULT_RELEASE_CHECKS: dict[str, list[str]] = {}
+# In a dry run a release pull request gets one comment per head saying what a
+# live run would do. Nothing is approved, merged or requested.
+DEFAULT_RELEASE_DRY_RUN = False
+
 REPOS = DEFAULT_REPOS
 AUTO_MERGE_DEPENDABOT = DEFAULT_AUTO_MERGE_DEPENDABOT
 MAINTAINERS: list[str] = list(DEFAULT_MAINTAINERS)
@@ -97,6 +113,10 @@ PIN_BUMP_FILES: dict[str, list[str]] = dict(DEFAULT_PIN_BUMP_FILES)
 PIN_BUMP_CHECKS: dict[str, list[str]] = dict(DEFAULT_PIN_BUMP_CHECKS)
 PIN_BUMP_DRY_RUN = DEFAULT_PIN_BUMP_DRY_RUN
 HOLD_LABEL = DEFAULT_HOLD_LABEL
+RELEASE_BRANCHES: dict[str, str] = dict(DEFAULT_RELEASE_BRANCHES)
+RELEASE_FILES: dict[str, list[str]] = dict(DEFAULT_RELEASE_FILES)
+RELEASE_CHECKS: dict[str, list[str]] = dict(DEFAULT_RELEASE_CHECKS)
+RELEASE_DRY_RUN = DEFAULT_RELEASE_DRY_RUN
 
 CONFIG_FILENAME = os.environ.get("AUTOMATION_CONFIG_PATH") or "config.json"
 
@@ -117,6 +137,10 @@ _CONFIG_TYPES: dict[str, type] = {
     "pin_bump_checks": dict,
     "pin_bump_dry_run": bool,
     "hold_label": str,
+    "release_branches": dict,
+    "release_files": dict,
+    "release_checks": dict,
+    "release_dry_run": bool,
 }
 
 
@@ -157,10 +181,13 @@ def load_config(directory: Path | None = None) -> dict:
     for key in ("minimal_fix_max_files", "minimal_fix_max_changed_lines"):
         if key in config and config[key] < 1:
             raise SystemExit(f"{CONFIG_FILENAME}: {key} must be at least 1")
-    for key in ("pin_bump_files", "pin_bump_checks"):
+    for key in ("pin_bump_files", "pin_bump_checks", "release_files", "release_checks"):
         for repo, names in config.get(key, {}).items():
             if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
                 raise SystemExit(f'{CONFIG_FILENAME}: {key}["{repo}"] must be a list of strings')
+    for repo, branch in config.get("release_branches", {}).items():
+        if not isinstance(branch, str) or not branch:
+            raise SystemExit(f'{CONFIG_FILENAME}: release_branches["{repo}"] must be a branch name')
     return config
 
 
@@ -170,8 +197,13 @@ def apply_config(directory: Path | None = None) -> None:
     global MINIMAL_FIX_MAX_FILES, MINIMAL_FIX_MAX_CHANGED_LINES
     global HANDLE_DEPENDABOT, PIN_BUMP_BRANCH, PIN_BUMP_AUTHOR, PIN_BUMP_FILES
     global PIN_BUMP_CHECKS, PIN_BUMP_DRY_RUN, HOLD_LABEL
+    global RELEASE_BRANCHES, RELEASE_FILES, RELEASE_CHECKS, RELEASE_DRY_RUN
 
     config = load_config(directory)
+    RELEASE_BRANCHES = config.get("release_branches", RELEASE_BRANCHES)
+    RELEASE_FILES = config.get("release_files", RELEASE_FILES)
+    RELEASE_CHECKS = config.get("release_checks", RELEASE_CHECKS)
+    RELEASE_DRY_RUN = config.get("release_dry_run", RELEASE_DRY_RUN)
     HANDLE_DEPENDABOT = config.get("handle_dependabot", HANDLE_DEPENDABOT)
     PIN_BUMP_BRANCH = config.get("pin_bump_branch", PIN_BUMP_BRANCH)
     PIN_BUMP_AUTHOR = config.get("pin_bump_author", PIN_BUMP_AUTHOR)
@@ -906,18 +938,23 @@ def _maybe_merge_green_dependabot(
 _GATE_FAILED = ("failure", "timed_out", "action_required", "startup_failure")
 
 
-def _is_pin_bump(pr: dict, repo: str) -> bool:
-    if not PIN_BUMP_BRANCH:
-        return False
+def _is_bot_pr_from(pr: dict, repo: str, branch: str) -> bool:
+    """Whether the release bot opened this pull request from `branch` of the
+    repository itself, into its default branch."""
     head = pr.get("head") or {}
     base = pr.get("base") or {}
     return (
-        _author_login(pr).lower() == PIN_BUMP_AUTHOR.lower()
-        and head.get("ref") == PIN_BUMP_BRANCH
+        bool(branch)
+        and _author_login(pr).lower() == PIN_BUMP_AUTHOR.lower()
+        and head.get("ref") == branch
         and ((head.get("repo") or {}).get("full_name") or "").lower() == repo.lower()
         and bool(base.get("ref"))
         and base.get("ref") == (base.get("repo") or {}).get("default_branch")
     )
+
+
+def _is_pin_bump(pr: dict, repo: str) -> bool:
+    return _is_bot_pr_from(pr, repo, PIN_BUMP_BRANCH)
 
 
 def _list_pin_bump_prs(token: str, repo: str) -> list[dict]:
@@ -943,16 +980,22 @@ def _required_checks(token: str, repo: str, branch: str) -> list[str]:
     return names
 
 
-def _gate_status(token: str, repo: str, base_branch: str, head_sha: str) -> tuple[str, list[str]]:
-    """Returns ("running" | "failed" | "clear" | "unknown", names) for a pin bump.
+def _gate_status(
+    token: str, repo: str, base_branch: str, head_sha: str, extra: list[str] | None = None,
+) -> tuple[str, list[str]]:
+    """Returns ("running" | "failed" | "clear" | "unknown", names) for a head.
 
-    `names` are the gating checks that failed, or that are still awaited. With
-    no gating check known the answer is "unknown", never "clear": merging needs
-    a check that said yes, not the absence of one that said no.
+    The gate is the status checks the base branch requires plus `extra`, which
+    defaults to this repository's PIN_BUMP_CHECKS. `names` are the gating
+    checks that failed, or that are still awaited. With no gating check known
+    the answer is "unknown", never "clear": merging needs a check that said
+    yes, not the absence of one that said no.
     """
     try:
         gate = _required_checks(token, repo, base_branch)
-        gate += [name for name in PIN_BUMP_CHECKS.get(repo, []) if name not in gate]
+        if extra is None:
+            extra = PIN_BUMP_CHECKS.get(repo, [])
+        gate += [name for name in extra if name not in gate]
         if not gate:
             print(f"  No gating checks known for {repo}; not treating any head as green")
             return "unknown", []
@@ -996,18 +1039,22 @@ def _gate_status(token: str, repo: str, base_branch: str, head_sha: str) -> tupl
     return "clear", []
 
 
-def _foreign_pushers(token: str, repo: str, head_sha: str, trusted: set[str]) -> list[str] | None:
-    """Accounts outside `trusted` that pushed to the pin-bump branch since the
-    bot last rebuilt it. None when the activity log cannot vouch for this head:
-    it is unreadable, has not caught up, or shows no rebuild by the bot.
+def _foreign_pushers(
+    token: str, repo: str, head_sha: str, trusted: set[str], branch: str = "",
+) -> list[str] | None:
+    """Accounts outside `trusted` that pushed to `branch` (the pin-bump branch
+    unless given) since the bot last rebuilt it. None when the activity log
+    cannot vouch for this head: it is unreadable, has not caught up, or shows
+    no rebuild by the bot.
     """
+    branch = branch or PIN_BUMP_BRANCH
     try:
         log, _ = _github_request(
             token, "GET", f"/repos/{repo}/activity",
-            params={"ref": f"refs/heads/{PIN_BUMP_BRANCH}", "per_page": 100},
+            params={"ref": f"refs/heads/{branch}", "per_page": 100},
         )
     except Exception as exc:
-        print(f"  Warning: could not read the activity of {PIN_BUMP_BRANCH} in {repo}: {exc}")
+        print(f"  Warning: could not read the activity of {branch} in {repo}: {exc}")
         return None
     if not isinstance(log, list) or not log or log[0].get("after") != head_sha:
         return None
@@ -1215,6 +1262,236 @@ def _process_pin_bump(
         failed_checks=names, pin_bump=True,
     )
     return conv_id, False
+
+
+# ── Release pull requests (release-please) ────────────────────────────────────
+#
+# A release pull request is always open and usually green, so green alone is no
+# reason to merge it: every merge to the default branch would become a release.
+# The reason is a pin bump. Once a pin-bump pull request has been merged and no
+# release has shipped it yet, the release pull request is merged as soon as:
+#
+# - it is the pull request opened by PIN_BUMP_AUTHOR from RELEASE_BRANCHES[repo]
+#   of the repository itself, into its default branch, and it carries
+#   release-please's `autorelease: pending` label, without which a merge
+#   releases nothing;
+# - no pin-bump pull request is open: the bump goes first, or the release ships
+#   the old pins;
+# - it is built on the tip of its base branch, so that what gets released is
+#   what the checks ran on;
+# - every gating check reported success: the status checks the base branch
+#   requires, plus RELEASE_CHECKS[repo] (PIN_BUMP_CHECKS do not apply here);
+# - the branch was pushed only by the bot;
+# - the diff stays within RELEASE_FILES[repo], plus the root `.pr` directory,
+#   which the release commit deletes.
+#
+# No fix conversation is started for a failing release pull request. It is
+# rebuilt from the base branch on every push there, so the fix belongs on the
+# base branch, and a commit pushed to the release branch would be lost.
+
+_RELEASE_LABEL = "autorelease: pending"
+_RELEASE_REMOVED_DIR = ".pr/"
+
+
+def _is_release_pr(pr: dict, repo: str) -> bool:
+    labels = {(label.get("name") or "").lower() for label in pr.get("labels") or []}
+    return _is_bot_pr_from(pr, repo, RELEASE_BRANCHES.get(repo, "")) and _RELEASE_LABEL in labels
+
+
+def _list_release_prs(token: str, repo: str) -> list[dict]:
+    branch = RELEASE_BRANCHES.get(repo, "")
+    if not branch:
+        return []
+    owner = repo.split("/", 1)[0]
+    prs = _github_paginate(token, f"/repos/{repo}/pulls", {"state": "open", "head": f"{owner}:{branch}"})
+    return [pr for pr in prs if _is_release_pr(pr, repo)]
+
+
+def _last_merged(token: str, repo: str, branch: str) -> dict | None:
+    """The bot's most recently merged pull request from `branch`, if any."""
+    owner = repo.split("/", 1)[0]
+    prs, _ = _github_request(
+        token, "GET", f"/repos/{repo}/pulls",
+        params={
+            "state": "closed", "head": f"{owner}:{branch}",
+            "sort": "updated", "direction": "desc", "per_page": 100,
+        },
+    )
+    merged = [
+        pr for pr in (prs if isinstance(prs, list) else [])
+        if pr.get("merged_at") and _is_bot_pr_from(pr, repo, branch)
+    ]
+    return max(merged, key=lambda pr: pr["merged_at"], default=None)
+
+
+def _unreleased_pin_bump(token: str, repo: str) -> dict | None:
+    """The merged pin-bump pull request that no release has shipped yet, if any.
+
+    Both pull requests are squash-merged into the same branch, so the one with
+    the later `merged_at` is the later commit there.
+    """
+    if not PIN_BUMP_BRANCH:
+        return None
+    bump = _last_merged(token, repo, PIN_BUMP_BRANCH)
+    if bump is None:
+        return None
+    release = _last_merged(token, repo, RELEASE_BRANCHES[repo])
+    if release is not None and release["merged_at"] >= bump["merged_at"]:
+        return None
+    return bump
+
+
+def _behind_base(token: str, repo: str, base_branch: str, head_sha: str) -> int | None:
+    """How many commits of the base branch the head is not built on. None when unknown."""
+    try:
+        data, _ = _github_request(token, "GET", f"/repos/{repo}/compare/{quote(base_branch)}...{head_sha}")
+        return int(data["behind_by"])
+    except Exception as exc:
+        print(f"  Warning: could not compare {head_sha[:12]} with {base_branch} in {repo}: {exc}")
+        return None
+
+
+def _release_extra_files(token: str, repo: str, pr: dict) -> list[str] | None:
+    """Changed files that a release is not expected to change. None when the
+    files cannot be listed."""
+    files = _pr_files(token, repo, pr["number"])
+    if not files:
+        return None
+    expected = set(RELEASE_FILES.get(repo, []))
+    extra: list[str] = []
+    for f in files:
+        name = f.get("filename", "")
+        removed_evidence = f.get("status") == "removed" and name.startswith(_RELEASE_REMOVED_DIR)
+        if name not in expected and not removed_evidence:
+            extra.append(name)
+    return extra
+
+
+def _release_handoff(token: str, repo: str, pr: dict, head_sha: str, fixes: dict, reason: str) -> None:
+    """Leave a green release pull request to a maintainer, once per head."""
+    number = pr["number"]
+    print(f"  PR #{number} (release, gate green) not merged: {reason}")
+    if RELEASE_DRY_RUN:
+        _pin_bump_dry_run(
+            token, repo, pr, head_sha, fixes,
+            f"ask a maintainer to review this release pull request instead of merging it, because {reason}",
+        )
+        return
+    login = _request_maintainer_review(token, repo, pr, reason)
+    comment = _maintainer_handoff_comment(login, reason, "release")
+    _post_github_comment(token, repo, number, _with_ai_disclosure(comment))
+    fixes[_fix_key(repo, number, head_sha)] = _pin_bump_record(repo, pr, head_sha, "handoff", maintainer=login)
+
+
+def _process_release(
+    repo: str,
+    pr: dict,
+    github_token: str,
+    self_login: str,
+    fixes: dict,
+    merges: dict,
+    open_pin_bumps: list[dict],
+) -> bool:
+    """One poll of a release PR. Returns True when it was merged."""
+    number = pr["number"]
+    pr = _get_pr(github_token, repo, number)  # current head, labels and draft state
+    head_sha = _head_sha(pr)
+    if pr.get("state") != "open" or not _is_release_pr(pr, repo) or not head_sha:
+        return False
+
+    key = _fix_key(repo, number, head_sha)
+    status = (fixes.get(key) or {}).get("status")
+    # A dry-run note does not count as handled once dry run is switched off.
+    if status and (RELEASE_DRY_RUN or status != "dry-run"):
+        print(f"  PR #{number} (release) at {head_sha[:12]} already handled ({status})")
+        return False
+    labels = {(label.get("name") or "").lower() for label in pr.get("labels") or []}
+    if HOLD_LABEL and HOLD_LABEL.lower() in labels:
+        print(f"  PR #{number} (release) carries the '{HOLD_LABEL}' label; leaving it alone")
+        return False
+    if pr.get("draft"):
+        print(f"  PR #{number} (release) is a draft; leaving it alone")
+        return False
+
+    bump = _unreleased_pin_bump(github_token, repo)
+    if bump is None:
+        print(f"  PR #{number} (release): no pin bump merged since the last release; leaving it to a maintainer")
+        return False
+    if open_pin_bumps:
+        print(f"  PR #{number} (release) waits for pin-bump PR #{open_pin_bumps[0]['number']} to be merged first")
+        return False
+    base_branch = (pr.get("base") or {}).get("ref", "")
+    if _behind_base(github_token, repo, base_branch, head_sha) != 0:
+        print(f"  PR #{number} (release) at {head_sha[:12]} is not built on the tip of {base_branch}; re-checking next poll")
+        return False
+
+    gate, names = _gate_status(github_token, repo, base_branch, head_sha, RELEASE_CHECKS.get(repo, []))
+    print(f"  PR #{number} (release) at {head_sha[:12]} gate={gate}" + (f" ({', '.join(names)})" if names else ""))
+    if gate != "clear":
+        return False
+
+    foreign = _foreign_pushers(github_token, repo, head_sha, {PIN_BUMP_AUTHOR.lower()}, RELEASE_BRANCHES[repo])
+    if foreign is None:
+        print(f"  PR #{number} (release): branch activity does not cover {head_sha[:12]} yet; re-checking next poll")
+        return False
+    if foreign:
+        _release_handoff(
+            github_token, repo, pr, head_sha, fixes,
+            f"the branch was also pushed to by {', '.join(foreign)}",
+        )
+        return False
+    extra = _release_extra_files(github_token, repo, pr)
+    if extra is None:
+        _release_handoff(github_token, repo, pr, head_sha, fixes, "no changed files could be listed for the PR")
+        return False
+    if extra:
+        _release_handoff(
+            github_token, repo, pr, head_sha, fixes,
+            f"the diff touches files a release does not change ({', '.join(extra[:5])})",
+        )
+        return False
+
+    reason = (
+        f"the gating checks passed, it ships pin bump #{bump['number']} "
+        "and the diff only touches this repository's release files"
+    )
+    print(f"  PR #{number} (release, gate green) ships pin bump #{bump['number']}")
+    if RELEASE_DRY_RUN:
+        _pin_bump_dry_run(
+            github_token, repo, pr, head_sha, fixes,
+            f"approve and squash-merge this release pull request, because {reason}",
+        )
+        return False
+
+    if not _approve_pr(github_token, repo, number, f"✅ Auto-approved by OpenHands: {reason}."):
+        fixes[key] = _pin_bump_record(repo, pr, head_sha, "handoff")
+        return False
+
+    merge_body = (
+        f"Auto-merged by OpenHands after the gating checks passed: it ships pin bump #{bump['number']}."
+        f"\n\nApproved-by: {self_login or 'all-hands-bot'}"
+    )
+    if _merge_pr(github_token, repo, pr, merge_body):
+        merges[key] = {
+            "repo": repo,
+            "pr_number": number,
+            "head_sha": head_sha,
+            "classification": "release",
+            "merged_at": time.time(),
+        }
+        print(f"  Merged {repo} PR #{number} at {head_sha[:12]} (release)")
+        return True
+
+    # Approved but not merged (branch protection, conflict, stale head, ...).
+    _post_github_comment(
+        github_token, repo, number,
+        _with_ai_disclosure(
+            "✅ OpenHands approved this release pull request (gating checks green, it ships a "
+            "pin bump) but GitHub refused the merge. A maintainer merge may be needed."
+        ),
+    )
+    fixes[key] = _pin_bump_record(repo, pr, head_sha, "handoff")
+    return False
 
 
 def _build_fix_prompt(
@@ -1484,11 +1761,14 @@ def _process_repo(
 
     open_prs = _list_open_prs(github_token, repo) if HANDLE_DEPENDABOT else []
     pin_bumps = _list_pin_bump_prs(github_token, repo) if PIN_BUMP_BRANCH else []
-    latest_open_prs = {pr["number"]: pr for pr in [*open_prs, *pin_bumps]}
+    releases = _list_release_prs(github_token, repo)
+    latest_open_prs = {pr["number"]: pr for pr in [*open_prs, *pin_bumps, *releases]}
     if HANDLE_DEPENDABOT:
         print(f"Found {len(open_prs)} open PR(s) in {repo}")
     if PIN_BUMP_BRANCH:
         print(f"Found {len(pin_bumps)} open pin-bump PR(s) from {PIN_BUMP_BRANCH}")
+    if repo in RELEASE_BRANCHES:
+        print(f"Found {len(releases)} open release PR(s) from {RELEASE_BRANCHES[repo]}")
 
     last_conversation_id = None
     active_count = sum(1 for v in fixes.values() if v.get("status") == "active")
@@ -1556,6 +1836,9 @@ def _process_repo(
         if conv_id:
             last_conversation_id = conv_id
             active_count += 1
+
+    for pr in releases:
+        _process_release(repo, pr, github_token, self_login, fixes, merges, pin_bumps)
 
     for rec in list(fixes.values()):
         if rec.get("status") != "active":
