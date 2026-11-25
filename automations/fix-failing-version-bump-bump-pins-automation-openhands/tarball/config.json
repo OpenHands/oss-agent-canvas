@@ -28,6 +28,36 @@
     ]
   },
   "hold_label": "release: hold",
+  "release_branches": {
+    "OpenHands/automation": "release-please--branches--main",
+    "OpenHands/OpenHands": "release-please--branches--main--components--agent-canvas"
+  },
+  "release_files": {
+    "OpenHands/automation": [
+      ".release-please-manifest.json",
+      "openhands/automation/__init__.py",
+      "openhands/automation/app.py",
+      "pyproject.toml",
+      "uv.lock"
+    ],
+    "OpenHands/OpenHands": [
+      ".release-please-manifest.json",
+      "README.md",
+      "README.windows.md",
+      "config/defaults.json",
+      "helm/agent-canvas/Chart.yaml",
+      "package.json",
+      "package-lock.json"
+    ]
+  },
+  "release_checks": {
+    "OpenHands/OpenHands": [
+      "Check SDK version consistency",
+      "mock-llm-e2e",
+      "windows-install-e2e"
+    ]
+  },
+  "release_dry_run": true,
   "maintainers": [
     "neubig",
     "VascoSch92",
