@@ -48,6 +48,8 @@ The Software Factory is the team’s complete set of repository automations. A c
 | Customer implementation or review | Claim one attempt and report the outcome, reviewed Git revisions, limitations and next actor. The receiving worker reconciles head changes on GitHub. |
 | Factory implementation | Assignment triggers the Canvas resolver, or a configured Linear ticket triggers the implementation poller. A distinct reviewer receives an explicit request once the configured checks pass. The bridge reflects its current observations on the original issue. |
 
+Discovery creates new issues in the automation’s configured source repository by default. Set `issue_repository` to publish the topics, weekly summary and epic to a central backlog. The same source checkout still supplies the automation code. [Configure the issue destination](README.md#choose-where-discovery-files-issues)
+
 GitHub carries the public brief, original priority rationale, recurrence links, current lifecycle labels and outcome. Private worker storage carries raw findings, source attribution, claim receipts and validation artifacts. See [installation and queries](README.md) and [Factory handoff and recovery](FACTORY_HANDOFF.md).
 
 ## From findings to PRs

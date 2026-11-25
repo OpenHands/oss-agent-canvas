@@ -14,13 +14,16 @@ def recover_resources(root, policy):
     from topic_agent import discover, hold_drafts
 
     recovered = {"resources": [], "errors": []}
+    context = None
     if (root / "context.json").exists():
         try:
-            recovered = discover(read_json(root / "context.json", 32_000_000), root)
+            context = read_json(root / "context.json", 32_000_000)
+            recovered = discover(context, root)
         except Exception as error:
             recovered["errors"].append({"error": redact(str(error))[:1000]})
     recovered["errors"] += [
-        {"error": error} for error in resource_errors(policy, recovered["resources"])
+        {"error": error}
+        for error in resource_errors(policy, recovered["resources"], context)
     ]
     recovered["errors"] += hold_drafts(
         [r for r in recovered["resources"] if permits(policy, r["repository"])]
@@ -128,7 +131,12 @@ def reconcile_claims(config, context, state):
     from backlog_dispatch import finish
 
     reconciled = []
-    for path in sorted((Path(context["state_dir"]) / "native-claims").glob("*.json")):
+    directory = (
+        Path(context["state_path"]).parent
+        if context.get("state_path")
+        else Path(context["state_dir"])
+    )
+    for path in sorted((directory / "native-claims").glob("*.json")):
         topic = {"id": path.stem}
         try:
             claim = read_json(path)

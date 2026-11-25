@@ -26,9 +26,9 @@ from backlog import (
 )
 from common import read_json, redact, replace_json, write_json
 from github_io import IMPROVEMENT_LABEL, command, github_pages, work_item
-from repair_policy import permits
+from repair_policy import issue_repository, permits
 from topic_issue import TopicIssue
-from triage_workflow import discovery_repositories
+from triage_workflow import discovery_repositories, with_issue_repository
 
 ISSUE = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/([1-9][0-9]*)")
 PULL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/([1-9][0-9]*)")
@@ -133,7 +133,10 @@ def competing_pr(context, state, item, identifier, pulls, names):
 def selection(config, context, state):
     scope = namespace(config, context["state_dir"])
     repositories = context["repositories"]
-    names = set(repositories) | set(discovery_repositories(config, repositories, state))
+    destination = issue_repository(config)
+    names = with_issue_repository(
+        config, (*repositories, *discovery_repositories(config, repositories, state))
+    )
     candidates, pulls = [], []
     for repository in sorted(names):
         for row in github_pages(
@@ -141,8 +144,12 @@ def selection(config, context, state):
         ):
             item = work_item(row, repository)
             if item["kind"] == "pull":
-                pulls.append(item)
-            elif (identifier := identity(item, scope)) is not None:
+                if permits(context["repair_policy"], repository):
+                    pulls.append(item)
+            elif (
+                destination == config["repository"]
+                or repository.casefold() == destination.casefold()
+            ) and (identifier := identity(item, scope)) is not None:
                 candidates.append((item, identifier))
 
     ranked, excluded = [], []
@@ -209,13 +216,23 @@ def label(issue, method, name):
 
 
 def claim_path(context, topic):
-    return Path(context["state_dir"]) / "native-claims" / (topic["id"] + ".json")
+    directory = (
+        Path(context["state_path"]).parent
+        if context.get("state_path")
+        else Path(context["state_dir"])
+    )
+    return directory / "native-claims" / (topic["id"] + ".json")
 
 
 def claim(config, context, topic, root, state):
     journal = claim_path(context, topic)
+    destination = issue_repository(config)
+    match = ISSUE.fullmatch(topic["issue_url"])
     if (
-        journal.exists()
+        not match
+        or destination != config["repository"]
+        and match[1].casefold() != destination.casefold()
+        or journal.exists()
         or external_owner(config)
         or recorded_external_owner(
             context["state_dir"],
@@ -240,6 +257,7 @@ def claim(config, context, topic, root, state):
     pulls = [
         work_item(row | {"pull_request": True}, name)
         for name in sorted(names)
+        if permits(context["repair_policy"], name)
         for row in github_pages(f"repos/{name}/pulls?state=open&per_page=100", command)
     ]
     if competing_pr(context, state, item, topic["id"], pulls, names):

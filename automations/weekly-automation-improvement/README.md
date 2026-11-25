@@ -11,6 +11,24 @@ records the live results, costs and review of the generated issues.
 
 For a standalone installation, run `python3 package_workflow.py STAGE OUTPUT_DIRECTORY` from this directory. Choose `discovery`, `native-repair`, or `factory-handoff`. Each generates a disabled Git-sync folder containing its entrypoint, manifest and self-contained tarball. The existing manifest still runs both native stages weekly. In Enterprise, import only the selected folders, set run-as identity, profile, secrets and durable worker storage, then enable the intended schedule. Generated native stages cap the internal run budget at 1500 seconds inside the 1800-second deployment timeout. Shorter configured budgets take precedence. The packaged handoff uses system Python.
 
+### Choose where discovery files issues
+
+By default, discovery files new topic issues, the weekly summary and the epic in `repository`, the automation's configured source repository. A PR label or trace in another repository does not change the destination. Set `issue_repository` in the workflow config to use a shared backlog.
+
+```json
+{
+  "repository": "acme/automations",
+  "checkout": "/existing/acme-automations",
+  "issue_repository": "acme/engineering-backlog"
+}
+```
+
+For a single run, pass `--issue-repository acme/engineering-backlog` to `triage_workflow.py`, `repair_workflow.py` or `weekly.py`. The flag overrides the config file. Check `issue_repository` in the JSON receipt to confirm where that run looked for work.
+
+The discovery identity needs read access to the backlog's issue guidance and write access to its issues and labels. A backlog-only repository needs no local checkout. The source checkout and repair permissions still come from `repository`, `repositories` and `repair_scope`. Configure the same destination for standalone native repair. For a customer or Factory handoff, enroll the issue in the receiving workflow and include the backlog in that workflow's own allowed repositories.
+
+Changing the destination starts a separate discovery history in the same worker state directory. Existing issues stay where they were filed. Replaying old findings into a new backlog can create new topics there. Switching back resumes the previous history. Omit the option or set it to the home repository to keep an existing installation's history.
+
 ### Inspect Laminar findings for one automation
 
 Which unresolved findings did the Signal record for traces that started on November 24 in the report automation? Save the example below as `debug.json`, replacing the API URL and three UUIDs with your own. The automation UUID is recorded as `lmnr.association.properties.metadata.automation.id` on an `automation.conversation` span. Supply a SQL-capable `LMNR_PROJECT_API_KEY` in the environment or use `credentials_file` to point to an owner-only JSON file containing that key. Python 3.11 or later and access to Laminar are sufficient.
@@ -219,8 +237,8 @@ unresolved PRs draft. No replacement topics are dispatched to fill a quota.
 Discovery inspects open issues and PRs and prior self-improvement work. It posts
 idempotent recurrence comments on matching work and refreshes private evidence
 for matching backlog issues. A matching ready topic stays eligible. Existing
-human work receives evidence without being added to the backlog. New topics
-start in the configured home repository. A topic can span several automations
+human work receives evidence on the existing issue or PR. New topics
+start in the [configured issue repository](#choose-where-discovery-files-issues). A topic can span several automations
 and repair repositories.
 
 Repair starts from the selected issue. Agents maintain its current brief, check
@@ -356,7 +374,7 @@ can run independently:
 .venv/bin/python repair_workflow.py --config /private/config.json
 ```
 
-Start at the **Automation improvement epic** in the configured home repository.
+Start at the **Automation improvement epic** in the configured issue repository.
 It links to open topic issues, tracked follow-ups and the latest triage summary.
 Each new weekly summary links back to the epic. Discovery updates the list even
 when there are no new findings, and repair refreshes it after recording outcomes,
@@ -388,7 +406,7 @@ private state directory, native automation API and GitHub secret name. Register
 relevant checkouts under `repositories`. Upstream contributions are allowed by
 default when authorized; set `repair_scope=customer_stack` for customer-only repairs.
 The agent must report missing prerequisites rather than clone an extra repository.
-The home repository credential needs issue and label write access. Ensure
+The discovery credential needs issue and label write access in the configured issue repository. Ensure
 `automation-improvement` is available in repositories where repairs will be opened.
 
 Configuration repairs must use the actual settings of the cited runs and their

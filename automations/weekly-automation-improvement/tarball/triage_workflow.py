@@ -1,17 +1,19 @@
 import datetime as dt
+import json
 import re
 import uuid
 from pathlib import Path
+from subprocess import CalledProcessError
 from types import SimpleNamespace
 
-from backlog import IDENTITY, TOPIC, identity, namespace, publish
+from backlog import IDENTITY, TOPIC, identity, ledger_directory, namespace, publish
 from common import read_json, redact, replace_json, timestamp, write_json
 from epic import is_index, refresh as refresh_epic
 from events import collect_events
 from finding_record import occurrence_id, read_batch
 from github_io import command, github_pages, IMPROVEMENT_LABEL, work_item
 from laminar import Laminar
-from repair_policy import permits, resolve as repair_policy
+from repair_policy import issue_repository, permits, resolve as repair_policy
 from signal_history import latest_events
 from sources import github_auth
 from topic_issue import TopicIssue
@@ -117,7 +119,7 @@ def update_backlog(
 
 
 def configure_triage(args, config, state_dir, week, dry_run, inventory_path):
-    args.repository = config["repository"]
+    args.repository = issue_repository(config)
     args.checkout = config["checkout"]
     args.state_dir = str(state_dir)
     args.triage_week = week
@@ -157,6 +159,22 @@ def repository_catalog(config):
     return catalog
 
 
+def destination_guide_source(destination, repositories):
+    for name, source in repositories.items():
+        if name.casefold() == destination.casefold() and source.get("revision"):
+            return source
+    try:
+        tip = json.loads(command(["gh", "api", f"repos/{destination}/commits/HEAD"]))
+    except CalledProcessError as error:
+        detail = (error.stderr or "").lower()
+        if "http 409" in detail and "git repository is empty" in detail:
+            return {"repository": destination}
+        raise
+    if not re.fullmatch(r"[0-9a-f]{40}", tip["sha"]):
+        raise ValueError("Invalid destination guide revision")
+    return {"repository": destination, "revision": tip["sha"]}
+
+
 def existing_work(repository):
     rows = github_pages(f"repos/{repository}/issues?state=open&per_page=100")
     rows += github_pages(
@@ -167,6 +185,14 @@ def existing_work(repository):
         for row in rows
         if not is_index(row.get("body") or "")
     ]
+
+
+def with_issue_repository(config, repositories):
+    names = {name.casefold(): name for name in repositories}
+    destination = issue_repository(config)
+    if destination != config["repository"]:
+        names[destination.casefold()] = destination
+    return sorted(names.values())
 
 
 def discovery_repositories(config, repositories, state):
@@ -193,7 +219,9 @@ def discovery_repositories(config, repositories, state):
             if match:
                 names.add(match[1])
     policy = repair_policy(config)
-    return sorted(name for name in names if permits(policy, name))
+    return with_issue_repository(
+        config, (name for name in names if permits(policy, name))
+    )
 
 
 def arguments(config, output, limit, seed=None):
@@ -267,7 +295,7 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
         / (now.strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8])
     )
     output.mkdir(parents=True, mode=0o700)
-    state_path = state_dir / "state.json"
+    state_path = ledger_directory(config, state_dir) / "state.json"
     state = read_json(state_path, 32_000_000) if state_path.exists() else {"events": {}}
     state.setdefault("topic_weeks", {})
     github_auth(config)
@@ -276,10 +304,11 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
     prs, discovery_errors = [], []
     isolated = config.get("isolated_validation", False)
     names = (
-        repositories
+        with_issue_repository(config, repositories)
         if isolated
         else discovery_repositories(config, repositories, state)
     )
+    policy = repair_policy(config)
     for repository in names:
         try:
             if isolated:
@@ -290,7 +319,8 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
                 prs.extend(
                     item
                     for item in existing_work(repository)
-                    if not IDENTITY.search(item["body"]) or identity(item, scope)
+                    if (item["kind"] == "issue" or permits(policy, repository))
+                    and (not IDENTITY.search(item["body"]) or identity(item, scope))
                 )
         except Exception as error:
             discovery_errors.append(
@@ -313,6 +343,7 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
         write_json(inventory_path, inventory)
     summary = {
         "week": week,
+        "issue_repository": issue_repository(config),
         "output": str(output),
         "status": "no_unhandled_findings",
         "collection_errors": inventory.get("collection_errors", []),
@@ -374,9 +405,18 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
         triage_args.output.mkdir(mode=0o700)
         triage_args.budget = budget
         triage_args.repositories = repositories
+        destination = issue_repository(config)
+        if destination != config["repository"]:
+            triage_args.issue_guide_source = destination_guide_source(
+                destination, repositories
+            )
         triage_args.publish_backlog = True
         triage_args.backlog_scope = scope
-        triage_args.topic_namespace = scope if portable or isolated else "shared"
+        triage_args.topic_namespace = (
+            scope
+            if portable or isolated or destination != config["repository"]
+            else "shared"
+        )
         configure_triage(triage_args, config, state_dir, week, dry_run, inventory_path)
         plans, aggregation = triage(triage_args, records, prs, previous)
         weekly = aggregation.get("triage_issue")
@@ -486,7 +526,7 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
 
 
 def reconcile_publication(config, scope, state, state_path, pending, output, eligible):
-    repository = config["repository"]
+    repository = issue_repository(config)
     context = pending["context"]
     weekly = context["triage_issue"]
     match = WORK_URL.fullmatch((weekly or {}).get("url") or "")

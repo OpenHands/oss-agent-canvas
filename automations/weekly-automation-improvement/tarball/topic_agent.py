@@ -21,7 +21,7 @@ from common import read_json, redact, replace_json, write_json
 from github_io import command, github_pages, IMPROVEMENT_LABEL, repository_private
 from laminar import Laminar
 from raw_evidence import EvidenceReader
-from repair_policy import instructions, permits, resource_errors
+from repair_policy import instructions, permits_resource, resource_errors
 from topic_issue import ISSUE_GUIDANCE, IssueReader, TopicIssue, public_issue_errors
 
 RESOURCE = re.compile(
@@ -1107,8 +1107,10 @@ def finish(config, context, output, budget, repair):
     workspace = Path(context.get("workspace", str(output / "workspace")))
     resources = discover(context, output)
     policy = context["repair_policy"]
-    scope_errors = resource_errors(policy, resources["resources"])
-    permitted = [r for r in resources["resources"] if permits(policy, r["repository"])]
+    scope_errors = resource_errors(policy, resources["resources"], context)
+    permitted = [
+        r for r in resources["resources"] if permits_resource(policy, r, context)
+    ]
     catalog_errors = record_evidence(context, output, "repair", permitted)
     prs = [
         r
@@ -1149,9 +1151,9 @@ def finish(config, context, output, budget, repair):
                     + redact(str(error))[:1000]
                 )
         resources = discover(context, output)
-        scope_errors = resource_errors(policy, resources["resources"])
+        scope_errors = resource_errors(policy, resources["resources"], context)
         permitted = [
-            r for r in resources["resources"] if permits(policy, r["repository"])
+            r for r in resources["resources"] if permits_resource(policy, r, context)
         ]
         if catalog_errors:
             catalog_errors = record_evidence(context, output, "repair", permitted)

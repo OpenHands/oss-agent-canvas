@@ -1,7 +1,9 @@
+import base64
 import hashlib
 import json
 import re
 from pathlib import Path
+from urllib.parse import quote
 
 from common import read_json, redact
 from github_io import (
@@ -12,7 +14,7 @@ from github_io import (
     work_item,
 )
 from public_status import make_status, managed_block, status_marker
-from repair_policy import permits, resolve
+from repair_policy import issue_repository, permits_work, resolve
 from topic_issue import SECTIONS, TopicIssue, public_issue_errors
 
 TOPIC = "improvement-topic"
@@ -83,15 +85,17 @@ def on_hold(config, labels):
 def native_claimed(state_dir, issue_url):
     root = Path(state_dir)
     url = issue_url.casefold()
-    for journal in (root / "native-claims").glob("*.json"):
+    ledgers = [root, *(root / "issue-backlogs").glob("*")]
+    for journal in (
+        j for ledger in ledgers for j in (ledger / "native-claims").glob("*.json")
+    ):
         if read_json(journal)["topic"]["issue_url"].casefold() == url:
             return True
-    ledger = root / "state.json"
-    if not ledger.exists():
-        return False
     return any(
         attempt.get("status") == "dispatched"
         and (attempt["topic"].get("issue_url") or "").casefold() == url
+        for directory in ledgers
+        if (ledger := directory / "state.json").is_file()
         for attempt in read_json(ledger, 32_000_000).get("topic_weeks", {}).values()
     )
 
@@ -105,6 +109,9 @@ def external_owner(config):
 
 def namespace(config, state_dir):
     values = [config["repository"].casefold()]
+    destination = issue_repository(config).casefold()
+    if destination != values[0]:
+        values.extend(["issue_repository", destination])
     if config.get("finding_source") == "portable":
         from finding_record import SCHEMA, portable_namespace
 
@@ -114,6 +121,12 @@ def namespace(config, state_dir):
     if config.get("isolated_validation"):
         values.append(str(state_dir))
     return hashlib.sha256("/".join(values).encode()).hexdigest()[:20]
+
+
+def ledger_directory(config, state_dir):
+    if issue_repository(config) == config["repository"]:
+        return Path(state_dir)
+    return Path(state_dir) / "issue-backlogs" / namespace(config, state_dir)
 
 
 def identity(item, scope):
@@ -132,15 +145,29 @@ def evidence_root(state_dir, repository, topic_id):
 def issue_guides(source):
     if not source or not source.get("revision"):
         return []
-    files = command(
-        ["git", "ls-tree", "-rz", "--name-only", source["revision"]],
-        source["checkout"],
-        strip=False,
-    )
+    if source.get("checkout"):
+        files = command(
+            ["git", "ls-tree", "-rz", "--name-only", source["revision"]],
+            source["checkout"],
+            strip=False,
+        ).split("\0")
+    else:
+        tree = json.loads(
+            command(
+                [
+                    "gh",
+                    "api",
+                    f"repos/{source['repository']}/git/trees/{source['revision']}?recursive=1",
+                ]
+            )
+        )
+        if tree.get("truncated"):
+            raise ValueError("Destination issue guidance tree is incomplete")
+        files = [row["path"] for row in tree["tree"] if row["type"] == "blob"]
     guides = {"agents.md", "contributing.md", "readme.md", "issue_template.md"}
     return [
         path
-        for path in files.split("\0")
+        for path in files
         if path.casefold().startswith(
             (".github/issue_template/", "docs/issue_template/")
         )
@@ -149,6 +176,12 @@ def issue_guides(source):
 
 
 def read_issue_guide(source, path, byte_limit=2_000_000):
+    if not source.get("checkout"):
+        url = f"repos/{source['repository']}/contents/{quote(path)}?ref={source['revision']}"
+        result = json.loads(command(["gh", "api", url]))
+        if result["size"] > byte_limit or result.get("encoding") != "base64":
+            raise ValueError("Issue guidance exceeds its size budget or is unavailable")
+        return base64.b64decode(result["content"]).decode()
     obj = source["revision"] + ":" + path
     size = int(command(["git", "cat-file", "-s", obj], source["checkout"]))
     if size > byte_limit:
@@ -329,8 +362,14 @@ def weekly_summary_link(home, destination, weekly):
 
 def publish(config, context, topic, existing, output, *, preview=False):
     scope = namespace(config, context["state_dir"])
-    repository = existing["repository"] if existing else config["repository"]
-    if not permits(resolve(config), repository):
+    destination = issue_repository(config)
+    repository = existing["repository"] if existing else destination
+    if (
+        destination != config["repository"]
+        and repository.casefold() != destination.casefold()
+    ):
+        raise ValueError("Managed backlog issue belongs to another issue repository")
+    if not permits_work(resolve(config), repository, "issues"):
         raise ValueError("Backlog destination is outside the configured repair scope")
     if existing and not re.fullmatch(
         r"https://github\.com/" + re.escape(repository) + r"/issues/[1-9][0-9]*",
@@ -391,7 +430,7 @@ def publish(config, context, topic, existing, output, *, preview=False):
     if not reference:
         reference = io.artifact("topic-input.json", data)["reference"]
     inputs = input_text(reference, topic) + weekly_summary_link(
-        config["repository"], repository, context["triage_issue"]
+        destination, repository, context["triage_issue"]
     )
     brief = safe_brief(topic)
     if existing:

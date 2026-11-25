@@ -7,7 +7,7 @@ from common import encode, redact, replace_json
 from epic import is_index
 from finding_record import occurrence_id
 from github_io import IMPROVEMENT_LABEL, command, github_pages, repository_private
-from repair_policy import permits
+from repair_policy import permits_work
 
 WORK_URL = re.compile(
     r"https://github\.com/([\w.-]+/[\w.-]+)/(issues|pull)/([1-9][0-9]*)"
@@ -79,7 +79,9 @@ def comment(topic, existing, records, issue, output, policy=None, scope=None):
         for target, match in matches.items()
     ):
         raise ValueError("Recurrence must reference discovered issues or PRs")
-    if policy and any(not permits(policy, match[1]) for match in matches.values()):
+    if policy and any(
+        not permits_work(policy, match[1], match[2]) for match in matches.values()
+    ):
         raise ValueError("Recurrence target outside customer_stack repair scope")
     events = sorted(set(topic["representative_event_ids"]))
     by_id = {occurrence_id(row): row for row in records}

@@ -30,12 +30,22 @@ def test_portable_request_minimizes_worker_and_issue_data(monkeypatch):
         row("second", group="delivery", unit="job-1", origins=["private-origin"]),
     )
     url = "https://github.com/Example/source/issues/1"
+    backlog_issue = {
+        "url": "https://github.com/Example/tickets/issues/1",
+        "title": "Report generation",
+    }
     context.update(
         existing_work=[
             {"url": url, "title": "Delivery deadline", "body": "private-body"},
+            backlog_issue,
+            {"url": "https://github.com/Example/tickets/pull/1", "title": "private-pr"},
             {"url": "https://github.com/Other/repo/issues/1", "title": "private-title"},
         ],
-        repair_policy={"scope": "customer_stack", "repositories": ["Example/source"]},
+        repair_policy={
+            "scope": "customer_stack",
+            "repositories": ["Example/source"],
+            "issue_repository": "Example/tickets",
+        },
         plan_schema=TRIAGE,
         issue_guide_files=["CONTRIBUTING.md"],
         issue_guides=[
@@ -47,7 +57,10 @@ def test_portable_request_minimizes_worker_and_issue_data(monkeypatch):
     assert request["schema"] == "openhands.topic-finder-input.v1"
     assert request["plan_schema"] == TRIAGE
     assert request["representative_limit"] == 2
-    assert request["existing_work"] == [{"url": url, "title": "Delivery deadline"}]
+    assert request["existing_work"] == [
+        {"url": url, "title": "Delivery deadline"},
+        backlog_issue,
+    ]
     assert request["issue_guides"] == [
         {"path": "CONTRIBUTING.md", "text": "Include testing requirements."}
     ]

@@ -117,3 +117,34 @@ def test_packaged_budget_preserves_shorter_operator_limits(
         return {"status": "completed"}
 
     workflow_runtime.main(run)
+
+
+def test_issue_repository_flag_overrides_config_for_one_run(tmp_path, monkeypatch):
+    path = tmp_path / "worker.json"
+    path.write_text(
+        json.dumps({"repository": "Acme/source", "issue_repository": "Acme/default"})
+    )
+    monkeypatch.delenv("AUTOMATION_CALLBACK_URL", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "stage.py",
+            "--config",
+            str(path),
+            "--issue-repository",
+            "Acme/incident",
+            "--dry-run",
+        ],
+    )
+
+    def run(config, *, dry_run, **kwargs):
+        assert dry_run
+        assert config == {
+            "repository": "Acme/source",
+            "issue_repository": "Acme/incident",
+        }
+        return {"status": "preview"}
+
+    workflow_runtime.main(run)
+    assert json.loads(path.read_text())["issue_repository"] == "Acme/default"

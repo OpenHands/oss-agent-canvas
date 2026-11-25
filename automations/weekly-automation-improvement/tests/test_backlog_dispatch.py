@@ -165,10 +165,19 @@ def test_selection_honors_priority_across_repositories_and_exclusions(gh):
 
 
 @pytest.mark.parametrize("chained", [False, True])
-def test_claim_finish_repeat_and_explicit_requeue(gh, monkeypatch, chained):
+@pytest.mark.parametrize("separate_backlog", [False, True])
+def test_claim_finish_repeat_and_explicit_requeue(
+    gh, monkeypatch, chained, separate_backlog
+):
     import weekly
 
-    row, _, _ = gh.issue("Example/source", 1, 0)
+    home = gh.config["repository"]
+    destination = "Example/backlog" if separate_backlog else home
+    if separate_backlog:
+        gh.config.update(issue_repository=destination, repair_scope="customer_stack")
+        gh.issue(home, 41, 0)
+    ledger_path = backlog.ledger_directory(gh.config, gh.state_dir) / "state.json"
+    row, _, _ = gh.issue(destination, 1, 0)
     starts, refreshes = [], []
     related = {
         "kind": "issues",
@@ -204,7 +213,7 @@ def test_claim_finish_repeat_and_explicit_requeue(gh, monkeypatch, chained):
         )
         assert "**Next action:** " + status["next_action"] in row["body"]
         assert budget.cost == pytest.approx(0.1 if chained else 0)
-        ledger = json.loads((gh.state_dir / "state.json").read_text())
+        ledger = json.loads(ledger_path.read_text())
         assert (
             ledger["topic_weeks"][Path(context["output"]).name + "/" + topic["id"]][
                 "status"
@@ -250,9 +259,7 @@ def test_claim_finish_repeat_and_explicit_requeue(gh, monkeypatch, chained):
     row["labels"].append({"name": backlog.READY})
     runner(gh.config)
     assert len(starts) == 2
-    assert (
-        len(json.loads((gh.state_dir / "state.json").read_text())["topic_weeks"]) == 2
-    )
+    assert len(json.loads(ledger_path.read_text())["topic_weeks"]) == 2
 
 
 def test_interrupted_claim_and_shared_lock_prevent_dispatch(gh, monkeypatch):

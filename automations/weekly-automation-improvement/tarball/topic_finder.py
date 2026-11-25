@@ -13,7 +13,7 @@ from pathlib import Path
 from common import redact
 from finding_record import occurrence_id
 from laminar import object_value
-from repair_policy import permits
+from repair_policy import permits_work
 from tracked_work import WORK_URL
 
 INPUT_SCHEMA = "openhands.topic-finder-input.v1"
@@ -83,7 +83,11 @@ def build_request(context, records, limit):
     policy = context.get("repair_policy")
     for work in context["existing_work"]:
         match = WORK_URL.fullmatch(work["url"])
-        if match and not match[4] and (not policy or permits(policy, match[1])):
+        if (
+            match
+            and not match[4]
+            and (not policy or permits_work(policy, match[1], match[2]))
+        ):
             existing.append(
                 {"url": work["url"], "title": text_field(work.get("title"), 200)}
             )

@@ -10,7 +10,7 @@ from backlog import (
 )
 from common import redact
 from github_io import command, github_pages, repository_private, work_item
-from repair_policy import permits, resolve
+from repair_policy import issue_repository, permits, resolve
 from topic_issue import TopicIssue
 
 EPIC = "<!-- automation-improvement-epic:"
@@ -23,7 +23,7 @@ def is_index(body):
 
 
 def open_issues(config, scope, state):
-    home = config["repository"]
+    home = issue_repository(config)
     policy = resolve(config)
     known = set()
     legacy = not (
@@ -45,6 +45,7 @@ def open_issues(config, scope, state):
         for repo in (*policy["repositories"], *(m[1] for m in matches))
         if permits(policy, repo)
     }
+    repositories[home.casefold()] = home
     issues, unverified = {}, []
     for key, repo in sorted(repositories.items()):
         if key != home.casefold():
@@ -95,7 +96,7 @@ def issue_line(item):
 
 
 def refresh(config, state_dir, state, output, weekly=None):
-    home = config["repository"]
+    home = issue_repository(config)
     weekly_issue = None
     url = None
     try:

@@ -24,7 +24,7 @@ from epic import is_index
 from laminar import object_value
 from tracked_work import comment, matching, safe_work_link
 from github_io import command, work_item, IMPROVEMENT_LABEL
-from repair_policy import permits
+from repair_policy import permits_work
 
 TEXT = {"type": "string"}
 
@@ -332,7 +332,7 @@ def discover_work(urls, references, canonical_issues=()):
         match = re.fullmatch(
             r"https://github\.com/([\w.-]+/[\w.-]+)/(issues|pull)/([1-9][0-9]*)", url
         )
-        if not match or policy and not permits(policy, match[1]):
+        if not match or policy and not permits_work(policy, match[1], match[2]):
             raise ValueError("Topic cites unknown or out-of-scope existing work")
         if url.casefold() in known:
             continue
@@ -499,8 +499,11 @@ def triage(args, records, prs, completed_topics=()):
         records, prs, completed_topics, getattr(args, "retry_topic_ids", [])
     )
     context["repair_policy"] = getattr(args, "repair_policy", None)
+    source = None
     if getattr(args, "publish_backlog", False):
-        source = args.repositories.get(args.repository)
+        source = getattr(args, "issue_guide_source", None) or args.repositories.get(
+            args.repository
+        )
         context["issue_guide_files"] = issue_guides(source)
         context["guide_revision"] = (source or {}).get("revision")
     references["repair_policy"] = context["repair_policy"]
@@ -528,9 +531,7 @@ def triage(args, records, prs, completed_topics=()):
         fields["required"].append("brief")
     finder = getattr(args, "topic_finder_command", None)
     if finder:
-        guides = finder_guides(
-            args.repositories.get(args.repository), context.get("issue_guide_files", [])
-        )
+        guides = finder_guides(source, context.get("issue_guide_files", []))
         started = time.monotonic()
         result = run_finder(
             finder,

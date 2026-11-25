@@ -4,14 +4,22 @@ import uuid
 from pathlib import Path
 
 from attribution import automation_ids as origin_automations
-from backlog import ACTIVE, CUSTOMER, EXTERNAL, FACTORY, external_owner
+from backlog import (
+    ACTIVE,
+    CUSTOMER,
+    EXTERNAL,
+    FACTORY,
+    external_owner,
+    ledger_directory,
+    namespace,
+)
 from backlog_dispatch import RUN, issue_for, publish_outcome, selection
 from cohorts import collect as collect_cohort, topic_records
 from common import read_json, redact, replace_json, write_json
 from epic import refresh as refresh_epic
 from events import hydrate_events
 from laminar import Laminar
-from repair_policy import permits, resolve as repair_policy
+from repair_policy import issue_repository, permits, resolve as repair_policy
 from sources import github_auth, native_request
 from triage_workflow import arguments, repository_catalog, week_key
 from workflow_runtime import main, run as run_workflow
@@ -89,11 +97,14 @@ def prepare_topic(config, context, topic, root):
         ),
         "triage_issue": context["aggregation"]["triage_issue"],
         "topic_issue_url": topic.get("issue_url"),
+        "backlog_scope": namespace(config, context["state_dir"])
+        if topic.get("issue_url")
+        else None,
         "triage_evidence_dir": context.get("triage_evidence_dir")
         or str(
             Path(context["state_dir"])
             / "issue-evidence"
-            / config["repository"]
+            / issue_repository(config)
             / "triage"
             / context["week"]
         ),
@@ -234,7 +245,7 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
         / (now.strftime("%Y%m%dT%H%M%SZ") + "-repair-" + uuid.uuid4().hex[:8])
     )
     output.mkdir(parents=True, mode=0o700)
-    state_path = state_dir / "state.json"
+    state_path = ledger_directory(config, state_dir) / "state.json"
     state = read_json(state_path, 32_000_000) if state_path.exists() else {}
     for key in ("events", "backlog", "topic_weeks"):
         state.setdefault(key, {})
@@ -272,6 +283,7 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
         execution, state = execute(config, context, queue, state, budget)
     summary = {
         "status": execution["status"],
+        "issue_repository": issue_repository(config),
         "output": str(output),
         "topics": execution["outcomes"] + excluded,
         "execution": {

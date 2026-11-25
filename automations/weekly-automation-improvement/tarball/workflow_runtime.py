@@ -109,6 +109,11 @@ def main(run):
         ),
     )
     parser.add_argument(
+        "--issue-repository",
+        metavar="OWNER/REPO",
+        help="Override the GitHub repository for discovery issues and the repair backlog",
+    )
+    parser.add_argument(
         "--input",
         type=Path,
         help="Read a frozen Laminar inventory or portable finding batch",
@@ -129,6 +134,8 @@ def main(run):
 
     try:
         config = read_json(args.config)
+        if args.issue_repository is not None:
+            config["issue_repository"] = args.issue_repository
         if args.max_run_seconds is not None:
             if args.max_run_seconds <= 0:
                 raise ValueError("--max-run-seconds must be positive")
