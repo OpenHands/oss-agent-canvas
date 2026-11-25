@@ -1285,6 +1285,11 @@ def _process_pin_bump(
 # - the diff stays within RELEASE_FILES[repo], plus the root `.pr` directory,
 #   which the release commit deletes.
 #
+# A release pull request that is still a draft (release-please can open it as
+# one, and marking it ready is then how a release is announced) is taken out of
+# draft once all of the above holds, and merged at a later poll. That happens
+# once per head: a pull request someone turned back into a draft stays one.
+#
 # No fix conversation is started for a failing release pull request. It is
 # rebuilt from the base branch on every push there, so the fix belongs on the
 # base branch, and a commit pushed to the release branch would be lost.
@@ -1367,6 +1372,25 @@ def _release_extra_files(token: str, repo: str, pr: dict) -> list[str] | None:
     return extra
 
 
+def _mark_ready(token: str, pr: dict) -> bool:
+    """Take a draft pull request out of draft. Only the GraphQL API can."""
+    query = (
+        "mutation($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id}) "
+        "{ pullRequest { isDraft } } }"
+    )
+    try:
+        data, _ = _github_request(
+            token, "POST", "/graphql", body={"query": query, "variables": {"id": pr.get("node_id")}},
+        )
+    except Exception as exc:
+        print(f"  Could not mark PR #{pr['number']} ready for review: {exc}")
+        return False
+    if data.get("errors"):
+        print(f"  Could not mark PR #{pr['number']} ready for review: {str(data['errors'])[:300]}")
+        return False
+    return True
+
+
 def _release_handoff(token: str, repo: str, pr: dict, head_sha: str, fixes: dict, reason: str) -> None:
     """Leave a green release pull request to a maintainer, once per head."""
     number = pr["number"]
@@ -1401,16 +1425,15 @@ def _process_release(
 
     key = _fix_key(repo, number, head_sha)
     status = (fixes.get(key) or {}).get("status")
-    # A dry-run note does not count as handled once dry run is switched off.
-    if status and (RELEASE_DRY_RUN or status != "dry-run"):
+    # A dry-run note does not count as handled once dry run is switched off, and
+    # a head this automation took out of draft is still to be merged.
+    to_resume = (status == "dry-run" and not RELEASE_DRY_RUN) or (status == "marked-ready" and not pr.get("draft"))
+    if status and not to_resume:
         print(f"  PR #{number} (release) at {head_sha[:12]} already handled ({status})")
         return False
     labels = {(label.get("name") or "").lower() for label in pr.get("labels") or []}
     if HOLD_LABEL and HOLD_LABEL.lower() in labels:
         print(f"  PR #{number} (release) carries the '{HOLD_LABEL}' label; leaving it alone")
-        return False
-    if pr.get("draft"):
-        print(f"  PR #{number} (release) is a draft; leaving it alone")
         return False
 
     bump = _unreleased_pin_bump(github_token, repo)
@@ -1456,6 +1479,26 @@ def _process_release(
         "and the diff only touches this repository's release files"
     )
     print(f"  PR #{number} (release, gate green) ships pin bump #{bump['number']}")
+    if pr.get("draft"):
+        if RELEASE_DRY_RUN:
+            _pin_bump_dry_run(
+                github_token, repo, pr, head_sha, fixes,
+                "mark this release pull request ready for review, then approve and squash-merge it "
+                f"at a later poll, because {reason}",
+            )
+        elif _mark_ready(github_token, pr):
+            print(f"  Marked {repo} PR #{number} ready for review at {head_sha[:12]}; merging at a later poll")
+            fixes[key] = _pin_bump_record(repo, pr, head_sha, "marked-ready")
+        else:
+            _post_github_comment(
+                github_token, repo, number,
+                _with_ai_disclosure(
+                    "OpenHands would merge this release pull request (gating checks green, it ships a "
+                    "pin bump) but could not mark it ready for review. A maintainer may need to."
+                ),
+            )
+            fixes[key] = _pin_bump_record(repo, pr, head_sha, "handoff")
+        return False
     if RELEASE_DRY_RUN:
         _pin_bump_dry_run(
             github_token, repo, pr, head_sha, fixes,

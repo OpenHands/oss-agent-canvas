@@ -1,6 +1,6 @@
 {
   "name": "fix-failing-version-bump",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Executable automation plugin for Fix Failing Version Bump: diagnoses and fixes failing CI on dependabot version-bump PRs, and can auto-approve and merge green version-only bumps or minimal companion fixes while handing larger changes to a maintainer for review. Optionally does the same, under stricter rules, for the release bot's rolling pin-bump pull request. It can also merge a repository's release pull request once that release would ship a merged pin bump.",
   "author": {
     "name": "OpenHands",
