@@ -12,8 +12,10 @@ from finding_record import occurrence_id, read_batch
 from github_io import command, github_pages, IMPROVEMENT_LABEL, work_item
 from laminar import Laminar
 from repair_policy import permits, resolve as repair_policy
+from signal_history import latest_events
 from sources import github_auth
 from topic_issue import TopicIssue
+from trace_filter import normalize_trace_filter
 from tracked_work import WORK_URL
 from triage import (
     definition_key,
@@ -60,7 +62,9 @@ def source_revision(config):
     return command(["git", "rev-parse", reference], checkout)
 
 
-def update_backlog(state, inventory, prs, retry_topic_ids=()):
+def update_backlog(
+    state, inventory, prs, retry_topic_ids=(), *, history=None, dry_run=False
+):
     handled = set(state["events"])
     retry_events = {
         event
@@ -81,24 +85,29 @@ def update_backlog(state, inventory, prs, retry_topic_ids=()):
             )
     handled.difference_update(retry_events)
     backlog = state.setdefault("backlog", {})
-    latest = {row["trace_id"]: row for row in inventory.get("latest_runs", [])}
     current = definition_key(inventory["flow1_signal"])
-    for identifier, record in list(backlog.items()):
-        if "occurrence_id" in record:
-            continue
-        newer = latest.get(record["event"]["trace_id"])
-        superseded = (
-            definition_key(record["definition"]) == current
-            and newer
-            and timestamp(newer["updated_at"]) >= timestamp(record["run"]["updated_at"])
-            and (newer.get("event_id") != identifier or newer["status"] != "COMPLETED")
-        )
-        if identifier in handled or superseded:
-            del backlog[identifier]
-    for record in inventory.get("events", []):
+    pending = [
+        row
+        for row in backlog.values()
+        if "occurrence_id" not in row and definition_key(row["definition"]) == current
+    ]
+    incoming = [
+        row
+        for row in inventory.get("events", [])
+        if definition_key(row["definition"]) == current
+    ]
+    runs = [row["run"] for row in pending + incoming]
+    runs.extend(inventory.get("latest_runs", []))
+    latest = latest_events(current, runs, history, dry_run=dry_run)
+    for record in pending + incoming:
         identifier = record["event"]["id"]
-        if identifier not in handled:
+        if (
+            identifier not in handled
+            and latest[record["event"]["trace_id"]] == identifier
+        ):
             backlog[identifier] = record
+        else:
+            backlog.pop(identifier, None)
     return [
         record
         for record in backlog.values()
@@ -203,6 +212,7 @@ def arguments(config, output, limit, seed=None):
         max_spans=1000,
         since=config.get("since"),
         until=config.get("until"),
+        trace_filter=normalize_trace_filter(config.get("trace_filter", {})),
         limit=limit,
         seed=seed,
         output=output,
@@ -216,6 +226,36 @@ def backlog_work(repository):
             f"repos/{repository}/issues?state=all&labels={TOPIC}&per_page=100"
         )
     ]
+
+
+def collection_scope(config, args, inventory):
+    if config.get("finding_source") == "portable":
+        return None
+    captured = normalize_trace_filter(inventory.get("trace_filter", {}))
+    if "trace_filter" in config and captured != args.trace_filter:
+        raise ValueError(
+            "Captured inventory has a different trace filter. Collect a new inventory with the requested filter."
+        )
+    bounds_requested = any(config.get(key) is not None for key in ("since", "until"))
+    if not (captured or bounds_requested or inventory.get("explicit_window")):
+        return None
+    if (
+        inventory.get("project_id") != args.project_id
+        or inventory["flow1_signal"]["id"] != args.signal_id
+    ):
+        raise ValueError("Filtered inventory belongs to another project or Signal")
+    bounds = inventory.get("window", {})
+    if not all(bounds.get(key) for key in ("since", "until")):
+        raise ValueError("Filtered discovery needs a captured collection window")
+    scope = {"trace_filter": captured}
+    for key in ("since", "until"):
+        requested = config.get(key)
+        captured_bound = timestamp(bounds[key])
+        if requested is not None and timestamp(requested) != captured_bound:
+            raise ValueError("Captured inventory has a different collection window")
+        if requested is not None or config.get("input"):
+            scope[key] = captured_bound.isoformat()
+    return scope
 
 
 def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
@@ -267,27 +307,10 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
         if config.get("input")
         else collect_events(Laminar(args), set(), aggregate=True)
     )
+    selection_scope = collection_scope(config, args, inventory)
     inventory_path = collection / "input.json"
     if not inventory_path.exists():
         write_json(inventory_path, inventory)
-    records = (
-        read_batch(config, inventory, state)
-        if portable
-        else update_backlog(state, inventory, prs)
-    )
-    if not dry_run:
-        save_state(state_path, state)
-    previous = [
-        value["topic"]
-        | {
-            "status": value["status"],
-            "report": value.get("report"),
-            "reason": value.get("reason"),
-            "resources": value.get("resources", []),
-        }
-        for value in state["topic_weeks"].values()
-        if not portable and not config.get("isolated_validation")
-    ]
     summary = {
         "week": week,
         "output": str(output),
@@ -303,6 +326,49 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
     weekly = None
     pending_by_scope = state.setdefault("pending_discovery", {})
     pending = pending_by_scope.get(scope) if not dry_run else None
+    if (
+        pending
+        and selection_scope
+        and pending.get("collection_scope") != selection_scope
+    ):
+        summary.update(
+            status="discovery_incomplete",
+            selection={
+                "next_action": "Resume the saved publication with its original trace filter and bounds, or run unrestricted discovery. Use collect_signals.py for an independent inspection."
+            },
+            publication={"status": "deferred"},
+            budget=budget.snapshot(),
+        )
+        write_json(output / "triage-report.json", redact(summary))
+        return summary
+    records = (
+        read_batch(config, inventory, state)
+        if portable
+        else update_backlog(
+            state,
+            inventory,
+            prs,
+            history=state_dir / "signal-history.sqlite3",
+            dry_run=dry_run,
+        )
+    )
+    eligible = {occurrence_id(row) for row in records}
+    if selection_scope:
+        selected = {row["event"]["id"] for row in inventory["events"]}
+        records = [row for row in records if occurrence_id(row) in selected]
+    if not dry_run:
+        save_state(state_path, state)
+    previous = [
+        value["topic"]
+        | {
+            "status": value["status"],
+            "report": value.get("report"),
+            "reason": value.get("reason"),
+            "resources": value.get("resources", []),
+        }
+        for value in state["topic_weeks"].values()
+        if not portable and not config.get("isolated_validation")
+    ]
     if not pending and records and not discovery_errors:
         triage_args = arguments(config, output / "triage", limit, seed)
         triage_args.output.mkdir(mode=0o700)
@@ -332,6 +398,7 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
             }
             pending = {
                 "output": str(output),
+                "collection_scope": selection_scope,
                 "context": {
                     "state_dir": str(state_dir),
                     "inventory_path": str(inventory_path),
@@ -363,7 +430,7 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
                 state_path,
                 pending,
                 output,
-                {occurrence_id(row) for row in records},
+                eligible,
             )
             if weekly and weekly.get("url"):
                 state.setdefault("discovery_indices", {})[scope] = {

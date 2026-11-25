@@ -44,8 +44,10 @@ DISCOVERY_FILES = SHARED_FILES + (
     "budget.py",
     "epic.py",
     "events.py",
+    "signal_history.py",
     "tracked_work.py",
     "topic_finder.py",
+    "trace_filter.py",
     "triage.py",
     "triage_agent.py",
     "triage_workflow.py",
@@ -53,7 +55,7 @@ DISCOVERY_FILES = SHARED_FILES + (
     "setup.sh",
 )
 STAGE_FILES = {
-    "discovery": DISCOVERY_FILES,
+    "discovery": DISCOVERY_FILES + ("collect_signals.py",),
     "native-repair": DISCOVERY_FILES
     + (
         "backlog_dispatch.py",

@@ -33,6 +33,8 @@ flowchart LR
 
 The combined native schedule runs both entrypoints under one worker lock and inference budget. Its report retains both discovery and repair results. The discovery, native repair and Factory handoff entrypoints can also be packaged as separate disabled imports. A shared persistent dispatcher coordinates writers for each issue scope.
 
+For a debugging question about one automation, run `collect_signals.py` from the discovery package. It reads existing Laminar results for a chosen time window and saves a private inventory. You can inspect it locally or pass it to discovery for ranking. During publication, discovery keeps the newest observed Signal run for each trace and compatible definition in the worker’s private `signal-history.sqlite3`. Include this file when moving worker state. It prevents an older capture from requeuing a finding after a later run replaced or cleared it. [Worked example and supported filters](README.md#inspect-laminar-findings-for-one-automation)
+
 ### How the stages fit a repository’s Software Factory
 
 The Software Factory is the team’s complete set of repository automations. A collector can file the issue, another automation can triage it, and the team can select its existing implementer and reviewer. The issue connects those stages and records which one owns the next action.

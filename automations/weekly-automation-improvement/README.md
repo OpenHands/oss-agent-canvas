@@ -11,6 +11,55 @@ records the live results, costs and review of the generated issues.
 
 For a standalone installation, run `python3 package_workflow.py STAGE OUTPUT_DIRECTORY` from this directory. Choose `discovery`, `native-repair`, or `factory-handoff`. Each generates a disabled Git-sync folder containing its entrypoint, manifest and self-contained tarball. The existing manifest still runs both native stages weekly. In Enterprise, import only the selected folders, set run-as identity, profile, secrets and durable worker storage, then enable the intended schedule. Generated native stages cap the internal run budget at 1500 seconds inside the 1800-second deployment timeout. Shorter configured budgets take precedence. The packaged handoff uses system Python.
 
+### Inspect Laminar findings for one automation
+
+Which unresolved findings did the Signal record for traces that started on November 24 in the report automation? Save the example below as `debug.json`, replacing the API URL and three UUIDs with your own. The automation UUID is recorded as `lmnr.association.properties.metadata.automation.id` on an `automation.conversation` span. Supply a SQL-capable `LMNR_PROJECT_API_KEY` in the environment or use `credentials_file` to point to an owner-only JSON file containing that key. Python 3.11 or later and access to Laminar are sufficient.
+
+```json
+{
+  "laminar_base_url": "https://laminar-api.example.com",
+  "project_id": "00000000-0000-4000-8000-000000000001",
+  "signal_id": "00000000-0000-4000-8000-000000000002",
+  "since": "2026-11-24T00:00:00Z",
+  "until": "2026-11-25T00:00:00Z",
+  "trace_filter": {
+    "automation_ids": ["00000000-0000-4000-8000-000000000003"],
+    "time_basis": "trace_started",
+    "outcomes": ["unresolved"]
+  }
+}
+```
+
+From the directory containing `tarball/`, choose a new or empty private output directory.
+
+```sh
+python3 tarball/collect_signals.py --config debug.json --output ./report-nov24
+```
+
+The collector queries only Laminar. It prints counts and saves the findings in `report-nov24/input.json`. Start with `latest_by_trace.statuses`, which counts traces by the status of their latest Signal attempt. The `latest_by_trace` totals also show how many completed without an event and how many of those had no recorded token usage. Compare `candidate_events`, `excluded_by_payload` and `matched_findings` to see what the outcome filter removed. Zero Signal attempts means no matching evaluation was recorded for that scope. A completed attempt with no event means the detector emitted no finding for that attempt. If a finding was unreadable, the receipt reports a collection error and the command returns a nonzero exit status with the partial inventory.
+
+| Collection setting | What it selects |
+| --- | --- |
+| `signal_id` | The project's existing Flow-1 Signal, including prior versions with a compatible analysis definition. |
+| `since`, `until` | Inclusive start and exclusive end, up to seven days apart. `--since` and `--until` override these values for one collection. The default is the seven days ending ten minutes ago. |
+| `trace_filter.time_basis` | `signal_updated` (default) selects Signal attempts updated in the window. `trace_started` selects traces by their start time and includes their recorded Signal attempts, even if evaluation finished later. |
+| `trace_filter.trace_ids` | Exact Laminar trace UUIDs. |
+| `trace_filter.automation_ids`, `trace_filter.automation_run_ids`, `trace_filter.conversation_ids` | Exact automation, automation execution or conversation UUIDs from an `automation.conversation` span. An automation execution ID comes from the automation that ran the task. |
+| `trace_filter.causes` | `workflow`, `configuration`, `infrastructure`, `provider`, `unknown`. |
+| `trace_filter.outcomes` | `recovered`, `unresolved`, `unknown`. |
+
+Each list accepts 1–100 values. Any value can match within a list, and all supplied fields must match. If you specify multiple origin fields, they must match the same span. Trace, origin and time constraints apply before the Signal-attempt limit (`population_limit`, default 10,000). The collector then selects the latest matching attempt per trace and applies cause and outcome to findings from completed attempts.
+
+A matching span places the whole trace in scope. A shared trace can contain several conversations. The inventory keeps possible owners and reports uncertain attribution. Findings can contain customer text, so keep the inventory with the people authorized to inspect those traces. To choose **which traces Flow-1 analyzes**, configure the upstream Signal's trigger, filters and sampling. For example, tag the automation's spans and select that tag on a dedicated Signal. For historical traces without a Signal run, use the Signal’s **Overview → Backfill** page and select a time range or individual traces. [Laminar Signal configuration](https://laminar.sh/docs/signals/quickstart)
+
+**To rank these findings**, pass the inventory and your full discovery worker config to the discovery entrypoint. A preview reads GitHub and shares private findings with the configured topic finder. The native agent can inspect additional evidence in the linked traces. Use a finder and model provider authorized to process that evidence.
+
+```sh
+python3 tarball/triage_workflow.py --config /private/discovery.json --input ./report-nov24/input.json --dry-run
+```
+
+Run this command in the discovery worker's Python environment. Omitting `--dry-run` publishes the plan to GitHub. Discovery ranks matching unhandled findings when the live or frozen collection is scoped by a trace filter or explicit time bounds. The default rolling run also considers compatible findings already pending. The combined `weekly.py` entrypoint selects native repairs independently from the ready GitHub backlog. [Run the two workflows](#run-the-two-workflows)
+
 ### Supply findings from your own detector
 
 Set `finding_source` to `portable` and choose a stable `source_namespace`. Your detector writes an `openhands.findings.v1` batch. For example, a CI check that waits for a report can record each expired deadline in `batch.json`.

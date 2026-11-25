@@ -11,10 +11,16 @@ from common import encode, redact, timestamp, write_json
 from attribution import automation_ids, candidates as owner_candidates, ownership
 from flow1 import estimated_cost, signal_definition
 from laminar import META, SESSION, object_value
+from trace_filter import matches_payload, normalize_trace_filter, run_predicates
 
 
 def collect_events(client, handled, *, aggregate=False):
     args = client.args
+    filters = normalize_trace_filter(getattr(args, "trace_filter", {}))
+    if filters and not aggregate:
+        raise ValueError("trace_filter requires aggregate Signal collection")
+    if type(args.population_limit) is not int or args.population_limit < 1:
+        raise ValueError("population_limit must be a positive integer")
     until = timestamp(
         args.until or (dt.datetime.now(dt.UTC) - dt.timedelta(minutes=10)).isoformat()
     )
@@ -25,6 +31,8 @@ def collect_events(client, handled, *, aggregate=False):
     definition = signal_definition(
         client.request(client.base + "/v1/signals/" + identifier), args.project_id
     )
+    if definition["id"] != identifier:
+        raise ValueError("Returned Signal differs from the configured ID")
     profile = client.request(
         client.base + "/v1/llm-profiles/" + definition["llmProfileId"]
     )
@@ -48,10 +56,11 @@ def collect_events(client, handled, *, aggregate=False):
                     older, args.project_id
                 )
     versions = ",".join(str(int(version)) for version in definitions)
-    scope = (
-        f"signal_id='{identifier}' AND signal_version IN ({versions}) "
-        f"AND updated_at >= '{since.strftime('%Y-%m-%d %H:%M:%S')}' "
-        f"AND updated_at < '{until.strftime('%Y-%m-%d %H:%M:%S')}'"
+    scope = run_predicates(
+        filters,
+        since,
+        until,
+        f"signal_id='{identifier}' AND signal_version IN ({versions})",
     )
     rows = client.query(
         "SELECT signal_id,signal_version,run_id,trace_id,status,event_id,updated_at,"
@@ -114,6 +123,7 @@ def collect_events(client, handled, *, aggregate=False):
         },
         "signal_run_summary": {
             "attempts": len(attempts),
+            "trace_count": len(latest),
             "statuses": dict(Counter(run["status"] for run in attempts.values())),
             "completed_no_event": sum(
                 run["status"] == "COMPLETED"
@@ -131,20 +141,33 @@ def collect_events(client, handled, *, aggregate=False):
             "estimated_gross_usd": estimated_cost(list(attempts.values()), pricing)
             if attempts
             else 0,
-            "estimated_cost_scope": "all observed attempts in the window, not new charges for this reader",
+            "estimated_cost_scope": "Historical usage of all observed Signal attempts in the selected trace and time scope",
         },
         "samples": [],
         "collection_errors": [],
         "attribution_warnings": [],
     }
     if aggregate:
+        snapshot["trace_filter"] = filters
+        snapshot["explicit_window"] = args.since is not None or args.until is not None
         snapshot["latest_runs"] = list(latest.values())
+        snapshot["selection"]["payload_excluded_count"] = 0
         snapshot["events"] = collect_cards(client, snapshot, candidates)
+        emitted = sorted(record["event"]["id"] for record in snapshot["events"])
+        digest = hashlib.sha256(encode(emitted).encode()).hexdigest()
+        snapshot["selection"].update(
+            candidate_event_count=len(candidates),
+            unreadable_event_count=len(snapshot["collection_errors"]),
+            selected_event_ids=emitted,
+            population_size=len(emitted),
+            sample_size=len(emitted),
+            inclusion_probability=1 if emitted else 0,
+            population_sha256=digest,
+            frame="All readable, unhandled findings from the latest in-scope run per trace for compatible Signal versions that satisfy the configured finding filters",
+        )
         snapshot["collection_measurements"] = client.measurements
         snapshot = redact(snapshot)
-        snapshot["selection"]["population_sha256"] = hashlib.sha256(
-            encode(sorted(candidates)).encode()
-        ).hexdigest()
+        snapshot["selection"]["population_sha256"] = digest
         write_json(args.output / "input.json", snapshot)
         return snapshot
     grouped = {}
@@ -242,6 +265,9 @@ def collect_cards(client, snapshot, candidates):
                 payload = object_value(event["payload"])
                 if not payload or not isinstance(payload.get("summary"), str):
                     raise ValueError("Finding has no structured summary")
+                if not matches_payload(snapshot.get("trace_filter", {}), payload):
+                    snapshot["selection"]["payload_excluded_count"] += 1
+                    continue
                 records.append(
                     {
                         "event": event,

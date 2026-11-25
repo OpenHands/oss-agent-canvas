@@ -8,6 +8,7 @@ from budget import RunBudget
 from common import callback, encode, read_json, redact
 from repair_policy import resolve as repair_policy
 from topic_finder import validate_command
+from trace_filter import normalize_trace_filter
 
 
 def load_environment(config, *, use_model=True):
@@ -33,6 +34,10 @@ def load_environment(config, *, use_model=True):
 
 
 def run(config, run_locked, *, dry_run=False, limit=3, seed=None, use_model=True):
+    if "trace_filter" in config:
+        if config.get("finding_source", "laminar") != "laminar":
+            raise ValueError("trace_filter applies to Laminar Signal collection")
+        normalize_trace_filter(config["trace_filter"])
     if "topic_finder_command" in config:
         validate_command(config["topic_finder_command"])
     if config.get("finding_source", "laminar") not in ("laminar", "portable"):
