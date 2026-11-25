@@ -61,12 +61,14 @@ BUMP = merged_pr(11, "bump-pins", "2026-11-24T17:06:41Z")
 class FakeRelease(FakeGitHub):
     """One repository with an open release PR and its history of merged bot PRs."""
 
-    def __init__(self, pr=None, history=(LAST_RELEASE, BUMP), open_bumps=(), behind=0, files=None, **github):
+    def __init__(self, pr=None, history=(LAST_RELEASE, BUMP), open_bumps=(), behind=0, files=None,
+                 refuse_ready=False, **github):
         files = [changed(path) for path in RELEASE_FILES] if files is None else files
         super().__init__(pr=pr or release_pr(), files=files, **github)
         self.history = list(history)
         self.open_bumps = list(open_bumps)
         self.behind = behind  # None: the comparison cannot be read
+        self.refuse_ready = refuse_ready
 
     def paginate(self, token, path, params=None):
         if path.endswith("/pulls"):
@@ -87,10 +89,20 @@ class FakeRelease(FakeGitHub):
             if self.behind is None:
                 raise urllib.error.URLError("boom")
             return {"behind_by": self.behind}, {}
+        if method == "POST" and path == "/graphql":
+            self.writes.append((method, "graphql", body))
+            if self.refuse_ready:
+                return {"errors": [{"message": "Resource not accessible by personal access token"}]}, {}
+            # GitHub takes the pull request out of draft.
+            self.pr = {**self.pr, "draft": False}
+            return {"data": {"markPullRequestReadyForReview": {"pullRequest": {"isDraft": False}}}}, {}
         return super().request(token, method, path, params, body, accept)
 
     def read(self, fragment):
         return [path for path, _ in self.reads if fragment in path]
+
+    def kinds(self):
+        return ["mark-ready" if kind == "POST graphql" else kind for kind in super().kinds()]
 
 
 class ReleaseCase(unittest.TestCase):
@@ -256,9 +268,9 @@ class FlowTests(ReleaseCase):
             merged, fixes, merges = self.poll(module, github)
             self.assertEqual((merged, github.writes, fixes, merges), (False, [], {}, {}))
 
-    def test_hold_label_and_draft_are_left_alone(self):
+    def test_a_held_release_is_left_alone(self):
         held = release_pr(labels=[{"name": "autorelease: pending"}, {"name": "Release: Hold"}])
-        for pr in (held, release_pr(draft=True)):
+        for pr in (held, {**held, "draft": True}):
             for github in self.left_alone(pr=pr):
                 self.assertEqual(github.read("/check-runs"), [])
 
@@ -372,6 +384,102 @@ class FlowTests(ReleaseCase):
             self.assertEqual(merges, {})
 
 
+def draft_pr(**overrides):
+    return release_pr(draft=True, node_id="PR_node12", **overrides)
+
+
+class DraftTests(ReleaseCase):
+    """release-please can open the release as a draft; Canvas's is one."""
+
+    def test_a_green_draft_is_marked_ready_and_merged_at_a_later_poll(self):
+        for module, github in self.modules(lambda: FakeRelease(pr=draft_pr())):
+            merged, fixes, merges = self.poll(module, github)
+            self.assertFalse(merged)
+            self.assertEqual(github.kinds(), ["mark-ready"])
+            _, _, mutation = github.writes[0]
+            self.assertIn("markPullRequestReadyForReview", mutation["query"])
+            self.assertEqual(mutation["variables"], {"id": "PR_node12"})
+            self.assertEqual(fixes[KEY]["status"], "marked-ready")
+            self.assertEqual(merges, {})
+
+            merged, fixes, merges = self.poll(module, github, fixes, merges)
+            self.assertTrue(merged)
+            self.assertEqual(github.kinds(), ["mark-ready", "approve", "merge"])
+            self.assertEqual(list(merges), [KEY])
+
+    def test_a_draft_is_not_marked_ready_before_everything_else_holds(self):
+        shipped = merged_pr(13, RELEASE_BRANCH, "2026-11-24T17:18:16Z")
+        for github in (
+            {"history": [LAST_RELEASE, BUMP, shipped]},
+            {"open_bumps": [pin_pr()]},
+            {"behind": 2},
+            {"check_runs": [run("unit-tests", None, "in_progress")]},
+            {"check_runs": [run("unit-tests", "failure")]},
+            {"activity": [push(BOT, "older", "force_push")]},
+        ):
+            list(self.left_alone(pr=draft_pr(), **github))
+
+    def test_a_draft_that_cannot_be_merged_goes_to_a_maintainer_as_a_draft(self):
+        files = [changed("openhands/automation/scheduler.py")]
+        for module, github in self.modules(lambda: FakeRelease(pr=draft_pr(), files=files)):
+            merged, fixes, _ = self.poll(module, github)
+            self.assertFalse(merged)
+            self.assertEqual(github.kinds(), ["request-review", "comment"])
+            self.assertEqual(fixes[KEY]["status"], "handoff")
+
+    def test_a_pull_request_turned_back_into_a_draft_stays_one(self):
+        for module, github in self.modules(lambda: FakeRelease(pr=draft_pr())):
+            _, fixes, merges = self.poll(module, github)
+            self.assertEqual(github.kinds(), ["mark-ready"])
+            # Someone, or a freeze workflow, returns it to draft on the same head.
+            github.pr = {**github.pr, "draft": True}
+            merged, fixes, merges = self.poll(module, github, fixes, merges)
+            self.assertFalse(merged)
+            self.assertEqual(github.kinds(), ["mark-ready"])
+            self.assertEqual(merges, {})
+
+    def test_a_draft_that_cannot_be_marked_ready_is_left_to_a_maintainer(self):
+        for module, github in self.modules(lambda: FakeRelease(pr=draft_pr(), refuse_ready=True)):
+            merged, fixes, merges = self.poll(module, github)
+            self.assertFalse(merged)
+            self.assertEqual(github.kinds(), ["mark-ready", "comment"])
+            self.assertIn("could not mark it ready for review", github.comments()[0])
+            self.assertEqual(fixes[KEY]["status"], "handoff")
+
+            # Tried once per head.
+            self.poll(module, github, fixes, merges)
+            self.assertEqual(github.kinds(), ["mark-ready", "comment"])
+
+    def test_a_failed_request_counts_as_not_marked_ready(self):
+        for module, github in self.modules(lambda: FakeRelease(pr=draft_pr(), broken=())):
+            def boom(token, method, path, params=None, body=None, accept=None):
+                raise urllib.error.URLError("boom")
+
+            module._github_request = boom
+            self.assertFalse(module._mark_ready("token", github.pr))
+
+    def test_dry_run_of_a_draft_only_comments(self):
+        for module, github in self.modules(lambda: FakeRelease(pr=draft_pr()), RELEASE_DRY_RUN=True):
+            merged, fixes, merges = self.poll(module, github)
+            self.assertFalse(merged)
+            self.assertEqual(github.kinds(), ["comment"])
+            self.assertIn("mark this release pull request ready for review", github.comments()[0])
+            self.assertIn("it ships pin bump #11", github.comments()[0])
+            self.assertEqual(fixes[KEY]["status"], "dry-run")
+            self.assertTrue(github.pr["draft"])
+
+            # Switching dry run off acts on the head that was only noted.
+            module.RELEASE_DRY_RUN = False
+            self.poll(module, github, fixes, merges)
+            self.assertEqual(github.kinds(), ["comment", "mark-ready"])
+
+    def test_a_release_that_was_ready_all_along_is_merged_in_one_poll(self):
+        for module, github in self.modules():
+            merged, _, _ = self.poll(module, github)
+            self.assertTrue(merged)
+            self.assertEqual(github.kinds(), ["approve", "merge"])
+
+
 class ProcessRepoTests(ReleaseCase):
     def process(self, module, state=None):
         state = {} if state is None else state
@@ -469,6 +577,16 @@ class ConfigTests(unittest.TestCase):
         for repo in module.RELEASE_BRANCHES:
             self.assertIn(repo, polled)
             self.assertTrue(module.RELEASE_FILES.get(repo), repo)
+
+    def test_a_canvas_release_is_gated_on_its_end_to_end_checks(self):
+        # Canvas requires one check on its default branch, and the end-to-end
+        # checks can be red while that one is green.
+        (config,) = ROOT.glob("automations/fix-failing-version-bump-bump-pins-*/tarball/config.json")
+        module = load_module(config.with_name("main.py"))
+        self.assertIn("OpenHands/OpenHands", module.RELEASE_BRANCHES)
+        gate = module.RELEASE_CHECKS["OpenHands/OpenHands"]
+        self.assertIn("mock-llm-e2e", gate)
+        self.assertIn("windows-install-e2e", gate)
 
     def test_the_dependabot_deployment_merges_no_release(self):
         (config,) = ROOT.glob("automations/fix-failing-version-bump-dependabot-*/tarball/config.json")
