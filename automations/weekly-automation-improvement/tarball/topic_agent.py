@@ -11,20 +11,24 @@ import uuid
 from importlib.metadata import version
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import quote
 
 from agent_runtime import AgentDeadline, create_agent
+from backlog import event_markers
 from backlog import evidence_root as backlog_evidence_root
 from budget import BudgetExhausted
 from common import read_json, redact, replace_json, write_json
 from github_io import command, github_pages, IMPROVEMENT_LABEL, repository_private
 from laminar import Laminar
 from raw_evidence import EvidenceReader
-from repair_policy import instructions, permits, resource_errors
+from repair_policy import instructions, permits_resource, resource_errors
 from topic_issue import ISSUE_GUIDANCE, IssueReader, TopicIssue, public_issue_errors
 
 RESOURCE = re.compile(
     r"https://github\.com/([\w.-]+/[\w.-]+)/(issues|pull)/(\d+)(?!\d)"
 )
+QUALIFIED_REFERENCE = re.compile(r"(?<![\w/])([\w.-]+/[\w.-]+)#\d+\b")
+RAW_MARKERS = re.compile(r"<!-- automation-improvement-(?:event|automation|topic-key):")
 
 
 def marker(topic):
@@ -129,7 +133,9 @@ def evidence(
 
 
 def can_link(origin, target):
-    return origin.get("private", False) or not target.get("private", False)
+    return origin["repository"].casefold() == target[
+        "repository"
+    ].casefold() or not target.get("private", False)
 
 
 def discover(context, output):
@@ -224,9 +230,10 @@ def discover(context, output):
                     )
             if body is None or not owns(context, body):
                 continue
-            catalog = set(context["repositories"]) | {
-                m[1] for m in RESOURCE.finditer(body)
-            }
+            catalog = set(context["repositories"])
+            text = value["title"] + "\n" + body
+            for pattern in (RESOURCE, QUALIFIED_REFERENCE):
+                catalog.update(m[1] for m in pattern.finditer(text))
             weekly = RESOURCE.fullmatch(
                 (context.get("triage_issue") or {}).get("url") or ""
             )
@@ -248,6 +255,7 @@ def discover(context, output):
                 "title": value["title"],
                 "draft": value.get("draft"),
                 "base": value.get("base", {}).get("sha"),
+                "base_ref": value.get("base", {}).get("ref"),
                 "head": value.get("head", {}).get("sha"),
                 "head_ref": value.get("head", {}).get("ref"),
                 "labels": [label["name"] for label in value.get("labels", [])],
@@ -255,6 +263,13 @@ def discover(context, output):
         except Exception as error:
             target = errors if url in required else reference_errors
             target.append({"url": url, "error": redact(str(error))[:1000]})
+    if context.get("topic_issue_url") and context["topic_issue_url"] not in found:
+        errors.append(
+            {
+                "url": context["topic_issue_url"],
+                "error": "Current-run backlog brief is missing",
+            }
+        )
     receipt = {"resources": list(found.values()), "errors": errors}
     replace_json(output / "resources.json", receipt)
     replace_json(output / "reference-errors.json", reference_errors)
@@ -285,20 +300,18 @@ def link_errors(resources):
         name for r in resources for name in r.get("private_repositories", [])
     )
     for resource in resources:
-        if not resource.get("private"):
-            text = (resource.get("title", "") + "\n" + resource["body"]).casefold()
-            for name in private_names:
-                if re.search(
-                    r"(?<![\w.-])"
-                    + re.escape(name.casefold())
-                    + r"(?:\.git)?(?![\w.-])",
-                    text,
-                ):
-                    problems.append(
-                        resource["url"]
-                        + ": public text references private repository "
-                        + name
-                    )
+        text = (resource.get("title", "") + "\n" + resource["body"]).casefold()
+        for name in private_names:
+            if can_link(resource, {"repository": name, "private": True}):
+                continue
+            if re.search(
+                r"(?<![\w.-])" + re.escape(name.casefold()) + r"(?:\.git)?(?![\w.-])",
+                text,
+            ):
+                audience = "cross-repository" if resource.get("private") else "public"
+                problems.append(
+                    f"{resource['url']}: {audience} text references private repository {name}"
+                )
     for repository in {r["repository"] for r in issues + prs}:
         owned = [issue for issue in issues if issue["repository"] == repository]
         if len(owned) != 1:
@@ -335,12 +348,121 @@ def hold_drafts(resources):
         ):
             try:
                 command(["gh", "pr", "ready", resource["url"], "--undo"])
-                resource["draft"] = True
+                live = live_pr(resource["url"])
+                resource["draft"] = live["draft"]
+                resource["state"] = live["state"]
+                if resource["state"] == "open" and not resource["draft"]:
+                    raise ValueError("GitHub still shows the pull request ready")
+                if (live["base"]["sha"], live["head"]["sha"]) != (
+                    resource.get("base"),
+                    resource.get("head"),
+                ):
+                    resource["current_base"] = live["base"]["sha"]
+                    resource["current_head"] = live["head"]["sha"]
             except Exception as error:
                 errors.append(
                     {"url": resource["url"], "error": redact(str(error))[:1000]}
                 )
     return errors
+
+
+def live_pr(url):
+    match = RESOURCE.fullmatch(url)
+    if not match or match[2] != "pull":
+        raise ValueError("Invalid repair PR URL")
+    repository, _, number = match.groups()
+    return json.loads(command(["gh", "api", f"repos/{repository}/pulls/{number}"]))
+
+
+def required_checks(url, base_ref):
+    repository, _, number = RESOURCE.fullmatch(url).groups()
+    owner, name = repository.split("/", 1)
+    query = """
+    query($owner:String!,$name:String!,$number:Int!) {
+      repository(owner:$owner,name:$name) {
+        pullRequest(number:$number) {
+          baseRef { name branchProtectionRule {
+            requiresStatusChecks requiredStatusCheckContexts
+            requiredStatusChecks { context app { databaseId } }
+          } }
+        }
+      }
+    }
+    """
+    value = json.loads(
+        command(
+            [
+                "gh",
+                "api",
+                "graphql",
+                "-f",
+                "query=" + query,
+                "-f",
+                "owner=" + owner,
+                "-f",
+                "name=" + name,
+                "-F",
+                "number=" + number,
+            ]
+        )
+    )
+    ref = value["data"]["repository"]["pullRequest"]["baseRef"]
+    if ref["name"] != base_ref:
+        raise ValueError("The reviewed base branch changed")
+    required = set()
+    classic = ref["branchProtectionRule"]
+    if classic and classic["requiresStatusChecks"]:
+        checks = {
+            item["context"]: (item.get("app") or {}).get("databaseId")
+            for item in classic["requiredStatusChecks"]
+        }
+        required.update(
+            (context, checks.get(context))
+            for context in classic["requiredStatusCheckContexts"]
+        )
+        required.update(checks.items())
+    for rule in github_pages(
+        f"repos/{repository}/rules/branches/{quote(base_ref, safe='')}?per_page=100",
+        command,
+    ):
+        if rule["type"] == "workflows" and rule["parameters"]["workflows"]:
+            raise ValueError(
+                "Required workflow identities need maintainer verification"
+            )
+        if rule["type"] == "required_status_checks":
+            required.update(
+                (check["context"], check.get("integration_id"))
+                for check in rule["parameters"]["required_status_checks"]
+            )
+    return required
+
+
+def check_runs(url, sha):
+    repository = RESOURCE.fullmatch(url)[1]
+    runs = []
+    for page in range(1, 101):
+        data = json.loads(
+            command(
+                [
+                    "gh",
+                    "api",
+                    f"repos/{repository}/commits/{sha}/check-runs?filter=latest&per_page=100&page={page}",
+                ]
+            )
+        )
+        rows = data["check_runs"]
+        runs.extend(row for row in rows if row["head_sha"] == sha)
+        if len(rows) < 100:
+            return runs
+    raise ValueError("Too many check runs to verify on the reviewed head")
+
+
+def check_state(check):
+    if check.get("__typename") == "StatusContext":
+        outcome = (check.get("state") or "").upper()
+        return outcome in ("PENDING", "EXPECTED"), outcome
+    outcome = (check.get("conclusion") or "").upper()
+    return check.get("status", "").upper() != "COMPLETED", outcome
 
 
 def verify_pr_ci(prs, output, budget, wait_seconds=180):
@@ -350,13 +472,7 @@ def verify_pr_ci(prs, output, budget, wait_seconds=180):
         for pr in prs:
             url = pr["url"]
             try:
-                match = RESOURCE.fullmatch(url)
-                if not match or match[2] != "pull":
-                    raise ValueError("Invalid repair PR URL")
-                repository, _, number = match.groups()
-                live = json.loads(
-                    command(["gh", "api", f"repos/{repository}/pulls/{number}"])
-                )
+                live = live_pr(url)
                 result = json.loads(
                     command(
                         [
@@ -375,6 +491,30 @@ def verify_pr_ci(prs, output, budget, wait_seconds=180):
                     live["head"]["sha"],
                     result.get("headRefOid"),
                 )
+                if (
+                    live["state"] != "open"
+                    or current != (pr["base"], pr["head"], pr["head"])
+                    or (pr.get("base_ref") and live["base"]["ref"] != pr["base_ref"])
+                ):
+                    failures.append(
+                        url + ": the reviewed base or head changed or the PR closed"
+                    )
+                    continue
+                required = required_checks(url, live["base"]["ref"])
+                required = {
+                    (name, app if app and app > 0 else None) for name, app in required
+                }
+                reporters = (
+                    check_runs(url, pr["head"])
+                    if any(app for _, app in required)
+                    else []
+                )
+                result["requiredChecks"] = [
+                    {"name": name, "app": app}
+                    for name, app in sorted(
+                        required, key=lambda check: (check[0], check[1] or 0)
+                    )
+                ]
                 status.append({"url": url, **result})
             except Exception as error:
                 detail = getattr(error, "stderr", None) or str(error)
@@ -382,21 +522,40 @@ def verify_pr_ci(prs, output, budget, wait_seconds=180):
                     url + ": unable to read CI status: " + redact(detail)[:500]
                 )
                 continue
-            if current != (pr["base"], pr["head"], pr["head"]):
-                failures.append(url + ": the reviewed base or head changed")
-                continue
             checks = result.get("statusCheckRollup") or []
+            for name, app in required:
+                matching = (
+                    [
+                        r
+                        for r in reporters
+                        if r.get("name") == name
+                        and (r.get("app") or {}).get("id") == app
+                    ]
+                    if app
+                    else [
+                        r for r in checks if name in (r.get("name"), r.get("context"))
+                    ]
+                )
+                if not matching:
+                    pending.append(url + ": missing required check " + name)
+                for check in matching:
+                    waiting, outcome = check_state(check)
+                    if waiting:
+                        pending.append(url + ": pending required check " + name)
+                    elif outcome not in ("SUCCESS", "NEUTRAL", "SKIPPED"):
+                        failures.append(
+                            url
+                            + ": required check "
+                            + name
+                            + " concluded "
+                            + (outcome or "unknown")
+                        )
             if not checks:
                 pending.append(url + ": no CI checks reported on the reviewed head")
             successful, waiting_checks = False, False
             for check in checks:
                 name = check.get("name") or check.get("context") or "CI check"
-                if check.get("__typename") == "StatusContext":
-                    outcome = (check.get("state") or "").upper()
-                    waiting = outcome in ("PENDING", "EXPECTED")
-                else:
-                    outcome = (check.get("conclusion") or "").upper()
-                    waiting = check.get("status", "").upper() != "COMPLETED"
+                waiting, outcome = check_state(check)
                 if waiting:
                     waiting_checks = True
                     pending.append(url + ": pending " + name)
@@ -418,20 +577,60 @@ def verify_pr_ci(prs, output, budget, wait_seconds=180):
             return pending
 
 
-def ready_after_ci(prs, output, budget):
+def ready_after_ci(prs, output, budget, confirm_claim=None):
     errors = verify_pr_ci(prs, output, budget)
     if errors:
         return errors
+    if confirm_claim:
+        try:
+            confirm_claim()
+        except Exception as error:
+            return [
+                "Unable to confirm native issue ownership: " + redact(str(error))[:500]
+            ]
     for pr in prs:
         if pr["draft"]:
             try:
                 command(["gh", "pr", "ready", pr["url"]])
                 pr["draft"] = False
             except Exception as error:
-                return [
-                    pr["url"] + ": unable to mark ready: " + redact(str(error))[:500]
-                ]
-    return []
+                errors.append(
+                    pr["url"]
+                    + ": unable to confirm ready update: "
+                    + redact(str(error))[:500]
+                )
+                pr["draft"] = False
+                break
+    for pr in prs:
+        try:
+            live = live_pr(pr["url"])
+            pr["draft"] = live["draft"]
+            pr["state"] = live["state"]
+            current = (live["base"]["sha"], live["head"]["sha"])
+            if current != (pr["base"], pr["head"]):
+                pr["current_base"], pr["current_head"] = current
+            if (
+                live["state"] != "open"
+                or live["draft"]
+                or current != (pr["base"], pr["head"])
+                or (pr.get("base_ref") and live["base"]["ref"] != pr["base_ref"])
+            ):
+                errors.append(
+                    pr["url"]
+                    + ": ready state or reviewed revision changed during promotion"
+                )
+        except Exception as error:
+            errors.append(
+                pr["url"]
+                + ": unable to read back promotion: "
+                + redact(str(error))[:500]
+            )
+    if not errors:
+        errors = verify_pr_ci(prs, output / "after-promotion", budget)
+    if not errors:
+        for pr in prs:
+            pr["promoted"] = True
+    return errors
 
 
 def public_credential_errors(resource):
@@ -743,7 +942,7 @@ def prompt(context, context_path, output, review=False):
             "Check repair scope, configuration provenance, application path and the blast radius of shared settings; do not accept an unused configuration artifact as a deployed-behavior fix. "
             "Compare the coherent baseline repository/SDK versions against the complete proposed configuration. Distinguish original-input replay, captured-input projection and synthetic mechanism tests. Require genuine baseline defect reproduction for a mechanism claim; missing new files/imports or asserting a new implementation contract is insufficient. "
             "Assess the scoped improvement and no introduced control violations; do not demand that unrelated inherited problems disappear. Missing samples or unavailable historical environments must be explicit, not reconstructed indefinitely. "
-            "Inspect every related repository's PRs and compatibility/dependency claims. Confirm one issue per affected repository and visibility-safe links: private issues can link public work; public text must not disclose private repository identities or URLs. Keep private counterparts in the private evidence index. Correct missing cross-links and labels using normal GitHub tools. "
+            "Inspect every related repository's PRs and compatibility/dependency claims. Confirm one issue per affected repository. Link to same-repository or public work. Keep other private repository identities and links in the private evidence index. Correct missing safe links and labels using normal GitHub tools. "
             "Before deciding readiness, read each issue and its current-run brief without private artifacts: can a human understand the problem, concrete example, prevention, acceptance criteria and current verdict? Rewrite/correct only the current-run brief's sections to fix omissions, stale conclusions and append-only clutter; preserve the original description of reused issues, human content and the audit trail. Do the same for each current-run PR summary and Before / After Evidence section so they reflect the final reviewed scope and verdict. Check public patches/descriptions for private data. Put a concise independent verdict and evidence limitations on each PR and in the current-run issue brief. Inspect repository-required CI on the exact PR head and report pending, failed, absent or passing checks. Leave all backlog repair PRs draft for the controller to mark ready only after green CI and sufficient independent review. Choose revise for actionable check failures. Recheck head SHAs before recording acceptance; a changed head invalidates the review. Never approve your own GitHub PR or merge. "
             f"Do not edit/push repair source or start another coding loop yourself. Finish one review and write {output / 'review.md'} with PR/issue URLs, exact reviewed SHAs, verdicts and remaining limitations. "
             f"Also write {output / 'review-decision.json'} with exactly two fields: decision (accepted, revise or blocked) and feedback (a concise nonempty explanation, at most 12000 characters). "
@@ -757,23 +956,15 @@ def prompt(context, context_path, output, review=False):
                 if context.get("run_id")
                 else []
             ),
-            "<!-- automation-improvement-topic-key: " + topic["key"] + " -->",
-            *[
-                "<!-- automation-improvement-event: " + event + " -->"
-                for event in topic["representative_event_ids"]
-            ],
-            *[
-                "<!-- automation-improvement-automation: " + automation + " -->"
-                for automation in context["automation_ids"]
-            ],
+            event_markers(topic).rstrip(),
         ]
     )
     return shared + (
         "You own this topic end to end: diagnose, choose the repair location, implement, validate, commit, push and open/update the necessary PRs with normal GitHub tools. There is no separate publisher or patch-proposal protocol. "
         "Use existing canonical repositories and create worktrees for edits (new-pr when provided by repository instructions); do not clone another copy. If a checkout or permission is missing, report the exact prerequisite. The prepared checkouts are isolated starting worktrees, not an allowed-files list. "
         "One topic may require several PRs across one or several repositories. Prefer one coherent fix over a broad new framework; do not bundle independent problems. "
-        f"Establish ONE structured issue brief in each repository changed by the fix before coding. If it contains the selected backlog issue, use that body. Otherwise use a fresh issue's body or ONE new comment on a matching existing issue. Put {IMPROVEMENT_LABEL} and ownership markers in fresh issue creation requests so issue-triage workers recognize them. Also apply {IMPROVEMENT_LABEL} to reused issues so discovery recovers them and other triage workers avoid conflicting edits; leave their descriptions unchanged and put ownership markers only in your brief comment. Update this same brief throughout the run, not repeated summary comments. Cross-link repository issues, related PRs, dependencies and merge/release order only when visibility permits: private issues can link public counterparts, while public text must omit private repository identities/URLs. Retain the full relationship map in private evidence. One repository issue is the main entry point. No extra umbrella issue is required. "
-        "Include visibility-safe evidence references in Evidence and retain the complete weekly issue, context/snapshot/cohort paths, worker access instructions and original trace/Signal references privately. Do not expose private repository identities, customer deployment endpoints or sensitive worker paths on public upstream issues; use the opaque private evidence index instead. Never dump raw inputs, prompts or logs publicly. Include catalog anchors <!-- topic-evidence:start --> / <!-- topic-evidence:end --> and <!-- topic-attempts:start --> / <!-- topic-attempts:end --> so actual private SDK records can be indexed after you finish. "
+        f"Establish ONE structured issue brief in each repository changed by the fix before coding. If it contains the selected backlog issue, use that body. Otherwise use a fresh issue's body or ONE new comment on a matching existing issue. Put {IMPROVEMENT_LABEL} and ownership markers in fresh issue creation requests so issue-triage workers recognize them. Also apply {IMPROVEMENT_LABEL} to reused issues so discovery recovers them and other triage workers avoid conflicting edits; leave their descriptions unchanged and put ownership markers only in your brief comment. Update this same brief throughout the run, not repeated summary comments. Link to issues and PRs in the same repository or public repositories. Keep other private repository identities and links in the private evidence index. One repository issue is the main entry point. No extra umbrella issue is required. "
+        "Include visibility-safe evidence references in Evidence and retain the complete weekly issue, context/snapshot/cohort paths, worker access instructions and original trace/Signal references privately. Keep raw automation, event and trace identifiers, customer endpoints, sensitive worker paths, inputs, prompts and logs out of GitHub text. Use the opaque private evidence index. Include catalog anchors <!-- topic-evidence:start --> / <!-- topic-evidence:end --> and <!-- topic-attempts:start --> / <!-- topic-attempts:end --> so actual private SDK records can be indexed after you finish. "
         "Record the effective baseline and candidate configuration, source revisions and supported application path. For a shared configuration change, cover other affected automations as controls where available; compare task quality, cost and latency when relevant. A configuration-only repair can keep the SDK unchanged. "
         "Set observable acceptance criteria and record the affected runtime/dependency versions. Use isolated environments for baseline/candidate dependencies instead of replacing this running worker's SDK. Validate the whole fix: baseline SDK+automation versus patched SDK+automation as appropriate. Test intermediate combinations only when compatibility/dependency claims require them. "
         f"Use up to N={context['validation_sample_size']} selected negative and N random non-negative original inputs when available. You may construct an isolated replay from frozen inputs and captured external reads; no prebuilt evaluator adapter is required. Keep the inputs fixed; don't replace failed cases. Add meaningful synthetic regression/control tests where useful and identify their limits. "
@@ -916,8 +1107,10 @@ def finish(config, context, output, budget, repair):
     workspace = Path(context.get("workspace", str(output / "workspace")))
     resources = discover(context, output)
     policy = context["repair_policy"]
-    scope_errors = resource_errors(policy, resources["resources"])
-    permitted = [r for r in resources["resources"] if permits(policy, r["repository"])]
+    scope_errors = resource_errors(policy, resources["resources"], context)
+    permitted = [
+        r for r in resources["resources"] if permits_resource(policy, r, context)
+    ]
     catalog_errors = record_evidence(context, output, "repair", permitted)
     prs = [
         r
@@ -926,7 +1119,7 @@ def finish(config, context, output, budget, repair):
     ]
     review = None
     decision, decision_errors = None, []
-    reviewed_heads = {r["url"]: (r["base"], r["head"]) for r in prs}
+    reviewed_heads = {r["url"]: (r["base"], r["head"], r.get("base_ref")) for r in prs}
     if prs and not scope_errors:
         try:
             budget.check()
@@ -958,9 +1151,9 @@ def finish(config, context, output, budget, repair):
                     + redact(str(error))[:1000]
                 )
         resources = discover(context, output)
-        scope_errors = resource_errors(policy, resources["resources"])
+        scope_errors = resource_errors(policy, resources["resources"], context)
         permitted = [
-            r for r in resources["resources"] if permits(policy, r["repository"])
+            r for r in resources["resources"] if permits_resource(policy, r, context)
         ]
         if catalog_errors:
             catalog_errors = record_evidence(context, output, "repair", permitted)
@@ -970,18 +1163,22 @@ def finish(config, context, output, budget, repair):
             "review",
             permitted,
         )
-    stale = [
-        r["url"]
+    current_heads = {
+        r["url"]: (r["base"], r["head"], r.get("base_ref"))
         for r in resources["resources"]
-        if r["kind"] == "pull"
-        and r["state"] == "open"
-        and (
-            r["url"] not in reviewed_heads
-            or (r["base"], r["head"]) != reviewed_heads[r["url"]]
-        )
-    ]
+        if r["kind"] == "pull" and r["state"] == "open"
+    }
+    stale = sorted(
+        url
+        for url in reviewed_heads.keys() | current_heads.keys()
+        if reviewed_heads.get(url) != current_heads.get(url)
+    )
     problems = link_errors(resources["resources"]) + decision_errors + scope_errors
     for resource in resources["resources"]:
+        if context.get("topic_issue_url") and RAW_MARKERS.search(resource["body"]):
+            problems.append(
+                resource["url"] + ": raw automation or finding marker in GitHub text"
+            )
         if context.get("topic_issue_url") and resource["kind"] == "pull":
             if IMPROVEMENT_LABEL not in resource.get("labels", []):
                 problems.append(
@@ -999,6 +1196,12 @@ def finish(config, context, output, budget, repair):
                 resource["url"] + ": " + error
                 for error in public_issue_errors(resource["body"])
             )
+    if (
+        decision
+        and decision["decision"] == "accepted"
+        and repair["status"] != "finished"
+    ):
+        problems.append("The repair execution did not finish")
     ci_errors = []
     if (
         context.get("topic_issue_url")
@@ -1009,7 +1212,18 @@ def finish(config, context, output, budget, repair):
         open_prs = [
             r for r in permitted if r["kind"] == "pull" and r["state"] == "open"
         ]
-        ci_errors = ready_after_ci(open_prs, output, budget)
+        from backlog_dispatch import issue_for, validate_claim
+
+        def confirm_claim():
+            topic = context["topic"]
+            issue = issue_for(
+                context["topic_issue_url"], context["state_dir"], topic["id"], output
+            )
+            validate_claim(
+                config, context["state_dir"], topic, context["run_id"], issue
+            )
+
+        ci_errors = ready_after_ci(open_prs, output, budget, confirm_claim)
         problems.extend(ci_errors)
     if resources["errors"] or catalog_errors or problems or stale:
         status = "review_incomplete"
@@ -1021,6 +1235,7 @@ def finish(config, context, output, budget, repair):
         status = "failed"
     else:
         status = "unrepaired"
+    holds = []
     if status == "review_incomplete" or (
         decision and decision["decision"] != "accepted"
     ):
@@ -1039,6 +1254,7 @@ def finish(config, context, output, budget, repair):
         "link_errors": problems,
         "ci_errors": ci_errors,
         "stale_prs": stale,
+        "resource_recovery_pending": bool(resources["errors"] or holds),
     }
     replace_json(output / "topic-report.json", result)
     return result

@@ -10,7 +10,7 @@ from backlog import (
 )
 from common import redact
 from github_io import command, github_pages, repository_private, work_item
-from repair_policy import permits, resolve
+from repair_policy import issue_repository, permits, resolve
 from topic_issue import TopicIssue
 
 EPIC = "<!-- automation-improvement-epic:"
@@ -23,14 +23,21 @@ def is_index(body):
 
 
 def open_issues(config, scope, state):
-    home = config["repository"]
+    home = issue_repository(config)
     policy = resolve(config)
     known = set()
+    legacy = not (
+        config.get("isolated_validation") or config.get("finding_source") == "portable"
+    )
     for event in state.get("events", {}).values():
-        known.update(event.get("existing_work_urls", []))
-    for attempt in state.get("topic_weeks", {}).values():
-        known.add(attempt["topic"].get("issue_url") or "")
-        known.update(resource["url"] for resource in attempt.get("resources", []))
+        if event.get("discovery_scope") == scope or (
+            legacy and "discovery_scope" not in event
+        ):
+            known.update(event.get("existing_work_urls", []))
+    if legacy:
+        for attempt in state.get("topic_weeks", {}).values():
+            known.add(attempt["topic"].get("issue_url") or "")
+            known.update(resource["url"] for resource in attempt.get("resources", []))
     matches = [match for url in known if (match := ISSUE_URL.fullmatch(url))]
     urls = {match[0].casefold() for match in matches}
     repositories = {
@@ -38,6 +45,7 @@ def open_issues(config, scope, state):
         for repo in (*policy["repositories"], *(m[1] for m in matches))
         if permits(policy, repo)
     }
+    repositories[home.casefold()] = home
     issues, unverified = {}, []
     for key, repo in sorted(repositories.items()):
         if key != home.casefold():
@@ -47,7 +55,13 @@ def open_issues(config, scope, state):
             except Exception:
                 unverified.append(repo)
                 continue
-        rows = github_pages(f"repos/{repo}/issues?state=open&per_page=100", command)
+        try:
+            rows = github_pages(f"repos/{repo}/issues?state=open&per_page=100", command)
+        except Exception:
+            if key == home.casefold():
+                raise
+            unverified.append(repo)
+            continue
         for row in rows:
             item = work_item(row, repo)
             match = ISSUE_URL.fullmatch(item["url"])
@@ -82,15 +96,38 @@ def issue_line(item):
 
 
 def refresh(config, state_dir, state, output, weekly=None):
-    home = config["repository"]
+    home = issue_repository(config)
+    weekly_issue = None
+    url = None
     try:
         scope = namespace(config, state_dir)
+        evidence_dir = state_dir / "issue-evidence" / home / "epic" / scope
+        weekly = weekly or state.get("discovery_indices", {}).get(scope) or {}
+        latest = ISSUE_URL.fullmatch(weekly.get("url") or "")
+        if latest:
+            if latest[1].casefold() != home.casefold():
+                raise ValueError(
+                    "Weekly discovery issue is outside the home repository"
+                )
+            weekly_issue = TopicIssue(
+                home, output / "summary", evidence_dir, {"number": int(latest[2])}, []
+            )
+            weekly_issue.refresh()
+            if weekly_issue.value["html_url"].casefold() != latest[
+                0
+            ].casefold() or not weekly_issue.value["body"].lstrip().startswith(WEEKLY):
+                weekly_issue = None
+                raise ValueError(
+                    "Weekly discovery issue identity could not be verified"
+                )
         issues, unverified = open_issues(config, scope, state)
         items = "\n".join(line for _, line in sorted(map(issue_line, issues)))
         items = items or "There are no open improvement issues."
-        latest = ISSUE_URL.fullmatch((weekly or {}).get("url") or "")
-        if latest and latest[1].casefold() != home.casefold():
-            latest = None
+        if unverified:
+            items = (
+                "Some related repositories could not be checked. This list may be incomplete.\n\n"
+                + items
+            )
         summary = f"[Latest triage summary]({latest[0]})" if latest else ""
         body = (
             f"{EPIC} {scope} -->\n\n"
@@ -100,28 +137,28 @@ def refresh(config, state_dir, state, output, weekly=None):
             + "\n\n## Open issues\n\n"
             + block("epic-issues", items)
         )
-        evidence_dir = state_dir / "issue-evidence" / home / "epic" / scope
         title = "Automation improvement epic"
         if config.get("isolated_validation"):
             title += " (validation)"
-        epic = TopicIssue.ensure_brief(home, output, evidence_dir, body, title)
+        epic = TopicIssue.ensure_brief(
+            home, evidence_dir / "publication", evidence_dir, body, title
+        )
         url = epic.value["html_url"]
         if epic.value["state"] != "open":
-            return {"status": "closed", "url": url}
-        epic.update_block("epic-issues", items)
-        if latest:
-            epic.update_block("epic-latest", summary)
-            if "<!-- triage-epic:start -->" in (weekly.get("body") or ""):
-                weekly_issue = TopicIssue(
-                    home,
-                    output / "summary",
-                    evidence_dir,
-                    {"number": int(latest[2])},
-                    [],
-                )
+            if weekly_issue:
                 weekly_issue.update_block(
-                    "triage-epic", f"[Open improvement issues]({url})"
+                    "triage-epic",
+                    f"[The improvement index is closed]({url}).",
+                    verify=True,
                 )
+            return {"status": "closed", "url": url}
+        epic.update_block("epic-issues", items, verify=True)
+        if weekly_issue:
+            epic.update_block("epic-latest", summary, verify=True)
+            message = f"[Open improvement issues]({url})"
+            if unverified:
+                message += "\n\nThe improvement index may be incomplete."
+            weekly_issue.update_block("triage-epic", message, verify=True)
         result = {"status": "refreshed", "url": url, "open_issues": len(issues)}
         if unverified:
             result.update(
@@ -129,4 +166,15 @@ def refresh(config, state_dir, state, output, weekly=None):
             )
         return result
     except Exception as error:
-        return {"status": "refresh_failed", "error": redact(str(error))[:1000]}
+        result = {"status": "refresh_failed", "error": redact(str(error))[:1000]}
+        if url:
+            result["url"] = url
+        if weekly_issue:
+            try:
+                message = "The improvement index refresh could not be verified."
+                if url:
+                    message += f" [Open the last available index]({url})."
+                weekly_issue.update_block("triage-epic", message, verify=True)
+            except Exception as backlink_error:
+                result["backlink_error"] = redact(str(backlink_error))[:1000]
+        return result

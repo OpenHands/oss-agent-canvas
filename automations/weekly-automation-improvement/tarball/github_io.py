@@ -45,5 +45,6 @@ def work_item(row, repository):
         "state": row["state"].upper(),
         "createdAt": row.get("created_at"),
         "labels": [label["name"] for label in row.get("labels", [])],
+        "assignees": [user["login"] for user in row.get("assignees", [])],
         "kind": "pull" if "pull_request" in row else "issue",
     }

@@ -2,29 +2,48 @@ import argparse
 import fcntl
 import os
 import re
-import sys
 from pathlib import Path
 
 from budget import RunBudget
-from common import encode, read_json, redact
+from common import callback, encode, read_json, redact
 from repair_policy import resolve as repair_policy
+from topic_finder import validate_command
+from trace_filter import normalize_trace_filter
 
 
-def load_environment(config):
-    if config.get("credentials_file"):
+def load_environment(config, *, use_model=True):
+    uses_laminar = config.get("finding_source", "laminar") == "laminar"
+    if config.get("credentials_file") and (use_model or uses_laminar):
         path = Path(config["credentials_file"]).expanduser()
         if path.stat().st_mode & 0o077:
             raise ValueError("Credentials file must be owner-only")
         values = read_json(path)
-        for name in ("LMNR_PROJECT_API_KEY", "LITELLM_API_KEY"):
+        keys = []
+        if use_model:
+            keys.append("LITELLM_API_KEY")
+        if uses_laminar:
+            keys.append("LMNR_PROJECT_API_KEY")
+        for name in keys:
             if name in values:
                 os.environ[name] = values[name]
-    os.environ["LMNR_BASE_URL"] = config["laminar_base_url"]
-    os.environ.setdefault("LMNR_FORCE_HTTP", "true")
-    os.environ["LLM_BASE_URL"] = config["llm_base_url"]
+    if uses_laminar:
+        os.environ["LMNR_BASE_URL"] = config["laminar_base_url"]
+        os.environ.setdefault("LMNR_FORCE_HTTP", "true")
+    if use_model:
+        os.environ["LLM_BASE_URL"] = config["llm_base_url"]
 
 
-def run(config, run_locked, *, dry_run=False, limit=3, seed=None):
+def run(config, run_locked, *, dry_run=False, limit=3, seed=None, use_model=True):
+    if "trace_filter" in config:
+        if config.get("finding_source", "laminar") != "laminar":
+            raise ValueError("trace_filter applies to Laminar Signal collection")
+        normalize_trace_filter(config["trace_filter"])
+    if "topic_finder_command" in config:
+        validate_command(config["topic_finder_command"])
+    if config.get("finding_source", "laminar") not in ("laminar", "portable"):
+        raise ValueError("Unsupported finding_source")
+    if config.get("execution_owner", "native") not in ("native", "external"):
+        raise ValueError("Unsupported execution_owner")
     if type(config.get("isolated_validation", False)) is not bool:
         raise ValueError("isolated_validation must be a boolean")
     hold_labels = config.get("issue_hold_labels", [])
@@ -56,7 +75,7 @@ def run(config, run_locked, *, dry_run=False, limit=3, seed=None):
         raise ValueError("Select one to three representatives per topic")
     repair_policy(config)
     budget = RunBudget(config)
-    load_environment(config)
+    load_environment(config, use_model=use_model)
     state_dir = Path(config["state_dir"]).expanduser().resolve()
     state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     lock = os.open(state_dir / "weekly.lock", os.O_CREAT | os.O_RDWR, 0o600)
@@ -77,28 +96,6 @@ def run(config, run_locked, *, dry_run=False, limit=3, seed=None):
         os.close(lock)
 
 
-def callback(status):
-    import urllib.request
-
-    url = os.environ.get("AUTOMATION_CALLBACK_URL")
-    if url:
-        request = urllib.request.Request(
-            url,
-            data=encode(
-                {"status": status, "run_id": os.environ.get("AUTOMATION_RUN_ID")}
-            ).encode(),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": "Bearer "
-                + os.environ.get("AUTOMATION_CALLBACK_API_KEY", ""),
-            },
-        )
-        try:
-            urllib.request.urlopen(request, timeout=10).close()
-        except OSError:
-            print("Completion callback failed", file=sys.stderr)
-
-
 def main(run):
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -112,7 +109,14 @@ def main(run):
         ),
     )
     parser.add_argument(
-        "--input", type=Path, help="Load a frozen Laminar inventory before analysis"
+        "--issue-repository",
+        metavar="OWNER/REPO",
+        help="Override the GitHub repository for discovery issues and the repair backlog",
+    )
+    parser.add_argument(
+        "--input",
+        type=Path,
+        help="Read a frozen Laminar inventory or portable finding batch",
     )
     parser.add_argument(
         "--dry-run",
@@ -121,21 +125,37 @@ def main(run):
     )
     parser.add_argument("--limit", type=int, choices=(1, 2, 3), default=3)
     parser.add_argument("--seed", type=int)
+    parser.add_argument(
+        "--max-run-seconds",
+        type=int,
+        help="Cap the configured run budget for this invocation",
+    )
     args = parser.parse_args()
 
     try:
         config = read_json(args.config)
+        if args.issue_repository is not None:
+            config["issue_repository"] = args.issue_repository
+        if args.max_run_seconds is not None:
+            if args.max_run_seconds <= 0:
+                raise ValueError("--max-run-seconds must be positive")
+            config["max_run_seconds"] = min(
+                RunBudget(config).maximum_seconds, args.max_run_seconds
+            )
         if args.input:
             config["input"] = str(args.input.resolve())
         result = run(config, dry_run=args.dry_run, limit=args.limit, seed=args.seed)
         print(encode(redact(result)))
         if result["status"] in (
             "partial_failure",
+            "review_incomplete",
             "collection_incomplete",
             "discovery_incomplete",
             "triage_incomplete",
         ):
-            raise ValueError("Weekly run incomplete; inspect weekly-report.json")
+            raise ValueError(
+                f"Workflow incomplete; inspect the receipts under {result.get('output', 'the configured state directory')}"
+            )
     except Exception:
         callback("FAILED")
         raise

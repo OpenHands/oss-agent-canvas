@@ -3,7 +3,7 @@ import json
 import re
 from pathlib import Path
 
-from common import read_json, redact, write_json
+from common import read_json, redact, replace_json, write_json
 from github_io import command, github_pages, IMPROVEMENT_LABEL
 from raw_evidence import schema, PAGE
 
@@ -65,22 +65,19 @@ def public_issue_errors(body):
 RECORD = "<!-- automation-improvement-record:"
 
 
-def brief(snapshot, evidence_root, location):
+def brief(snapshot):
     source, topic = snapshot["source"], snapshot["topic"]
-    links = []
-    for sample in snapshot["samples"]:
-        for trace in sample.get("trace_ids", [sample.get("trace_id")]):
-            if trace:
-                links.append(
-                    f"- [Conversation {sample['conversation_id']}; trace {trace}]({(snapshot.get('app_url') or 'https://laminar.app.all-hands.dev').rstrip('/')}/project/{snapshot['project_id']}/traces/{trace})"
-                )
-        links.extend(
-            f"- Signal event `{identifier}` (read with `read_signal`)."
-            for identifier in sample.get("selected_event_ids", [])
-        )
     triage_issue = (snapshot.get("aggregation") or {}).get("triage_issue") or {}
-    if triage_issue.get("url"):
-        links.append(f"- [Weekly triage and priority context]({triage_issue['url']}).")
+    url = triage_issue.get("url") or ""
+    link = (
+        f"\n\n[Weekly discovery and priority context]({url})."
+        if re.fullmatch(
+            f"https://github\\.com/{re.escape(source['repository'])}/issues/[1-9][0-9]*",
+            url,
+            re.IGNORECASE,
+        )
+        else ""
+    )
     texts = (
         f"Unconfirmed investigation lead: **{topic.get('title') or topic['key'].replace('-', ' ')}**. The public diagnosis must distinguish observed behavior from an inferred cause.",
         "No public example has been written yet. The investigating agent must summarize a concrete observation without exposing private content.",
@@ -88,10 +85,9 @@ def brief(snapshot, evidence_root, location):
         f"Use up to N={snapshot.get('validation_cohort', {}).get('sample_size', 5)} negative and random non-negative original inputs when available, without replacements. State public acceptance criteria, results and limitations; distinguish mechanism checks from historical task replay.",
         "Investigation pending; no fix or improvement has been established.",
         f"Repository: {source['repository']}. Initial baseline: `{source['revision']}`; this does not prove historical execution provenance.\n\n"
-        + "\n".join(links)
-        + f"\n\nPrivate evidence: `{evidence_root}`. "
-        + (f"Worker access: {location}. " if location else "")
-        + "Use read_issue_artifact for catalog references and scoped Laminar tools for original data. Raw tasks, prompts and logs remain private.\n\n<!-- topic-evidence:start -->\n<!-- topic-evidence:end -->",
+        + "Use the issue catalog and scoped evidence tools for original data. Raw prompts and logs remain private."
+        + link
+        + "\n\n<!-- topic-evidence:start -->\n<!-- topic-evidence:end -->",
         "Earlier attempts and immutable evidence remain in the issue comments. Keep the current diagnosis and verdict in the sections above.\n\n<!-- topic-attempts:start -->\n<!-- topic-attempts:end -->",
     )
     return f"<!-- automation-improvement-topic: {topic['id']} -->\n\n" + "\n\n".join(
@@ -131,7 +127,7 @@ class TopicIssue:
         ):
             raise ValueError("Invalid repair issue scope")
         evidence_root = Path(snapshot["issue_evidence_dir"]).expanduser().resolve()
-        body = redact(brief(snapshot, evidence_root, snapshot.get("evidence_location")))
+        body = redact(brief(snapshot))
         return cls.ensure_brief(
             repository,
             output,
@@ -152,6 +148,7 @@ class TopicIssue:
         preview=False,
         *,
         labels=None,
+        search_unlabeled=False,
     ):
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", repository):
             raise ValueError("Invalid issue repository")
@@ -169,18 +166,29 @@ class TopicIssue:
             command,
         )
         marker = body.splitlines()[0]
-        found = [
-            item
-            for item in rows
-            if not item.get("pull_request") and marker in (item.get("body") or "")
-        ]
+
+        def matching(rows):
+            return [
+                item
+                for item in rows
+                if "pull_request" not in item
+                and marker in (item.get("body") or "").splitlines()
+            ]
+
+        found = matching(rows)
+        payload = output / "create-issue.json"
+        if not found and (search_unlabeled or payload.exists()):
+            found = matching(
+                github_pages(
+                    f"repos/{repository}/issues?state=all&per_page=100", command
+                )
+            )
         if len(found) > 1:
             raise ValueError("Multiple issues own this repair topic")
         if found:
             value = found[0]
         else:
-            payload = output / "create-issue.json"
-            write_json(
+            replace_json(
                 payload,
                 {
                     "title": title,
@@ -201,11 +209,12 @@ class TopicIssue:
                     ]
                 )
             )
-        if (
-            value["html_url"]
-            != f"https://github.com/{repository}/issues/{value['number']}"
+        if value["html_url"].casefold() != (
+            f"https://github.com/{repository}/issues/{value['number']}".casefold()
         ):
             raise ValueError("Repair issue belongs to a different repository")
+        if (value.get("body") or "").splitlines().count(marker) != 1:
+            raise ValueError("GitHub issue does not contain its ownership marker")
         comments = github_pages(
             f"repos/{repository}/issues/{value['number']}/comments?per_page=100",
             command,
@@ -220,7 +229,13 @@ class TopicIssue:
 
     def refresh(self):
         if not self.preview:
-            self.value = json.loads(command(["gh", "api", self.endpoint]))
+            current = json.loads(command(["gh", "api", self.endpoint]))
+            expected = (
+                f"https://github.com/{self.repository}/issues/{self.value['number']}"
+            )
+            if current["html_url"].casefold() != expected.casefold():
+                raise ValueError("Issue destination changed since discovery")
+            self.value = current
             self.comments = github_pages(
                 self.endpoint + "/comments?per_page=100", command
             )
@@ -283,7 +298,7 @@ class TopicIssue:
             return
         self.sequence += 1
         payload = self.output / f"issue-body-{self.sequence:04d}.json"
-        write_json(payload, {"body": body})
+        replace_json(payload, {"body": body})
         endpoint = (
             f"repos/{self.repository}/issues/comments/{self.brief_comment_id}"
             if self.brief_comment_id is not None
@@ -307,25 +322,31 @@ class TopicIssue:
         else:
             self.value["body"] = value["body"]
 
-    def update_block(self, name, content):
+    def update_block(self, name, content, *, verify=False, expected=None):
         self.refresh()
+        body = self.value["body"]
+        start, end = self.block_bounds(name)
+        if expected is not None and expected not in body[start:end].splitlines():
+            raise ValueError("Central issue record changed during publication")
+        content = "\n" + content.strip() + "\n"
+        if body[start:end] != content:
+            self.update_body(body[:start] + content + body[end:])
+        if verify:
+            self.refresh()
+            start, end = self.block_bounds(name)
+            if self.value["body"][start:end] != content:
+                raise ValueError("GitHub issue record could not be verified")
+
+    def block_bounds(self, name):
         start, end = f"<!-- {name}:start -->", f"<!-- {name}:end -->"
         body = self.value["body"]
         if (
             body.count(start) != 1
             or body.count(end) != 1
-            or body.index(start) >= body.index(end)
+            or body.index(start) + len(start) > body.index(end)
         ):
             raise ValueError("Central issue record section is missing or ambiguous")
-        updated = (
-            body[: body.index(start) + len(start)]
-            + "\n"
-            + content.strip()
-            + "\n"
-            + body[body.index(end) :]
-        )
-        if updated != body:
-            self.update_body(updated)
+        return body.index(start) + len(start), body.index(end)
 
     def related(self, urls):
         self.refresh()
@@ -382,7 +403,7 @@ class TopicIssue:
         else:
             self.sequence += 1
             payload = self.output / f"comment-{self.sequence:04d}.json"
-            write_json(payload, {"body": marker + "\n" + content})
+            replace_json(payload, {"body": marker + "\n" + content})
             item = (
                 {"id": self.sequence, "html_url": None, "body": marker + "\n" + content}
                 if self.preview

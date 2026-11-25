@@ -1,6 +1,6 @@
 {
   "name": "github-issue-resolver",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Executable automation plugin for GitHub Issue Resolver (multi-repo): extensions, OpenHands, software-agent-sdk, automation, enterprise.",
   "author": {
     "name": "OpenHands",
@@ -26,7 +26,21 @@
     "config_schema": {
       "type": "object",
       "additionalProperties": false,
-      "properties": {}
+      "properties": {
+        "factory_assignee": {
+          "type": "string",
+          "default": "all-hands-bot",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$",
+          "description": "GitHub assignee used on Factory-only repositories."
+        },
+        "factory_repositories": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*/(?![.]{1,2}$)[A-Za-z0-9_.-]+$" },
+          "uniqueItems": true,
+          "default": [],
+          "description": "Public repositories for a dedicated Factory-only installation. An empty list uses the standard resolver repositories. Include the configured destinations and assignee in the event filter."
+        }
+      }
     },
     "suggested_trigger": {
       "type": "event",

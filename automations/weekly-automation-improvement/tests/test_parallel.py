@@ -172,6 +172,16 @@ def test_worker_exception_keeps_partial_remote_work_visible_and_draft(
     )
     calls = []
     monkeypatch.setattr(topic_agent, "command", lambda argv: calls.append(argv) or "")
+    monkeypatch.setattr(
+        topic_agent,
+        "live_pr",
+        lambda url: {
+            "draft": True,
+            "state": "open",
+            "base": {"sha": "base"},
+            "head": {"sha": "head"},
+        },
+    )
     parallel.worker(request)
     result = json.loads((tmp_path / "result.json").read_text())["outcome"]
     assert result["status"] == "review_incomplete"

@@ -1,15 +1,192 @@
 # Weekly Automation Improvement
 
-Persisted Flow-1 findings become prioritized GitHub topic issues. Native OpenHands agents investigate and repair the underlying
-problem, including SDK bugs, and open PRs with before/after evidence. An independent
-agent reviews the actual changes and execution records. Humans merge and deploy.
+Discovery turns Laminar findings or customer observations into prioritized GitHub issues. Native repair uses private evidence to test changes and open PRs. Customers can also enroll issues in their own implementation and review process or connect the GitHub assignment or Linear implementation automations already in their Software Factory. Humans decide what to merge and deploy.
 
 Start with [How the self-improving automation works](HOW_IT_WORKS.md) for the
 high-level workflow, agent responsibilities, evidence and main controls. This
 README covers setup and operation. The [GitHub backlog validation report](BACKLOG_VALIDATION.md)
 records the live results, costs and review of the generated issues.
 
+## Choose a workflow
+
+For a standalone installation, run `python3 package_workflow.py STAGE OUTPUT_DIRECTORY` from this directory. Choose `discovery`, `native-repair`, or `factory-handoff`. Each generates a disabled Git-sync folder containing its entrypoint, manifest and self-contained tarball. The existing manifest still runs both native stages weekly. In Enterprise, import only the selected folders, set run-as identity, profile, secrets and durable worker storage, then enable the intended schedule. Generated native stages cap the internal run budget at 1500 seconds inside the 1800-second deployment timeout. Shorter configured budgets take precedence. The packaged handoff uses system Python.
+
+### Choose where discovery files issues
+
+By default, discovery files new topic issues, the weekly summary and the epic in `repository`, the automation's configured source repository. A PR label or trace in another repository does not change the destination. Set `issue_repository` in the workflow config to use a shared backlog.
+
+```json
+{
+  "repository": "acme/automations",
+  "checkout": "/existing/acme-automations",
+  "issue_repository": "acme/engineering-backlog"
+}
+```
+
+For a single run, pass `--issue-repository acme/engineering-backlog` to `triage_workflow.py`, `repair_workflow.py` or `weekly.py`. The flag overrides the config file. Check `issue_repository` in the JSON receipt to confirm where that run looked for work.
+
+The discovery identity needs read access to the backlog's issue guidance and write access to its issues and labels. A backlog-only repository needs no local checkout. The source checkout and repair permissions still come from `repository`, `repositories` and `repair_scope`. Configure the same destination for standalone native repair. For a customer or Factory handoff, enroll the issue in the receiving workflow and include the backlog in that workflow's own allowed repositories.
+
+Changing the destination starts a separate discovery history in the same worker state directory. Existing issues stay where they were filed. Replaying old findings into a new backlog can create new topics there. Switching back resumes the previous history. Omit the option or set it to the home repository to keep an existing installation's history.
+
+### Inspect Laminar findings for one automation
+
+Which unresolved findings did the Signal record for traces that started on November 24 in the report automation? Save the example below as `debug.json`, replacing the API URL and three UUIDs with your own. The automation UUID is recorded as `lmnr.association.properties.metadata.automation.id` on an `automation.conversation` span. Supply a SQL-capable `LMNR_PROJECT_API_KEY` in the environment or use `credentials_file` to point to an owner-only JSON file containing that key. Python 3.11 or later and access to Laminar are sufficient.
+
+```json
+{
+  "laminar_base_url": "https://laminar-api.example.com",
+  "project_id": "00000000-0000-4000-8000-000000000001",
+  "signal_id": "00000000-0000-4000-8000-000000000002",
+  "since": "2026-11-24T00:00:00Z",
+  "until": "2026-11-25T00:00:00Z",
+  "trace_filter": {
+    "automation_ids": ["00000000-0000-4000-8000-000000000003"],
+    "time_basis": "trace_started",
+    "outcomes": ["unresolved"]
+  }
+}
+```
+
+From the directory containing `tarball/`, choose a new or empty private output directory.
+
+```sh
+python3 tarball/collect_signals.py --config debug.json --output ./report-nov24
+```
+
+The collector queries only Laminar. It prints counts and saves the findings in `report-nov24/input.json`. Start with `latest_by_trace.statuses`, which counts traces by the status of their latest Signal attempt. The `latest_by_trace` totals also show how many completed without an event and how many of those had no recorded token usage. Compare `candidate_events`, `excluded_by_payload` and `matched_findings` to see what the outcome filter removed. Zero Signal attempts means no matching evaluation was recorded for that scope. A completed attempt with no event means the detector emitted no finding for that attempt. If a finding was unreadable, the receipt reports a collection error and the command returns a nonzero exit status with the partial inventory.
+
+| Collection setting | What it selects |
+| --- | --- |
+| `signal_id` | The project's existing Flow-1 Signal, including prior versions with a compatible analysis definition. |
+| `since`, `until` | Inclusive start and exclusive end, up to seven days apart. `--since` and `--until` override these values for one collection. The default is the seven days ending ten minutes ago. |
+| `trace_filter.time_basis` | `signal_updated` (default) selects Signal attempts updated in the window. `trace_started` selects traces by their start time and includes their recorded Signal attempts, even if evaluation finished later. |
+| `trace_filter.trace_ids` | Exact Laminar trace UUIDs. |
+| `trace_filter.automation_ids`, `trace_filter.automation_run_ids`, `trace_filter.conversation_ids` | Exact automation, automation execution or conversation UUIDs from an `automation.conversation` span. An automation execution ID comes from the automation that ran the task. |
+| `trace_filter.causes` | `workflow`, `configuration`, `infrastructure`, `provider`, `unknown`. |
+| `trace_filter.outcomes` | `recovered`, `unresolved`, `unknown`. |
+
+Each list accepts 1–100 values. Any value can match within a list, and all supplied fields must match. If you specify multiple origin fields, they must match the same span. Trace, origin and time constraints apply before the Signal-attempt limit (`population_limit`, default 10,000). The collector then selects the latest matching attempt per trace and applies cause and outcome to findings from completed attempts.
+
+A matching span places the whole trace in scope. A shared trace can contain several conversations. The inventory keeps possible owners and reports uncertain attribution. Findings can contain customer text, so keep the inventory with the people authorized to inspect those traces. To choose **which traces Flow-1 analyzes**, configure the upstream Signal's trigger, filters and sampling. For example, tag the automation's spans and select that tag on a dedicated Signal. For historical traces without a Signal run, use the Signal’s **Overview → Backfill** page and select a time range or individual traces. [Laminar Signal configuration](https://laminar.sh/docs/signals/quickstart)
+
+**To rank these findings**, pass the inventory and your full discovery worker config to the discovery entrypoint. A preview reads GitHub and shares private findings with the configured topic finder. The native agent can inspect additional evidence in the linked traces. Use a finder and model provider authorized to process that evidence.
+
+```sh
+python3 tarball/triage_workflow.py --config /private/discovery.json --input ./report-nov24/input.json --dry-run
+```
+
+Run this command in the discovery worker's Python environment. Omitting `--dry-run` publishes the plan to GitHub. Discovery ranks matching unhandled findings when the live or frozen collection is scoped by a trace filter or explicit time bounds. The default rolling run also considers compatible findings already pending. The combined `weekly.py` entrypoint selects native repairs independently from the ready GitHub backlog. [Run the two workflows](#run-the-two-workflows)
+
+### Supply findings from your own detector
+
+Set `finding_source` to `portable` and choose a stable `source_namespace`. Your detector writes an `openhands.findings.v1` batch. For example, a CI check that waits for a report can record each expired deadline in `batch.json`.
+
+```json
+{
+  "schema": "openhands.findings.v1",
+  "source": "ci-tests",
+  "findings": [
+    {
+      "id": "launch-42/test-7",
+      "observed_at": "2026-11-24T10:00:00Z",
+      "summary": "A report request reached its deadline before the report was available.",
+      "group": "report-timeout",
+      "unit": "launch-42",
+      "evidence_ref": "private-run-42"
+    },
+    {
+      "id": "launch-43/test-7",
+      "observed_at": "2026-11-24T11:00:00Z",
+      "summary": "The next run also timed out while waiting for a report.",
+      "group": "report-timeout",
+      "unit": "launch-43"
+    }
+  ]
+}
+```
+
+The batch `source` must equal `source_namespace`. Each observation requires an immutable `id`, an `observed_at` timestamp and a `summary`. For corrections, supply a new ID and list replaced IDs in `supersedes`. Set `unit` to the execution that produced the observation so retries or duplicate checks from one run count together. `group` hints at a common mechanism. Optional `impact`, `origins`, and `evidence` fields give the native ranker more context. It can page through the private batch with `read_finding(event_ref, offset)`. External `evidence_ref` values are opaque. A canonical `issue_url` lets discovery attach recurrence to matching work in scope.
+
+### Use your own topic-finding algorithm
+
+Discovery uses the native OpenHands triage agent by default. Set `topic_finder_command` to a JSON array of executable and arguments to select your algorithm with either portable findings or Laminar Signals. The example below uses only the Python standard library and works with the batch above. Copy the finder to a trusted location on the discovery worker. [Example finder](examples/repeated_failure_finder.py)
+
+The standalone worker needs Python 3.11 or later, Git, the GitHub CLI and the installed finder. Save a private `config.json` with your actual worker paths and GitHub repository. Provide `GH_TOKEN` for the worker's GitHub CLI and an existing checkout with that repository as its `origin`. This portable configuration runs discovery without Laminar or model credentials.
+
+```json
+{
+  "repository": "example/automations",
+  "checkout": "/srv/repos/automations",
+  "state_dir": "/srv/improvement/state",
+  "finding_source": "portable",
+  "source_namespace": "ci-tests",
+  "topic_finder_command": ["/usr/bin/python3", "/opt/improvement/repeated_failure_finder.py"]
+}
+```
+
+From the directory containing `tarball/`, run a preview. Omit `--dry-run` to publish.
+
+```sh
+python3 tarball/triage_workflow.py --config config.json --input batch.json --dry-run
+```
+
+To package this workflow for Git sync, run `python3 package_workflow.py discovery DEST --without-sdk`. The generated manifest uses system Python. Install the finder at the configured absolute path on each worker. For scheduled portable discovery, set `input` in the worker config to the path where your detector delivers its batch.
+
+The example proposes one P2 topic when at least two independent runs report `report-timeout`. Its stable `report-timeout` key lets discovery attach a later pair of observations to the same issue. Use fresh observation IDs and distinct run units for the later pair. A single run with multiple timeout observations yields an empty plan. The private run artifact `triage/triage-result.json` records the explanation in `topic_plan.no_action_reason`.
+
+For a different algorithm, read one JSON object from stdin and write one JSON object to stdout. The request's `schema` is `openhands.topic-finder-input.v1`. It includes `request_id`, `representative_limit`, `findings` and `existing_work`. Each finding has a request-local `ref`, a `summary`, a nullable `group` hint and `unit_refs`. Overlapping unit aliases identify observations of the same execution. Each existing work item has a `title` and a `url`. `issue_guides` carries issue-submission guidance from the pinned repository revision. `plan_schema` gives the JSON Schema for the `topics` and `no_action_reason` payload.
+
+Return an `openhands.topic-plan.v1` object with the same `request_id`, a `topics` array and `no_action_reason`. Each topic needs a stable lowercase kebab-case `key` of up to 40 characters, a `title`, a `reason`, integer `priority` from 0 through 3, and a `brief` with `problem`, `example`, `prevention` and `validation` suitable for a public issue. In `representative_event_refs`, select one to `representative_limit` distinct examples from independent executions. Put URLs for matching items from `existing_work` in `existing_work_urls`, or return an empty array. Explain an empty topic list in `no_action_reason`.
+
+The finder receives private data and runs as the worker account, outside a sandbox. The operator configures an absolute executable path and literal arguments. Only `PATH` and `LC_ALL` enter the child environment, and its working directory is temporary. Treat findings and GitHub text as data and author public-safe issue prose. The workflow discards stderr, caps stdout at 8,000,000 bytes, and allows up to 600 seconds within the remaining run budget. It validates the returned plan and reconciles it against the backlog before publishing topics.
+
+Portable topics start with external ownership. For a Laminar installation handing repairs elsewhere, set `execution_owner` to `external` before publishing. Enrollment on an existing issue is an explicit maintainer action. See the [customer executor](#customer-managed-execution-and-review) and [Factory handoff](FACTORY_HANDOFF.md).
+
+**Coordination.** Use one dispatcher and persistent state directory per scope. All stages that mutate the same backlog must share its filesystem lock or be routed to a single writer. Separate ephemeral sandbox directories do not coordinate claims. Drain or reconcile active attempts and open PRs before transferring ownership. Keep preexisting private state and paths available for historical native work. The Factory bridge can run on a host with GitHub access only when the issue brief is sufficient. Its operator configures trusted enrollers and verifies the assignment, reviewer, repository scope and check permissions.
+
+## Query the backlog on GitHub
+
+Start each search with `repo:OWNER/REPO is:issue is:open`. Use additional `repo:` qualifiers for the repositories the reader can access. The live dispatcher paginates the issues and timelines directly, then verifies current ownership and PR state before acting.
+
+| Question | Additional search terms |
+| --- | --- |
+| Which P1 topics are ready for investigation? | `label:improvement-topic label:priority:P1 label:improvement-ready` |
+| Which issues are candidates for native repair? | `label:improvement-topic label:improvement-ready -label:improvement-external -label:improvement-customer -label:improvement-factory -label:improvement-in-progress -label:improvement-blocked no:assignee` |
+| Which issues await an external routing decision? | `label:improvement-external label:improvement-ready -label:improvement-factory -label:improvement-customer` |
+| Which implementation owner is active? | `label:improvement-factory label:improvement-in-progress` or `label:improvement-customer label:improvement-in-progress`. Add `assignee:LOGIN` for a GitHub assignment. |
+| What recurred or needs attention? | `label:improvement-recurrent` for issues with recorded recurrence. Use `label:improvement-outcome-blocked`, `label:improvement-outcome-incomplete` or another outcome label for the last execution result. |
+| Which issues have an accepted result? | `label:improvement-outcome-accepted`. Open the issue's status for the reviewed revision, draft or merge state, and next actor. |
+
+A native candidate also requires a valid namespace, exactly one priority, accessible evidence and no open competing repair. A visible enrollment label nominates an external owner. Eligibility additionally depends on the trusted timeline actor, holds, and prior dispatch receipts. Recurrence comments can be attached to ordinary issues and PRs without enrolling them. The weekly summary links these comments; an ordinary item can have recurrence evidence without the managed topic label. Search indexes may lag writes. Use the issue and PR APIs for dispatch and readback.
+
+### Read the current handoff
+
+On generated topics, **Current status** gives the owner, next actor, and action. Once an external executor reports, that section links directly to its current comment. The comment contains validation details, limitations, and links to visible PRs and checks. On an imported human-authored issue, use the executor’s status comment or its returned `status_url`. The workflow preserves the original brief.
+
+A read-only consumer can use the packaged `read_status.py` with GitHub CLI read access. Supply the GitHub login of the trusted dispatcher, customer executor, or managed topic author. If a different account updates the handoff, supply both the original author and the trusted editor with repeated `--publisher` options. Use the full `name[bot]` login for a GitHub App. The reader needs no worker state or Laminar credential.
+
+```sh
+python3 tarball/read_status.py OWNER/REPO --issue 42 --publisher my-dispatcher
+python3 tarball/read_status.py OWNER/REPO --label improvement-customer --next-actor maintainer --publisher my-executor
+```
+
+The output is a JSON array. Label queries include open issues matching every supplied label. An empty array with a successful exit means no matching published record was available. The reader checks the selected issue body or comment against GitHub’s current text, original author and last editor. If a selected record is ambiguous, changes during verification, or has an unknown or untrusted editor, the reader omits its issue, reports the error on stderr and exits nonzero. Other verified results remain available on stdout. Older issues acquire records on their next eligible publication or reconciliation. An issue-number query can also read a closed issue.
+
+| Field | Meaning |
+| --- | --- |
+| `schema`, `status` | The record version is `openhands.improvement-status.v1`. The status names the last published stage or outcome. |
+| `owner`, `publisher` | The implementation owner and the last GitHub account to edit the selected issue body or comment. For original content, the publisher is its author. |
+| `next_actor`, `next_actor_login`, `next_action` | A role from `maintainer`, `executor`, `reviewer`, `ci`, or `dispatcher`, an optional account, and a human-readable action. |
+| `issue_url`, `status_url` | The canonical issue and the location of the current handoff. |
+| `pull_requests` | Visible PRs with observed head, state and head-specific checks URL, plus available base, reported or reviewed revisions. Up to 32 entries are included. For larger native outcomes, `additional_pull_requests` counts further visible entries. |
+| `validation_url` | Optional customer-supplied evidence, linked to a GitHub Actions run or a commit-pinned file in the issue repository. A customer report attributes that evidence to its executor. |
+
+The public record is embedded as single-line JSON in an HTML comment beginning `<!-- automation-improvement-status: `. Clients can use the reader to verify the publishing account, select the active route and handle pagination. The issue and PR APIs remain authoritative for current labels, checks, approvals and ownership before dispatch or merge.
+
 ## Weekly path
+
+The default deployment uses Laminar and native OpenHands agents.
 
 1. Laminar runs Flow-1 on matching finished automation traces according to its sampling
    configuration. Python reads the persisted Signals, retains unprocessed findings privately and
@@ -29,7 +206,7 @@ records the live results, costs and review of the generated issues.
    execution records. It checks the complete fix across repositories, records a
    verdict on the issues/PRs, and checks the destination repository's submission
    requirements and CI. The controller marks accepted PRs ready after all reported
-   CI checks on the exact reviewed head pass. It waits up to three minutes within
+   CI checks on the exact reviewed head pass, including named checks required by classic protection and branch rules. Workflow-file identity requirements need maintainer verification. It waits up to three minutes within
    the run budget. Failed, pending or unavailable checks and stale reviews keep
    the PR draft.
 
@@ -60,8 +237,8 @@ unresolved PRs draft. No replacement topics are dispatched to fill a quota.
 Discovery inspects open issues and PRs and prior self-improvement work. It posts
 idempotent recurrence comments on matching work and refreshes private evidence
 for matching backlog issues. A matching ready topic stays eligible. Existing
-human work receives evidence without being added to the backlog. New topics
-start in the configured home repository. A topic can span several automations
+human work receives evidence on the existing issue or PR. New topics
+start in the [configured issue repository](#choose-where-discovery-files-issues). A topic can span several automations
 and repair repositories.
 
 Repair starts from the selected issue. Agents maintain its current brief, check
@@ -197,7 +374,7 @@ can run independently:
 .venv/bin/python repair_workflow.py --config /private/config.json
 ```
 
-Start at the **Automation improvement epic** in the configured home repository.
+Start at the **Automation improvement epic** in the configured issue repository.
 It links to open topic issues, tracked follow-ups and the latest triage summary.
 Each new weekly summary links back to the epic. Discovery updates the list even
 when there are no new findings, and repair refreshes it after recording outcomes,
@@ -223,13 +400,13 @@ without claiming issues, writing the ledger or running agents.
 
 ## Configure and run
 
-Copy [weekly.example.json](weekly.example.json) outside git. Configure Laminar
+For native deployments, copy [weekly.example.json](weekly.example.json) outside git. Configure Laminar
 project/Signal/endpoints, proxy endpoint, home repository/canonical checkout,
 private state directory, native automation API and GitHub secret name. Register
 relevant checkouts under `repositories`. Upstream contributions are allowed by
 default when authorized; set `repair_scope=customer_stack` for customer-only repairs.
 The agent must report missing prerequisites rather than clone an extra repository.
-The home repository credential needs issue and label write access. Ensure
+The discovery credential needs issue and label write access in the configured issue repository. Ensure
 `automation-improvement` is available in repositories where repairs will be opened.
 
 Configuration repairs must use the actual settings of the cited runs and their
@@ -298,11 +475,7 @@ automations/weekly-automation-improvement/tarball/.venv/bin/python automations/w
   --config /private/weekly.json --input /private/frozen-inventory.json --dry-run
 ```
 
-`--input` loads an inventory upfront; deeper reads/cohort hydration can still need
-Laminar. `--dry-run` prepares and triages only, spending inference tokens but making
-no GitHub writes, repair dispatches or canonical ledger changes. Omit it to run
-repairs. `--limit 1..3` bounds representative conversations per topic, not topic
-count or total collected Signals. The YAML schedules Mondays at 08:00 UTC.
+`--input` loads an inventory upfront. Deeper reads and cohort hydration for Laminar sources can still need Laminar access. `--dry-run` previews the plan. With the native ranker this spends inference tokens. Omit the flag to enable GitHub writes, canonical ledger updates and repair dispatch in the combined workflow. `--limit 1..3` bounds representative conversations per topic. The YAML schedules Mondays at 08:00 UTC.
 
 ## State and recovery
 
@@ -341,7 +514,7 @@ The factory issue-triage automation and weekly triage share the native OpenHands
 profile foundation, but have different policies and lifecycles. Factory triage
 maintains acceptance criteria/readiness labels on individual GitHub issues using
 a persistent dispatcher; weekly triage awaits one finite cross-automation ranking
-from Laminar evidence. Importing one independently packaged plugin's worker into
+from collected observations. Importing one independently packaged plugin's worker into
 another would couple deployment and apply the wrong policy. The ownership guard
 prevents both from rewriting the same managed issues.
 
@@ -568,3 +741,17 @@ The original repair cohorts were not replaced. Native inference for the two full
 runs was approximately **$76.61**; standalone projections and supplementary checks
 are outside that accounting. Both runs ended within their configured guards.
 Scheduled workers, production settings and deployments were unchanged.
+
+## Customer-managed execution and review
+
+A customer can run its own executor without configuring either native agent or the Factory integrations. Use `customer_workflow.py` from the handoff bundle or the source tarball on the single dispatch host. The customer runner calls this CLI at claim and completion and after PR changes. Set `customer_workflow.executor_login`, `customer_workflow.trusted_enrollers`, `customer_workflow.repositories` and `state_dir` in its private config. The allowed GitHub repositories include the backlog and permissible repair destinations. Set the GitHub CLI credential for the executor. Precreate the normal improvement lifecycle/outcome labels and `improvement-customer`. Start from an unassigned issue or one assigned solely to the configured executor. A trusted maintainer enrolls a new or human-authored issue by adding `improvement-external`, `improvement-customer` and `improvement-ready` after checking for existing implementation work. An already-filed issue needs no generated body, private index, model key or Laminar settings.
+
+Use a stable, public-safe attempt ID for each dispatch. On the first successful claim, the CLI returns `start: true`. Start at most one customer job for that attempt and persist its job ID in the customer's runner. Repeat delivery returns `start: false`. If a response is lost, reconcile the executor's job by attempt ID before starting anything. Send the result from the configured executor identity and reconcile on subsequent PR changes.
+
+```sh
+python3 customer_workflow.py claim --config customer.json --issue "$ISSUE" --attempt test-42
+python3 customer_workflow.py report --config customer.json --issue "$ISSUE" --attempt test-42 --report outcome.json
+python3 customer_workflow.py reconcile --config customer.json --issue "$ISSUE" --attempt test-42
+```
+
+For example, an outcome file can contain `{"outcome":"blocked","validation":"Reproduction requires a private deployment.","limitations":"The executor has only the public brief.","next_actor":"maintainer","next_action":"Provide a sanitized reproducer.","pull_requests":[]}`. Allowed decisions are accepted, blocked, revised, revision-needed, unrepaired, failed and incomplete. Existing reports default to a maintainer next actor. A new report can name another role and supply `next_actor_login` or `validation_url`. A changed revision assigns revalidation to the executor. For implemented changes, include one entry per PR with its GitHub URL in `url` and the complete reviewed commit SHA in `head`. Supply `base` to pin the reviewed base as well. The comment attributes the validation to the customer executor. The adapter verifies the revisions and draft or merge state and reports a changed head as incomplete. An accepted customer result alone does not promote a PR or certify CI. The comment hides links into other private repositories. The author's issue body remains intact.

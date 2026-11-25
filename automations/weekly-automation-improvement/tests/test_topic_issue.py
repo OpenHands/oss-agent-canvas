@@ -52,6 +52,13 @@ class GitHub:
             value = next(item for item in self.comments if item["id"] == identifier)
             if method == "PATCH":
                 value.update(payload)
+        elif re.search(r"/issues/[0-9]+/labels$", endpoint):
+            number = int(endpoint.split("/")[-2])
+            issue = next(item for item in self.issues if item["number"] == number)
+            value = issue["labels"]
+            for label in payload["labels"]:
+                if {"name": label} not in value:
+                    value.append({"name": label})
         elif "/comments" in endpoint:
             number = int(endpoint.split("/issues/")[1].split("/")[0])
             issue_url = f"https://api.github.com/repos/{repository}/issues/{number}"

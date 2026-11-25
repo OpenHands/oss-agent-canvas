@@ -23,6 +23,11 @@ def test_native_triage_reconciles_existing_work_before_publication(
     frame = tmp_path / "inventory.json"
     write_json(frame, inventory(rows))
     existing = [work(10), work(11, kind="pull")]
+    identifier = rows[0]["event"]["id"]
+    for item in existing:
+        item["body"] = (
+            f"<!-- automation-improvement-event: {identifier} -->\nPrior reviewer work"
+        )
     github = GitHub(private=False)
     original = [item["body"] for item in existing]
     github.issues = [
@@ -37,7 +42,11 @@ def test_native_triage_reconciles_existing_work_before_publication(
     monkeypatch.setattr(topic_issue, "command", github)
 
     def request(argv):
-        if comment_fails and "--method" in argv:
+        if (
+            comment_fails
+            and "--method" in argv
+            and argv[-3].endswith("/issues/11/comments")
+        ):
             raise RuntimeError("Comment permission denied")
         return github(argv)
 
@@ -53,10 +62,10 @@ def test_native_triage_reconciles_existing_work_before_publication(
         context,
         candidate,
         existing,
-        output: "https://github.com/Example/source/issues/" + candidate["key"],
+        output: f"https://github.com/Example/source/issues/{candidate['priority'] + 20}",
     )
     plan = [
-        topic("e1", "known-problem", 0),
+        topic("e1", "different-key-for-prior-work", 0),
         topic("e2", "new-two", 1),
         topic("e3", "new-three", 2),
         topic("e4", "new-four", 3),
@@ -69,7 +78,6 @@ def test_native_triage_reconciles_existing_work_before_publication(
             "prevention": "Verify that the result exists before reporting success.",
             "validation": "Compare a successful run and a run with a missing result.",
         }
-    plan[0]["existing_work_urls"] = [existing[0]["url"]]
 
     def execute(workspace):
         root = workspace.parent
@@ -92,11 +100,12 @@ def test_native_triage_reconciles_existing_work_before_publication(
     assert "PRIVATE CUSTOMER CONTENT" not in json.dumps(github.issues + github.comments)
     assert "without losing their readiness or human priority" in captured["prompt"]
     state = json.loads((tmp_path / "state.json").read_text())
-    identifier = rows[0]["event"]["id"]
     assert (identifier in state["events"]) is not comment_fails
     assert (identifier in state["backlog"]) is comment_fails
     outcome = next(
-        item for item in summary["topics"] if item["topic"]["key"] == "known-problem"
+        item
+        for item in summary["topics"]
+        if item["topic"]["key"] == "different-key-for-prior-work"
     )
     assert outcome["status"] == (
         "recurrence_pending" if comment_fails else "recurrence_recorded"
@@ -104,8 +113,32 @@ def test_native_triage_reconciles_existing_work_before_publication(
     recurrence = [
         c for c in github.comments if "automation-improvement-recurrence:" in c["body"]
     ]
-    assert len(recurrence) == (0 if comment_fails else 2)
+    assert len(recurrence) == (1 if comment_fails else 2)
     for item in recurrence:
+        assert identifier not in item["body"]
+        assert rows[0]["event"]["trace_id"] not in item["body"]
+        assert "Private evidence reference:" in item["body"]
+    public_plan = github.issues[2]["body"]
+    assert "https://github.com/Example/source/issues/21" in public_plan
+    assert recurrence[0]["html_url"] in public_plan
+    if comment_fails:
+        assert "One or more recurrence updates are pending." in public_plan
+        comment_fails = False
+        monkeypatch.setattr(
+            weekly, "triage", lambda *args: pytest.fail("Re-ranked an existing plan")
+        )
+        recovered = weekly.run_locked(
+            config, tmp_path, dry_run=False, limit=3, seed=1, budget=RunBudget({})
+        )
+        assert recovered["publication"] == {"status": "verified"}
+        recurrence = [
+            c
+            for c in github.comments
+            if "automation-improvement-recurrence:" in c["body"]
+        ]
+        assert len(recurrence) == 2
+        assert all(c["html_url"] in github.issues[2]["body"] for c in recurrence)
         assert (
-            identifier in item["body"] and "Private evidence reference:" in item["body"]
+            "One or more recurrence updates are pending."
+            not in github.issues[2]["body"]
         )

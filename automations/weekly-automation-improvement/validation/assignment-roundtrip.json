@@ -1,0 +1,75 @@
+{
+  "scope": "Isolated GitHub and KV adapters, controlled coding/review model outputs, real git patch and test, real dispatcher/resolver/reviewer policies and writes.",
+  "acceptance_criterion": "Whitespace around an input name appears in the greeting. Trim surrounding whitespace. Verify \" Ada \" produces \"Hello Ada\".",
+  "entrypoints": [
+    "factory_handoff.run",
+    "multi-repo issue resolver main",
+    "shared reviewer PullRequestReviewer.run + StructuredReviews.advance"
+  ],
+  "check": {
+    "command": "python check.py",
+    "base": "8e5a50ef6a8e53266852105f34333c0304ad9d7b",
+    "base_exit": 1,
+    "head": "a95119c4e1ff968ae8c5fc3636d380d80671a51a",
+    "head_stdout": "PASS: greeting trims surrounding whitespace"
+  },
+  "stages": [
+    {
+      "status": "implementing",
+      "owner": "resolver-writer",
+      "next_actor": "executor",
+      "next_action": "Investigate the issue, test the fix and open a linked draft pull request, or report the blocker."
+    },
+    {
+      "status": "checks",
+      "owner": "resolver-writer",
+      "next_actor": "ci",
+      "next_action": "Run the configured checks on the current pull request head."
+    },
+    {
+      "status": "reviewing",
+      "owner": "resolver-writer",
+      "next_actor": "reviewer",
+      "next_action": "Review the current pull request head and record a verdict on GitHub."
+    },
+    {
+      "status": "accepted",
+      "owner": "resolver-writer",
+      "next_actor": "maintainer",
+      "next_action": "Inspect the behavior evidence and mark the draft ready if the acceptance criteria are met."
+    }
+  ],
+  "pull_request": {
+    "draft": true,
+    "head": "a95119c4e1ff968ae8c5fc3636d380d80671a51a"
+  },
+  "review": {
+    "state": "APPROVED",
+    "commit_id": "a95119c4e1ff968ae8c5fc3636d380d80671a51a",
+    "author": "reviewer-account"
+  },
+  "published_status": {
+    "schema": "openhands.improvement-status.v1",
+    "status": "accepted",
+    "owner": "resolver-writer",
+    "next_actor": "maintainer",
+    "next_action": "Inspect the behavior evidence and mark the draft ready if the acceptance criteria are met.",
+    "pull_requests": [
+      {
+        "url": "https://github.com/Example/tool/pull/13",
+        "state": "draft",
+        "head": "a95119c4e1ff968ae8c5fc3636d380d80671a51a",
+        "reviewed_head": "a95119c4e1ff968ae8c5fc3636d380d80671a51a",
+        "checks_url": "https://github.com/Example/tool/pull/13/checks?sha=a95119c4e1ff968ae8c5fc3636d380d80671a51a"
+      }
+    ]
+  },
+  "counts_after_repeated_delivery": {
+    "coding_conversations": 1,
+    "review_conversations": 1,
+    "pull_requests": 1,
+    "review_requests": 1,
+    "reviews": 1,
+    "issue_status_comments": 1
+  }
+}

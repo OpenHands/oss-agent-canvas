@@ -18,6 +18,10 @@ WORKERS = [
     "label,body,skip",
     [
         ("automation-improvement", "Human issue", True),
+        ("improvement-external", "Imported human brief", True),
+        ("improvement-factory", "Imported human brief", True),
+        ("improvement-customer", "Imported human brief", True),
+        (None, "<!-- automation-improvement-backlog: id -->\nBrief", True),
         (None, "<!-- automation-improvement-topic: 123 -->\n## Goal", True),
         (None, "<!-- automation-improvement-triage: 2026-W44 -->\n## Goal", True),
         (
@@ -25,6 +29,7 @@ WORKERS = [
             "Human text mentioning <!-- automation-improvement-topic: 123 -->",
             False,
         ),
+        (None, "Retained status comment", True),
         (None, "Ordinary issue", False),
     ],
 )
@@ -50,6 +55,13 @@ def test_managed_issue_is_skipped_before_comments_or_dispatch(
         raise ReadStarted()
 
     worker.gh_pages = read
+    if body == "Retained status comment":
+        worker.gh_pages = lambda *_: [
+            {
+                "author_association": "COLLABORATOR",
+                "body": "<!-- automation-improvement-factory: 1 -->\nStatus",
+            }
+        ]
     issue = {"number": 1, "body": body, "labels": [{"name": label}] if label else []}
     if skip:
         assert worker._submit("Example/repo", issue, []) is None

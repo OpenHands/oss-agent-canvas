@@ -27,6 +27,37 @@ def test_customer_scope_uses_only_home_and_explicit_repositories():
     )
 
 
+def test_separate_backlog_only_authorizes_the_assigned_native_issue():
+    policy = resolve(
+        {
+            "repository": "Acme/app",
+            "issue_repository": "Acme/backlog",
+            "repair_scope": "customer_stack",
+        }
+    )
+    scope, topic = "a" * 20, "b" * 20
+    issue = {
+        "kind": "issues",
+        "repository": "Acme/backlog",
+        "url": "https://github.com/Acme/backlog/issues/9",
+        "body": f"<!-- automation-improvement-backlog: {scope}/{topic} -->\n<!-- automation-improvement-topic: {topic} -->",
+    }
+    ctx = {
+        "topic_issue_url": issue["url"],
+        "backlog_scope": scope,
+        "topic": {"id": topic},
+    }
+    assert not permits(policy, "Acme/backlog")
+    assert resource_errors(policy, [issue], ctx) == []
+    for change in [
+        {"kind": "pull"},
+        {"body": ""},
+        {"url": "https://github.com/Acme/backlog/issues/11"},
+    ]:
+        assert resource_errors(policy, [issue | change], ctx)
+    assert resource_errors(policy, [issue], ctx | {"backlog_scope": "c" * 20})
+
+
 @pytest.mark.parametrize("scope", ["anywhere", None, False, {}, []])
 def test_unknown_scope_is_rejected(scope):
     with pytest.raises(ValueError, match="repair_scope"):
@@ -241,6 +272,10 @@ def test_recurrence_comments_hide_private_counterparts_but_keep_full_evidence(
     }
     captured = []
     github = GitHub()
+    github.issues = [
+        {"number": i, "body": item["body"], "html_url": item["url"]}
+        for i, item in enumerate(existing, 1)
+    ]
 
     def request(argv):
         if argv[-1] == "repos/Upstream/sdk":

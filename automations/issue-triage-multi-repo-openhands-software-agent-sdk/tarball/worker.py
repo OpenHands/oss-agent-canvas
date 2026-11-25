@@ -153,14 +153,28 @@ class IssueTriage(GitHubRepository):
             for label in issue.get("labels", [])
         }
         body = (issue.get("body") or "").lstrip()
-        if "automation-improvement" in labels or body.startswith(
+        managed_labels = {"automation-improvement", "improvement-external", "improvement-factory", "improvement-customer"}
+        if managed_labels & labels or body.startswith(
             (
                 "<!-- automation-improvement-topic:",
                 "<!-- automation-improvement-triage:",
+                "<!-- automation-improvement-backlog:",
+                "<!-- automation-improvement-run:",
+                "<!-- automation-improvement-factory:",
+                "<!-- automation-improvement-customer:",
             )
         ):
             return
         comments = self.gh_pages(f"/issues/{issue['number']}/comments")
+        if any(
+            comment.get("author_association") in {"OWNER", "MEMBER", "COLLABORATOR"}
+            and (comment.get("body") or "").startswith((
+                "<!-- automation-improvement-factory: 1 -->\n",
+                "<!-- automation-improvement-customer: 1 -->\n",
+            ))
+            for comment in comments
+        ):
+            return
         automated_comments = [
             comment
             for comment in comments

@@ -13,7 +13,9 @@ import parallel
 import repair_workflow
 import topic_agent
 import topic_issue
+from budget import RunBudget
 from common import write_json
+from public_status import read_marker
 from test_weekly import inventory, record
 
 
@@ -59,7 +61,7 @@ class GitHub:
                 f"<!-- automation-improvement-topic: {identifier} -->\n"
                 + backlog.block("backlog-status", "Ready")
                 + "\n"
-                + backlog.input_text(ref)
+                + backlog.input_text(ref, source["topic"])
                 + "\nHuman note to preserve."
             ),
         }
@@ -69,10 +71,15 @@ class GitHub:
         if "/comments?" in endpoint:
             return []
         prefix = endpoint.split("?", 1)[0] + "/"
+        pulls = prefix.endswith("/pulls/")
+        if pulls:
+            prefix = prefix.removesuffix("pulls/") + "issues/"
         return [
             row
             for key, row in self.rows.items()
-            if key.startswith(prefix) and row["state"] == "open"
+            if key.startswith(prefix)
+            and row["state"] == "open"
+            and (not pulls or "pull_request" in row)
         ]
 
     def request(self, args):
@@ -102,6 +109,7 @@ def gh(prepared, monkeypatch):
         monkeypatch.setattr(module, "github_pages", github.pages)
         monkeypatch.setattr(module, "command", github.request)
     monkeypatch.setattr(repair_workflow, "github_auth", lambda cfg: None)
+    monkeypatch.setattr(dispatch, "ensure_labels", lambda repository: None)
     monkeypatch.setattr(
         repair_workflow, "refresh_epic", lambda *a: {"status": "refreshed"}
     )
@@ -124,6 +132,7 @@ def test_selection_honors_priority_across_repositories_and_exclusions(gh):
     gh.issue(second, 7, 0, extra=(backlog.PRIORITIES[1],))
     gh.issue(second, 11, 0, extra=("Not ready for review",))
     gh.issue(second, 12, 0, extra=("Awaiting issue checklist",))
+    gh.issue(second, 13, 0, extra=(backlog.EXTERNAL,))
     gh.config["issue_hold_labels"] = ["awaiting-issue-checklist"]
     covered, _, _ = gh.issue(second, 8, 0)
     gh.rows[f"repos/{home}/issues/99"] = {
@@ -142,6 +151,7 @@ def test_selection_honors_priority_across_repositories_and_exclusions(gh):
     ]
     assert selected == [item["html_url"] for item in (old_p0, p0, first)]
     assert any(x["status"] == "open_repair_pr" for x in before["topics"])
+    assert any(x["status"] == "external_owner" for x in before["topics"])
     first["labels"].remove({"name": backlog.PRIORITIES[1]})
     first["labels"].append({"name": backlog.PRIORITIES[0]})
     old_p0["labels"].remove({"name": backlog.READY})
@@ -155,10 +165,19 @@ def test_selection_honors_priority_across_repositories_and_exclusions(gh):
 
 
 @pytest.mark.parametrize("chained", [False, True])
-def test_claim_finish_repeat_and_explicit_requeue(gh, monkeypatch, chained):
+@pytest.mark.parametrize("separate_backlog", [False, True])
+def test_claim_finish_repeat_and_explicit_requeue(
+    gh, monkeypatch, chained, separate_backlog
+):
     import weekly
 
-    row, _, _ = gh.issue("Example/source", 1, 0)
+    home = gh.config["repository"]
+    destination = "Example/backlog" if separate_backlog else home
+    if separate_backlog:
+        gh.config.update(issue_repository=destination, repair_scope="customer_stack")
+        gh.issue(home, 41, 0)
+    ledger_path = backlog.ledger_directory(gh.config, gh.state_dir) / "state.json"
+    row, _, _ = gh.issue(destination, 1, 0)
     starts, refreshes = [], []
     related = {
         "kind": "issues",
@@ -186,8 +205,15 @@ def test_claim_finish_repeat_and_explicit_requeue(gh, monkeypatch, chained):
     def launch(cfg, context, topic, budget, root):
         labels = {value["name"] for value in row["labels"]}
         assert backlog.ACTIVE in labels and backlog.READY not in labels
+        status = read_marker(row["body"])
+        assert (status["status"], status["owner"], status["next_actor"]) == (
+            "investigating",
+            "native",
+            "executor",
+        )
+        assert "**Next action:** " + status["next_action"] in row["body"]
         assert budget.cost == pytest.approx(0.1 if chained else 0)
-        ledger = json.loads((gh.state_dir / "state.json").read_text())
+        ledger = json.loads(ledger_path.read_text())
         assert (
             ledger["topic_weeks"][Path(context["output"]).name + "/" + topic["id"]][
                 "status"
@@ -223,15 +249,17 @@ def test_claim_finish_repeat_and_explicit_requeue(gh, monkeypatch, chained):
     assert refreshes == [[related]]
     assert result["epic"]["status"] == "refreshed"
     assert "investigation completed" in row["body"].lower()
+    status = read_marker(row["body"])
+    assert (status["status"], status["next_actor"]) == ("unrepaired", "maintainer")
+    assert "**Next action:** " + status["next_action"] in row["body"]
     assert "Human note to preserve." in row["body"]
+    assert {"name": backlog.OUTCOME_LABELS["unrepaired"]} in row["labels"]
     assert runner(gh.config)["topics"][0]["status"] == "issue_ineligible"
     assert len(starts) == 1
     row["labels"].append({"name": backlog.READY})
     runner(gh.config)
     assert len(starts) == 2
-    assert (
-        len(json.loads((gh.state_dir / "state.json").read_text())["topic_weeks"]) == 2
-    )
+    assert len(json.loads(ledger_path.read_text())["topic_weeks"]) == 2
 
 
 def test_interrupted_claim_and_shared_lock_prevent_dispatch(gh, monkeypatch):
@@ -248,6 +276,226 @@ def test_interrupted_claim_and_shared_lock_prevent_dispatch(gh, monkeypatch):
         assert repair_workflow.run(gh.config) == {"status": "skipped_overlap"}
     finally:
         os.close(descriptor)
+
+
+def test_partial_claim_reconciles_without_launching_a_second_worker(gh, monkeypatch):
+    row, _, _ = gh.issue("Example/source", 1, 0)
+    request = gh.request
+    original = row["body"]
+    injected = False
+
+    def fail_once(args):
+        nonlocal injected
+        if not injected and args[-1].endswith("/labels/improvement-ready"):
+            injected = True
+            raise OSError("GitHub write interrupted")
+        return request(args)
+
+    monkeypatch.setattr(dispatch, "command", fail_once)
+    monkeypatch.setattr(
+        parallel, "launch", lambda *args: pytest.fail("unexpected repair")
+    )
+    first = repair_workflow.run(gh.config)
+    assert first["status"] == "review_incomplete"
+    assert {"name": backlog.ACTIVE} in row["labels"]
+    second = repair_workflow.run(gh.config)
+    assert second["reconciled"][0]["reconciled"]
+    assert second["execution"]["started"] == []
+    assert row["body"].endswith(original.splitlines()[-1])
+    assert {"name": backlog.OUTCOME_LABELS["incomplete"]} in row["labels"]
+    assert not {backlog.ACTIVE, backlog.READY} & {
+        label["name"] for label in row["labels"]
+    }
+    assert not list((gh.state_dir / "native-claims").glob("*.json"))
+
+
+def test_portable_source_cannot_dispatch_native_repair_without_external_label(
+    gh, monkeypatch
+):
+    gh.config["finding_source"] = "portable"
+    gh.config["source_namespace"] = "support"
+    gh.issue("Example/source", 1, 0)
+    monkeypatch.setattr(
+        parallel, "launch", lambda *args: pytest.fail("unexpected repair")
+    )
+    result = repair_workflow.run_locked(
+        gh.config,
+        gh.state_dir,
+        dry_run=True,
+        limit=3,
+        seed=None,
+        budget=RunBudget(gh.config),
+    )
+    assert result["topics"][0]["status"] == "external_owner"
+    assert gh.writes == []
+
+
+@pytest.mark.parametrize(
+    "change", ["head", "base", "check", "human_draft", "closed", "merged"]
+)
+def test_next_run_reconciles_native_promotion(gh, monkeypatch, change):
+    row, _, _ = gh.issue("Example/source", 1, 0)
+    identifier = f"{1:020x}"
+    run_id = "previous-repair"
+    topic = {
+        "id": identifier,
+        "issue_url": row["html_url"],
+        "representative_event_ids": [],
+    }
+    markers = (
+        f"<!-- automation-improvement-run: {run_id} -->\n{topic_agent.marker(topic)}\n"
+    )
+    row["body"] = markers.splitlines()[0] + "\n" + row["body"]
+    row["labels"] = [
+        label for label in row["labels"] if label["name"] != backlog.READY
+    ] + [{"name": backlog.OUTCOME_LABELS["accepted"]}]
+    pr = {
+        "url": "https://github.com/Example/source/pull/2",
+        "repository": "Example/source",
+        "kind": "pull",
+        "state": "open",
+        "draft": False,
+        "base": "a" * 40,
+        "head": "b" * 40,
+        "promoted": True,
+    }
+    live = {
+        "body": markers,
+        "state": "open",
+        "draft": False,
+        "base": {"sha": pr["base"]},
+        "head": {"sha": "c" * 40},
+    }
+    if change != "head":
+        live["head"]["sha"] = pr["head"]
+    if change == "base":
+        live["base"]["sha"] = "d" * 40
+    if change in ("closed", "merged"):
+        live["state"] = "closed"
+        live["merged"] = change == "merged"
+    if change == "human_draft":
+        live["draft"] = True
+    monkeypatch.setattr(
+        topic_agent,
+        "verify_pr_ci",
+        lambda *args, **kwargs: ["Required unit-tests failed"]
+        if change == "check"
+        else [],
+    )
+    state_path = gh.state_dir / "state.json"
+    key = f"{run_id}/{identifier}"
+    write_json(
+        state_path,
+        {
+            "topic_weeks": {
+                key: {
+                    "topic": topic,
+                    "decision": "accepted",
+                    "status": "reviewed",
+                    "resources": [pr],
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(topic_agent, "live_pr", lambda url: live.copy())
+
+    def command(args):
+        assert args == ["gh", "pr", "ready", pr["url"], "--undo"]
+        live["draft"] = True
+
+    monkeypatch.setattr(topic_agent, "command", command)
+    monkeypatch.setattr(
+        parallel, "launch", lambda *args: pytest.fail("unexpected repair")
+    )
+    result = repair_workflow.run(gh.config)
+    reconciled = result["reconciled"][0]
+    outcome = "accepted" if change == "merged" else "incomplete"
+    assert result["status"] == (
+        "completed" if change == "merged" else "review_incomplete"
+    )
+    assert live["draft"] == (change not in ("closed", "merged"))
+    assert reconciled["stale_prs"] == ([] if change == "merged" else [pr["url"]])
+    assert f"head `{pr['head']}`" in row["body"]
+    checks = f"{pr['url']}/checks?sha={live['head']['sha']}"
+    assert f"[Checks]({checks})" in row["body"]
+    status = read_marker(row["body"])
+    assert status["pull_requests"] == [
+        {
+            "url": pr["url"],
+            "base": live["base"]["sha"],
+            "head": live["head"]["sha"],
+            "reviewed_head": pr["head"],
+            "state": {"closed": "closed", "merged": "merged"}.get(change, "draft"),
+            "checks_url": checks,
+            **({"reported_base": pr["base"]} if change == "base" else {}),
+        }
+    ]
+    assert status["status"] == {
+        "head": "revision_changed",
+        "base": "revision_changed",
+        "merged": "merged",
+        "closed": "closed_unmerged",
+    }.get(change, "incomplete")
+    assert status["next_actor"] == "maintainer"
+    assert "**Next action:** " + status["next_action"] in row["body"]
+    if change == "head":
+        assert f"previously reviewed head `{pr['head']}`" in row["body"]
+    elif change in ("merged", "closed"):
+        assert (" — merged" if change == "merged" else "closed without merging") in row[
+            "body"
+        ]
+    assert {"name": backlog.OUTCOME_LABELS[outcome]} in row["labels"]
+    assert repair_workflow.run(gh.config)["reconciled"] == []
+
+
+def test_native_status_links_only_verified_public_or_same_repository_work(gh):
+    row, _, issue = gh.issue("Example/source", 1, 0)
+    pr = {
+        "kind": "pull",
+        "state": "open",
+        "draft": False,
+        "base": "a" * 40,
+        "head": "b" * 40,
+    }
+    prs = [
+        pr
+        | {"url": f"https://github.com/{repository}/pull/2", "repository": repository}
+        | visibility
+        for repository, visibility in (
+            ("Example/source", {}),
+            ("Example/public", {"private": False}),
+            ("Example/private", {"private": True}),
+            ("Example/unknown", {}),
+        )
+    ]
+    prs.append(prs[0] | {"url": "https://github.com/Example/private/pull/7"})
+    prs.append(
+        prs[0] | {"url": "https://github.com/Example/source/pull/8", "head": None}
+    )
+    prs.append(
+        prs[0] | {"url": "https://github.com/Example/source/pull/9", "draft": None}
+    )
+    dispatch.publish_outcome(
+        issue,
+        {
+            "status": "reviewed",
+            "review_decision": {"decision": "accepted"},
+            "resources": prs,
+        },
+        set(),
+    )
+    body = row["body"]
+    status = read_marker(body)
+    assert status["status"] == "accepted"
+    assert [pr["url"] for pr in status["pull_requests"]] == [
+        pr["url"] for pr in prs[:2]
+    ]
+    assert all(pr["state"] == "ready" for pr in status["pull_requests"])
+    assert all(
+        f"[Checks]({pr['checks_url']})" in body for pr in status["pull_requests"]
+    )
+    assert all(f"[Checks]({pr['url']}/checks)" in body for pr in prs[-2:])
+    assert "Example/private" not in body and "Example/unknown" not in body
 
 
 def test_selected_issue_resolves_private_signal_records(gh, monkeypatch):
@@ -320,6 +568,7 @@ def test_chained_budget_exhaustion_keeps_ready_issue_for_standalone_repair(
     monkeypatch.setattr(weekly, "prepare", prepare)
     monkeypatch.setattr(parallel, "launch", lambda *a: pytest.fail("budget reset"))
     result = weekly.run(gh.config)
+    assert result["discovery"]["status"] == "published"
     assert result["status"] == "budget_exhausted"
     assert result["budget"]["reported_inference_cost_usd"] == 0.1
     assert result["topics"][0]["status"] == "deferred_budget"
@@ -328,3 +577,49 @@ def test_chained_budget_exhaustion_keeps_ready_issue_for_standalone_repair(
         repair_workflow.run(gh.config, dry_run=True)["topics"][0]["status"]
         == "selected"
     )
+
+
+def test_competing_pr_created_after_selection_prevents_claim(gh, monkeypatch):
+    issue, _, _ = gh.issue("Example/source", 1, 0)
+    original = repair_workflow.selection
+
+    def select(*args):
+        queue, excluded = original(*args)
+        assert len(queue) == 1
+        gh.rows["repos/Example/secondary/issues/99"] = {
+            "html_url": "https://github.com/Example/secondary/pull/99",
+            "state": "open",
+            "title": "Already repairing",
+            "body": issue["html_url"],
+            "pull_request": {},
+        }
+        return queue, excluded
+
+    monkeypatch.setattr(repair_workflow, "selection", select)
+    monkeypatch.setattr(
+        parallel, "launch", lambda *args: pytest.fail("competing repair")
+    )
+    result = repair_workflow.run(gh.config)
+    assert result["topics"][0]["status"] == "issue_changed"
+    assert gh.writes == [] and result["execution"]["started"] == []
+
+
+def test_missing_private_topic_index_marks_run_incomplete(gh, monkeypatch):
+    _, reference, issue = gh.issue("Example/source", 1, 0)
+    (issue.evidence_root / reference).unlink()
+    monkeypatch.setattr(
+        parallel, "launch", lambda *args: pytest.fail("unexpected repair")
+    )
+    result = repair_workflow.run(gh.config)
+    assert result["topics"][0]["status"] == "backlog_evidence_unavailable"
+    assert result["status"] == "review_incomplete"
+    assert result["execution"]["started"] == [] and gh.writes == []
+
+
+def test_native_skips_topic_assigned_to_a_maintainer(gh, monkeypatch):
+    issue, _, _ = gh.issue("Example/source", 1, 0)
+    issue["assignees"] = [{"login": "triage-maintainer"}]
+    monkeypatch.setattr(parallel, "launch", lambda *args: pytest.fail("owned issue"))
+    result = repair_workflow.run(gh.config)
+    assert result["topics"][0]["status"] == "issue_ineligible"
+    assert gh.writes == []

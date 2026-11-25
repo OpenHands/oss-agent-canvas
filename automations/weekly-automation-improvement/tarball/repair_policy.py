@@ -1,5 +1,20 @@
 import re
 
+from public_status import REPO
+
+
+def issue_repository(config):
+    if "issue_repository" not in config:
+        return config["repository"]
+    name = config["issue_repository"]
+    if not isinstance(name, str) or not re.fullmatch(REPO, name):
+        raise ValueError("Invalid issue_repository slug")
+    return (
+        config["repository"]
+        if name.casefold() == config["repository"].casefold()
+        else name
+    )
+
 
 def resolve(config):
     scope = config.get("repair_scope", "any_authorized")
@@ -20,13 +35,52 @@ def resolve(config):
             raise ValueError(
                 "Repository checkout configuration must match its catalog name"
             )
-    return {"scope": scope, "repositories": sorted(set(names), key=str.casefold)}
+    policy = {"scope": scope, "repositories": sorted(set(names), key=str.casefold)}
+    destination = issue_repository(config)
+    if destination != config["repository"]:
+        policy["issue_repository"] = destination
+    return policy
 
 
 def permits(policy, repository):
     return policy["scope"] == "any_authorized" or repository.casefold() in {
         name.casefold() for name in policy["repositories"]
     }
+
+
+def permits_work(policy, repository, kind):
+    return permits(policy, repository) or (
+        kind == "issues"
+        and repository.casefold() == policy.get("issue_repository", "").casefold()
+    )
+
+
+def permits_resource(policy, resource, context=None):
+    if permits(policy, resource["repository"]):
+        return True
+    from backlog import identity
+
+    context = context or {}
+    url = resource.get("url", "")
+    return (
+        url == context.get("topic_issue_url")
+        and resource.get("kind") == "issues"
+        and re.fullmatch(
+            r"https://github\.com/"
+            + re.escape(resource["repository"])
+            + r"/issues/[1-9][0-9]*",
+            url,
+            re.I,
+        )
+        is not None
+        and permits_work(policy, resource["repository"], "issues")
+        and bool(context.get("backlog_scope"))
+        and identity(
+            {"kind": "issue", "body": resource.get("body", "")},
+            context["backlog_scope"],
+        )
+        == context["topic"]["id"]
+    )
 
 
 def instructions(policy):
@@ -42,6 +96,11 @@ def instructions(policy):
             "You may propose fixes in other relevant repositories when authorized by this installation's GitHub access. "
             "Do not use unrelated discovered credentials or seek broader access. If access or a checkout is missing, report the exact prerequisite. "
         )
+    if policy.get("issue_repository"):
+        boundary += (
+            f"The discovery backlog is in {policy['issue_repository']}. Maintain the assigned "
+            "topic issue there. The backlog setting does not grant repair access to code or PRs. "
+        )
     return boundary + (
         "Pass this scope and privacy rules to any delegated agent. "
         "Choose the most maintainable repair layer: customer automation or SDK integration code, prompts/repository instructions, skills/plugins, tools/MCP configuration, agent/LLM profiles, hooks, context/memory settings, dependencies or runtime setup. "
@@ -53,9 +112,9 @@ def instructions(policy):
     )
 
 
-def resource_errors(policy, resources):
+def resource_errors(policy, resources, context=None):
     return [
         resource["url"] + ": repository outside customer_stack repair scope"
         for resource in resources
-        if not permits(policy, resource["repository"])
+        if not permits_resource(policy, resource, context)
     ]

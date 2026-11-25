@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from backlog import external_owner
 from common import redact, write_json
 from triage_workflow import run_locked as prepare
 from workflow_runtime import main, run as run_workflow
@@ -15,6 +16,7 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
         result = repair(
             config, state_dir, dry_run=False, limit=limit, seed=seed, budget=budget
         )
+        summary["discovery"] = summary.copy()
         summary["repair"] = result
         summary["topics"] = result["topics"]
         summary["epic"] = result["epic"]
@@ -26,7 +28,12 @@ def run_locked(config, state_dir, *, dry_run, limit, seed, budget):
 
 
 def run(config, *, dry_run=False, limit=3, seed=None):
-    return run_workflow(config, run_locked, dry_run=dry_run, limit=limit, seed=seed)
+    use_model = "topic_finder_command" not in config or (
+        not dry_run and not external_owner(config)
+    )
+    return run_workflow(
+        config, run_locked, dry_run=dry_run, limit=limit, seed=seed, use_model=use_model
+    )
 
 
 if __name__ == "__main__":

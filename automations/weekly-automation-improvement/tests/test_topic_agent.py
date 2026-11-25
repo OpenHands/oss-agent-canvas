@@ -69,6 +69,19 @@ def resources():
     return issues + prs
 
 
+def stub_draft_readback(monkeypatch, rows):
+    def read(url):
+        row = next(item for item in rows if item["url"] == url)
+        return {
+            "draft": True,
+            "state": row["state"],
+            "base": {"sha": row["base"]},
+            "head": {"sha": row["head"]},
+        }
+
+    monkeypatch.setattr(topic_agent, "live_pr", read)
+
+
 def finished_conversation(config, phase, context_path, output, *args):
     if phase == "review":
         write_json(
@@ -119,6 +132,7 @@ def test_independent_review_is_once_and_incomplete_or_stale_prs_stay_draft(
         topic_agent, "discover", lambda *a: {"resources": next(snapshots), "errors": []}
     )
     monkeypatch.setattr(topic_agent, "record_evidence", lambda *a: [])
+    stub_draft_readback(monkeypatch, updated)
     monkeypatch.setattr(
         topic_agent, "command", lambda argv, *a: holds.append(argv) or ""
     )
@@ -429,6 +443,7 @@ def test_completed_review_cannot_publish_an_unstructured_issue_as_ready(
         topic_agent, "discover", lambda *a: {"resources": rows, "errors": []}
     )
     monkeypatch.setattr(topic_agent, "record_evidence", lambda *a: [])
+    stub_draft_readback(monkeypatch, rows)
     monkeypatch.setattr(
         topic_agent, "run_conversation", lambda *a: {"status": "finished"}
     )
@@ -467,6 +482,7 @@ def test_known_credential_in_any_owned_description_prevents_readiness(
         topic_agent, "discover", lambda *a: {"resources": rows, "errors": []}
     )
     monkeypatch.setattr(topic_agent, "record_evidence", lambda *a: [])
+    stub_draft_readback(monkeypatch, rows)
     monkeypatch.setattr(
         topic_agent, "run_conversation", lambda *a: {"status": "finished"}
     )
@@ -875,6 +891,7 @@ def test_missing_or_invalid_review_decision_stops_without_another_repair(
         topic_agent, "discover", lambda *a: {"resources": rows, "errors": []}
     )
     monkeypatch.setattr(topic_agent, "record_evidence", lambda *a: [])
+    stub_draft_readback(monkeypatch, rows)
     monkeypatch.setattr(topic_agent, "command", lambda *a: "")
     result = topic_agent.run({}, context(tmp_path), tmp_path / "topic", RunBudget({}))
     assert calls == ["repair", "review"]
@@ -954,6 +971,7 @@ def test_revisions_resume_native_conversation_and_preserve_each_round(
         lambda *a: {"resources": copy.deepcopy(rows), "errors": []},
     )
     monkeypatch.setattr(topic_agent, "record_evidence", lambda *a: [])
+    stub_draft_readback(monkeypatch, rows)
     monkeypatch.setattr(topic_agent, "command", lambda *a: "")
     budget = RunBudget({"max_inference_cost_usd": 5})
     root = tmp_path / "topic"
@@ -1197,11 +1215,18 @@ def test_ci_uses_reviewed_revision_and_requires_success(
     def request(argv):
         if argv[1] == "api":
             assert argv[2] == "repos/Example/source/pulls/1"
-            return json.dumps({"base": {"sha": "base"}, "head": {"sha": "reviewed"}})
+            return json.dumps(
+                {
+                    "state": "open",
+                    "base": {"sha": "base", "ref": "main"},
+                    "head": {"sha": "reviewed"},
+                }
+            )
         assert argv[-1] == "headRefOid,statusCheckRollup"
         return json.dumps({"headRefOid": head, "statusCheckRollup": checks})
 
     monkeypatch.setattr(topic_agent, "command", request)
+    monkeypatch.setattr(topic_agent, "required_checks", lambda *args: set())
     problems = topic_agent.verify_pr_ci(
         [{"url": url, "base": "base", "head": "reviewed"}],
         tmp_path,
@@ -1210,3 +1235,176 @@ def test_ci_uses_reviewed_revision_and_requires_success(
     )
     assert bool(problems) == bool(expected)
     assert all(term in "\n".join(problems) for term in expected)
+
+
+@pytest.mark.parametrize("app", [1, 2, None])
+def test_ci_rejects_missing_required_context_or_wrong_app(tmp_path, monkeypatch, app):
+    pr = {
+        "url": "https://github.com/Example/source/pull/1",
+        "base": "base",
+        "head": "head",
+    }
+    good = {"status": "COMPLETED", "conclusion": "SUCCESS"}
+    monkeypatch.setattr(
+        topic_agent,
+        "live_pr",
+        lambda *args: {
+            "state": "open",
+            "base": {"sha": "base", "ref": "main"},
+            "head": {"sha": "head"},
+        },
+    )
+    monkeypatch.setattr(
+        topic_agent,
+        "command",
+        lambda *args: json.dumps(
+            {"headRefOid": "head", "statusCheckRollup": [good | {"name": "unrelated"}]}
+        ),
+    )
+    monkeypatch.setattr(
+        topic_agent,
+        "check_runs",
+        lambda *args: [good | {"app": {"id": 1}, "name": "required"}],
+    )
+    monkeypatch.setattr(
+        topic_agent, "required_checks", lambda *args: {("required", app)}
+    )
+    problems = topic_agent.verify_pr_ci([pr], tmp_path, RunBudget({}), wait_seconds=0)
+    assert ("missing required check required" in "\n".join(problems)) is (app != 1)
+
+
+def test_promotion_reports_a_push_during_ready_transition(tmp_path, monkeypatch):
+    pr = {
+        "url": "https://github.com/Example/source/pull/1",
+        "base": "base",
+        "head": "head",
+        "draft": True,
+    }
+    monkeypatch.setattr(topic_agent, "verify_pr_ci", lambda *args: [])
+    writes = []
+    monkeypatch.setattr(topic_agent, "command", writes.append)
+    monkeypatch.setattr(
+        topic_agent,
+        "live_pr",
+        lambda *args: {
+            "state": "open",
+            "draft": False,
+            "base": {"sha": "base"},
+            "head": {"sha": "new-head"},
+        },
+    )
+    errors = topic_agent.ready_after_ci([pr], tmp_path, RunBudget({}))
+    assert writes == [["gh", "pr", "ready", pr["url"]]]
+    assert "reviewed revision changed" in "\n".join(errors)
+    assert not pr["draft"]
+
+
+def test_cross_private_links_fail_even_for_a_private_destination():
+    rows = resources()
+    for r in rows:
+        r["private"] = True
+    assert not topic_agent.can_link(rows[0], rows[1])
+    assert "cross-repository text references private repository" in "\n".join(
+        topic_agent.link_errors(rows)
+    )
+
+
+def test_ci_rechecked_after_ready_before_recording_promotion(tmp_path, monkeypatch):
+    pr = {
+        "url": "https://github.com/Example/source/pull/1",
+        "draft": True,
+        "base": "base",
+        "head": "head",
+    }
+    paths = []
+
+    def verify(prs, output, budget):
+        paths.append(output)
+        return ["required check pending after ready"] if len(paths) == 2 else []
+
+    monkeypatch.setattr(topic_agent, "verify_pr_ci", verify)
+    monkeypatch.setattr(topic_agent, "command", lambda *args: "")
+    monkeypatch.setattr(
+        topic_agent,
+        "live_pr",
+        lambda url: {
+            "state": "open",
+            "draft": False,
+            "base": {"sha": "base"},
+            "head": {"sha": "head"},
+        },
+    )
+    assert topic_agent.ready_after_ci([pr], tmp_path, RunBudget({})) == [
+        "required check pending after ready"
+    ]
+    assert paths == [tmp_path, tmp_path / "after-promotion"]
+    assert not pr.get("promoted")
+
+
+def test_unfinished_repair_cannot_promote_on_accepted_review(tmp_path, monkeypatch):
+    ctx = context(tmp_path)
+    rows = resources()
+    monkeypatch.setattr(topic_agent, "run_conversation", finished_conversation)
+    monkeypatch.setattr(
+        topic_agent, "discover", lambda *a: {"resources": rows, "errors": []}
+    )
+    monkeypatch.setattr(topic_agent, "record_evidence", lambda *a: [])
+    monkeypatch.setattr(
+        topic_agent, "ready_after_ci", lambda *args: pytest.fail("unexpected promotion")
+    )
+    result = topic_agent.finish(
+        {}, ctx, tmp_path, RunBudget({}), {"status": "incomplete"}
+    )
+    assert result["review_decision"]["decision"] == "accepted"
+    assert result["status"] == "review_incomplete"
+    assert all(r["draft"] for r in rows if r["kind"] == "pull")
+
+
+def test_lost_native_claim_blocks_promotion_after_ci(tmp_path, monkeypatch):
+    def changed():
+        raise ValueError("External executor owns this issue")
+
+    monkeypatch.setattr(topic_agent, "verify_pr_ci", lambda *args: [])
+    monkeypatch.setattr(
+        topic_agent, "command", lambda *args: pytest.fail("Unexpected promotion")
+    )
+    pr = {"url": "https://github.com/Example/source/pull/1", "draft": True}
+    errors = topic_agent.ready_after_ci([pr], tmp_path, RunBudget({}), changed)
+    assert "External executor owns this issue" in errors[0]
+    assert pr["draft"]
+
+
+def test_required_workflow_identity_cannot_be_satisfied_by_an_unrelated_check(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        topic_agent,
+        "command",
+        lambda *args: json.dumps(
+            {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "baseRef": {"name": "main", "branchProtectionRule": None}
+                        }
+                    }
+                }
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        topic_agent,
+        "github_pages",
+        lambda *args: [
+            {
+                "type": "workflows",
+                "parameters": {
+                    "workflows": [
+                        {"path": ".github/workflows/required.yml", "repository_id": 101}
+                    ]
+                },
+            }
+        ],
+    )
+    with pytest.raises(ValueError, match="Required workflow identities"):
+        topic_agent.required_checks("https://github.com/Example/source/pull/1", "main")

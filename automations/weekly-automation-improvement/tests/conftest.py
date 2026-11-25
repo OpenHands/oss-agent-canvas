@@ -27,7 +27,7 @@ def prepared(tmp_path, monkeypatch):
         "repair_concurrency": 2,
         "max_inference_cost_usd": 1,
     }
-    monkeypatch.setattr(workflow_runtime, "load_environment", lambda _: None)
+    monkeypatch.setattr(workflow_runtime, "load_environment", lambda _, **kwargs: None)
     monkeypatch.setattr(triage_workflow, "github_auth", lambda _: None)
     monkeypatch.setattr(triage_workflow, "repository_catalog", lambda _: {})
     monkeypatch.setattr(
